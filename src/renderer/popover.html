@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'" />
+    <title>Clawdy 用量</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body class="pop-body-root">
+    <div class="pop">
+      <div class="pop-head">
+        <div class="seg-tabs" id="popTabs">
+          <button class="seg-btn active" data-tab="overview">总览</button>
+          <button class="seg-btn" data-tab="models">模型</button>
+        </div>
+        <div class="seg-tabs ranges" id="popRanges">
+          <button class="seg-btn" data-range="1d">1天</button>
+          <button class="seg-btn active" data-range="7d">7天</button>
+          <button class="seg-btn" data-range="30d">30天</button>
+          <button class="seg-btn" data-range="all">全部</button>
+        </div>
+      </div>
+
+      <div id="tab-overview">
+        <div class="pop-stats">
+          <div class="pstat"><div class="pstat-label">总用量</div><div class="pstat-val mono" id="sTokens">0</div></div>
+          <div class="pstat"><div class="pstat-label">请求数</div><div class="pstat-val mono" id="sReq">0</div></div>
+          <div class="pstat"><div class="pstat-label">活跃天数</div><div class="pstat-val mono" id="sDays">0</div></div>
+          <div class="pstat"><div class="pstat-label">常用服务</div><div class="pstat-val sm" id="sProv">—</div></div>
+          <div class="pstat"><div class="pstat-label">当前连续</div><div class="pstat-val mono" id="sCur">0<span class="u">天</span></div></div>
+          <div class="pstat"><div class="pstat-label">最长连续</div><div class="pstat-val mono" id="sLong">0<span class="u">天</span></div></div>
+          <div class="pstat"><div class="pstat-label">峰值时段</div><div class="pstat-val sm" id="sPeak">—</div></div>
+          <div class="pstat"><div class="pstat-label">常用模型</div><div class="pstat-val sm" id="sModel">—</div></div>
+        </div>
+        <div class="heatmap" id="heatmap"></div>
+        <div class="pop-note" id="popNote"></div>
+      </div>
+
+      <div id="tab-models" class="hidden">
+        <div class="model-list" id="modelList"></div>
+      </div>
+
+      <div class="pop-actions">
+        <span class="pop-status" id="popStatus"><span class="live-dot off"></span><span id="popStatusText">未接入</span></span>
+        <span class="spacer"></span>
+        <button class="btn btn-sm" id="popConnect">一键接入</button>
+        <button class="btn btn-sm" id="popOpen">主界面</button>
+        <button class="btn btn-sm ghost" id="popQuit">退出</button>
+      </div>
+    </div>
+    <script src="popover.js"></script>
+  </body>
+</html>

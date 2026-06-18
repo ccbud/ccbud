@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'" />
+    <title>Clawdy — Claude Code Gateway</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <div class="logo">C</div>
+        <div class="brand-text">
+          <div class="brand-title" id="brandTitle">Clawdy</div>
+          <div class="brand-sub">Claude Code 服务切换器</div>
+        </div>
+      </div>
+
+      <nav class="segmented" id="tabs">
+        <button class="seg-btn active" data-view="providers">我的服务</button>
+        <button class="seg-btn" data-view="monitor">运行监控</button>
+      </nav>
+
+      <div class="actions">
+        <span id="statusPill" class="pill pill-off"><span class="dot"></span>未接入</span>
+        <button id="btnTheme" class="icon-btn" title="切换主题">◐</button>
+        <button id="btnAdd" class="add-btn" title="添加服务">+</button>
+      </div>
+    </header>
+
+    <main class="content">
+      <!-- ===== My Services view ===== -->
+      <section id="view-providers" class="view">
+        <!-- Hero: the one big switch -->
+        <div class="hero" id="hero">
+          <div class="hero-row">
+            <div class="hero-icon" id="heroIcon">⏻</div>
+            <div class="hero-text">
+              <div class="hero-title" id="heroTitle">未接入 Claude Code</div>
+              <div class="hero-sub" id="heroSub">打开开关，让 Claude Code 自动使用你选中的服务，随时一键切换或关闭。</div>
+            </div>
+            <button class="hero-btn" id="btnConnect">一键接入</button>
+          </div>
+          <div class="hero-note hidden" id="heroNote"></div>
+        </div>
+
+        <div class="section-head">
+          <h2>我的服务</h2>
+          <span class="muted small" id="provHint">选中一个作为正在使用的服务 · 拖动可排序</span>
+        </div>
+        <div id="providerList" class="provider-list"></div>
+        <div id="emptyProviders" class="empty">
+          <div class="empty-icon">⊕</div>
+          还没有添加服务。点右上角 <b>+</b>，或在弹窗里选一个预设（智谱 GLM / DeepSeek / Kimi…）。
+        </div>
+
+        <details class="card adv">
+          <summary>高级 / 手动配置</summary>
+          <div class="adv-body">
+            <div class="muted small">普通使用无需关心这里。以下是网关地址和手动配置方式（接入后由本应用自动写入 Claude Code，手动改动会被覆盖）。</div>
+            <div class="endpoint-row">
+              <code id="endpoint" class="endpoint">http://127.0.0.1:8788</code>
+              <button class="btn btn-sm" data-copy="endpoint">复制地址</button>
+              <label class="port-label">端口<input id="portInput" class="port-input" type="number" min="1" max="65535" /></label>
+            </div>
+            <pre id="exportBlock" class="export-block"></pre>
+            <div class="connect-actions">
+              <button class="btn btn-sm" id="btnCopyExport">复制 export</button>
+              <span class="muted small" id="claudePath"></span>
+            </div>
+            <div class="settings-row">
+              <label class="switch"><input id="fOpenAtLogin" type="checkbox" /><span class="track"></span><span class="switch-label">开机自启动</span></label>
+              <label class="switch"><input id="fRequireToken" type="checkbox" /><span class="track"></span><span class="switch-label">要求本地访问令牌</span></label>
+              <span class="input-with-btn token-row hidden" id="tokenRow">
+                <input id="fGatewayToken" type="text" placeholder="网关访问令牌" />
+                <button class="btn btn-sm" id="btnGenToken" type="button">生成</button>
+              </span>
+            </div>
+            <div class="settings-row">
+              <label class="switch"><input id="fTrayUsage" type="checkbox" /><span class="track"></span><span class="switch-label">在菜单栏显示用量</span></label>
+              <span class="token-row" id="trayRangeRow">
+                <select id="fTrayRange" class="mini-select">
+                  <option value="1d">今日</option>
+                  <option value="7d">近 7 天</option>
+                  <option value="30d">近 30 天</option>
+                  <option value="all">全部</option>
+                </select>
+                <span class="muted small">点菜单栏图标可看用量面板</span>
+              </span>
+            </div>
+            <div class="muted small warn">⚠ 如果你以前在终端 <code>export ANTHROPIC_BASE_URL</code> 过，请删掉它，否则会覆盖本应用的设置。</div>
+          </div>
+        </details>
+        <div id="startError" class="banner banner-err hidden"></div>
+      </section>
+
+      <!-- ===== Monitor view ===== -->
+      <section id="view-monitor" class="view hidden">
+        <div class="stat-grid">
+          <div class="stat-card">
+            <div class="stat-label">接入状态</div>
+            <div class="stat-value sm" id="mStatus"><span class="live-dot off"></span><span id="mStatusText">未接入</span></div>
+            <div class="stat-sub" id="mEndpoint">127.0.0.1:8788</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">正在使用</div>
+            <div class="stat-value sm" id="mActive">—</div>
+            <div class="stat-sub" id="mActiveUrl">—</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">总请求</div>
+            <div class="stat-value mono" id="mTotal">0</div>
+            <div class="stat-sub" id="mSuccess">成功率 —</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">平均耗时</div>
+            <div class="stat-value mono" id="mAvg">— <span class="unit">ms</span></div>
+            <div class="stat-sub" id="mLast">最近 —</div>
+          </div>
+        </div>
+
+        <div class="section-head">
+          <h2>实时请求</h2>
+          <div class="head-actions">
+            <span class="muted small" id="streamHint">等待请求…</span>
+            <button class="btn btn-sm" id="btnClearLog">清空</button>
+          </div>
+        </div>
+        <div id="streamList" class="stream-list">
+          <div class="empty small">还没有请求。接入并在 Claude Code 里发起对话后，这里会实时显示每次转发与模型映射。</div>
+        </div>
+
+        <details class="raw-log-wrap">
+          <summary>网关日志</summary>
+          <div id="rawLog" class="raw-log"></div>
+        </details>
+      </section>
+    </main>
+
+    <!-- ===== editor modal ===== -->
+    <div id="modal" class="modal-backdrop hidden">
+      <div class="modal">
+        <div class="modal-head">
+          <button class="icon-btn back" id="modalClose">←</button>
+          <h3 id="modalTitle">添加服务</h3>
+        </div>
+        <div class="modal-body">
+          <div class="preset-block">
+            <span class="field-label">选个服务商<span class="muted small">（自动填好地址，只需粘贴密钥）</span></span>
+            <div id="presetGrid" class="preset-grid"></div>
+          </div>
+
+          <div class="icon-center"><div class="prov-icon lg" id="fIconPreview">C</div></div>
+
+          <div class="field-row">
+            <label class="field">
+              <span class="field-label">名称</span>
+              <input id="fName" type="text" placeholder="例如 智谱 GLM" />
+            </label>
+            <label class="field">
+              <span class="field-label">服务地址（API 地址）</span>
+              <input id="fBaseUrl" type="text" placeholder="https://open.bigmodel.cn/api/anthropic" />
+            </label>
+          </div>
+
+          <label class="field">
+            <span class="field-label">密钥（API Key）</span>
+            <span class="input-with-btn">
+              <input id="fToken" type="password" placeholder="粘贴你的 API Key" />
+              <button class="btn btn-sm" id="fTokenToggle" type="button">显示</button>
+            </span>
+          </label>
+
+          <div class="field-row">
+            <label class="field">
+              <span class="field-label">主模型<span class="muted small">（对话用）</span></span>
+              <input id="fDefaultModel" type="text" placeholder="glm-5.1" />
+            </label>
+            <label class="field">
+              <span class="field-label">快速模型<span class="muted small">（轻量任务用）</span></span>
+              <input id="fSmallModel" type="text" placeholder="glm-5.1" />
+            </label>
+          </div>
+
+          <label class="switch">
+            <input id="fMapDefault" type="checkbox" checked /><span class="track"></span>
+            <span class="switch-label">自动适配（让 Claude Code 直接用这家的模型，无需关心模型名）</span>
+          </label>
+
+          <details class="mappings-details">
+            <summary>模型别名映射（可选，进阶）</summary>
+            <div class="mappings">
+              <div class="muted small">可让客户端用「别名」调用本服务；网关会把响应里的模型名改回别名。</div>
+              <div id="mapRows" class="map-rows"></div>
+              <button class="btn btn-sm" id="btnAddMap" type="button">+ 添加映射</button>
+            </div>
+          </details>
+
+          <div id="testResult" class="banner hidden"></div>
+        </div>
+        <div class="modal-foot">
+          <button class="btn" id="btnTest">测试连接</button>
+          <span class="spacer"></span>
+          <button class="btn ghost" id="btnCancel">取消</button>
+          <button class="btn btn-primary" id="btnSave"><span class="plus">+</span> 保存</button>
+        </div>
+      </div>
+    </div>
+
+    <script src="renderer.js"></script>
+  </body>
+</html>
