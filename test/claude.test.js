@@ -33,7 +33,7 @@ try {
   const store = makeStore();
   claude.connect(8788, 'clawdy-local', store);
   let s = read();
-  check('connect sets ANTHROPIC_BASE_URL', s.env.ANTHROPIC_BASE_URL === 'http://127.0.0.1:8788');
+  check('connect sets ANTHROPIC_BASE_URL', s.env.ANTHROPIC_BASE_URL === 'http://localhost:8788');
   check('connect sets ANTHROPIC_AUTH_TOKEN', s.env.ANTHROPIC_AUTH_TOKEN === 'clawdy-local');
   check('connect clears model overrides', !('ANTHROPIC_DEFAULT_SONNET_MODEL' in s.env) && !('ANTHROPIC_DEFAULT_OPUS_MODEL' in s.env));
   check('connect clears top-level model', !('model' in s));
@@ -58,7 +58,10 @@ try {
   const store2 = makeStore();
   claude.connect(9000, 'tok2', store2);
   s = read();
-  check('connect creates file when none', s && s.env.ANTHROPIC_BASE_URL === 'http://127.0.0.1:9000');
+  check('connect creates file when none', s && s.env.ANTHROPIC_BASE_URL === 'http://localhost:9000');
+
+  fs.writeFileSync(tmp, JSON.stringify({ env: { ANTHROPIC_BASE_URL: 'http://127.0.0.1:8788', ANTHROPIC_AUTH_TOKEN: 'clawdy-local' } }));
+  check('isConnected accepts legacy 127.0.0.1 URL', claude.isConnected(8788));
   claude.disconnect(store2);
   s = read();
   check('disconnect on fresh leaves no ANTHROPIC_BASE_URL', !(s.env && s.env.ANTHROPIC_BASE_URL));

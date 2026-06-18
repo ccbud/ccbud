@@ -102,6 +102,27 @@ function resolveRouting(requestedModel, config) {
   return { provider: active, outgoingModel: requestedModel, clientFacingModel: requestedModel };
 }
 
+// Headers whose VALUES must never surface in the monitor inspector (real upstream key etc).
+const REDACT_RE = /^(authorization|x-api-key|cookie|set-cookie|proxy-authorization|x-goog-api-key)$/i;
+function redactHeaders(h) {
+  const o = {};
+  for (const k of Object.keys(h || {})) o[k] = REDACT_RE.test(k) ? '••••••（已隐藏）' : h[k];
+  return o;
+}
+// Cap a captured body so the in-memory inspector stays bounded; keep the true byte count.
+// Request bodies get a generous cap so a full Claude Code request (entire history) is shown
+// un-truncated for debugging; response/SSE bodies stay bounded since streams can be huge.
+const REQ_CAP = 4 * 1024 * 1024;
+const RES_CAP = 2 * 1024 * 1024;
+function capText(buf, cap) {
+  const limit = cap || REQ_CAP;
+  if (!buf || !buf.length) return { text: '', bytes: 0, truncated: 0 };
+  const total = buf.length;
+  if (total <= limit) return { text: buf.toString('utf8'), bytes: total, truncated: 0 };
+  // Slicing at a byte boundary can split a multi-byte char → drop the trailing replacement char.
+  return { text: buf.slice(0, limit).toString('utf8').replace(/�+$/, ''), bytes: total, truncated: total - limit };
+}
+
 /** Normalize an Anthropic `usage` object into our token shape. */
 function extractUsage(u) {
   if (!u) return null;
@@ -119,18 +140,15 @@ function extractUsage(u) {
  * `message_start` (input/cache) and `message_delta` (cumulative output). Calls onUsage(u)
  * at end-of-stream if any usage was seen. Line-buffered so JSON fields are never split.
  */
-function createSseTransform(model, onUsage) {
+function createSseTransform(model, opts) {
+  const onUsage = typeof opts === 'function' ? opts : opts && opts.onUsage;
   const replacement = model != null ? String(model).replace(/\$/g, '$$$$') : null;
   const re = /("model"\s*:\s*")[^"]*(")/g;
   let buffer = '';
   const usage = { inputTokens: 0, outputTokens: 0, cacheRead: 0, cacheCreation: 0 };
   let saw = false;
 
-  function absorb(line) {
-    const i = line.indexOf('{');
-    if (i < 0) return;
-    let obj;
-    try { obj = JSON.parse(line.slice(i)); } catch (_) { return; }
+  function absorbUsage(obj) {
     if (obj && obj.type === 'message_start' && obj.message && obj.message.usage) {
       const u = obj.message.usage;
       usage.inputTokens += u.input_tokens || 0;
@@ -142,9 +160,18 @@ function createSseTransform(model, onUsage) {
       saw = true;
     }
   }
+  function parseData(line) {
+    const i = line.indexOf('{');
+    if (i < 0) return null;
+    try { return JSON.parse(line.slice(i)); } catch (_) { return null; }
+  }
   function handleLine(line) {
+    // Sniff usage from the upstream payload BEFORE rewriting model names for the client.
+    if (line.indexOf('"usage"') !== -1) {
+      const obj = parseData(line);
+      if (obj) absorbUsage(obj);
+    }
     if (replacement != null && line.indexOf('"model"') !== -1) line = line.replace(re, `$1${replacement}$2`);
-    if (line.indexOf('"usage"') !== -1) absorb(line);
     return line;
   }
 
@@ -172,6 +199,7 @@ function createGateway({ getConfig }) {
   const emitter = new EventEmitter();
   let server = null;
   let currentPort = null;
+  let exchangeSeq = 0;
 
   function log(level, msg, extra) {
     emitter.emit('log', Object.assign({ level, msg }, extra || {}));
@@ -220,6 +248,10 @@ function createGateway({ getConfig }) {
       routing.outgoingModel != null &&
       routing.clientFacingModel !== routing.outgoingModel;
 
+    // Session/agent ids (for the request log + usage attribution).
+    const sessionId = req.headers['x-claude-code-session-id'] || req.headers['x-claude-session-id'] || req.headers['x-session-id'] || req.headers['anthropic-client-session-id'] || null;
+    const agentId = req.headers['x-claude-code-agent-id'] || null;
+
     let target;
     try {
       const base = new URL(provider.baseUrl);
@@ -249,6 +281,38 @@ function createGateway({ getConfig }) {
       headers['x-api-key'] = provider.authToken;
     }
     if (outBody.length) headers['content-length'] = Buffer.byteLength(outBody);
+
+    // Bounded, redacted capture of the full exchange so the monitor can inspect any request
+    // (headers + bodies). Emitted once on completion as 'exchange'; the lightweight 'request'
+    // event carries the same id so a list row can fetch its detail on click.
+    const exId = ++exchangeSeq;
+    const exchange = {
+      id: exId,
+      ts: Date.now(),
+      method: req.method,
+      path: req.url.split('?')[0],
+      url: target.href,
+      provider: provider.name || provider.id,
+      requestedModel,
+      outgoingModel: routing.outgoingModel,
+      clientFacingModel: routing.clientFacingModel,
+      rewritten: needRewriteResponse,
+      sessionId,
+      agentId,
+      reqHeaders: redactHeaders(headers),
+      reqBody: capText(outBody && outBody.length ? outBody : (req.body || Buffer.alloc(0)), REQ_CAP),
+    };
+    let exchangeDone = false;
+    function emitExchange(status, resHeaders, capObj, errMsg) {
+      if (exchangeDone) return;
+      exchangeDone = true;
+      exchange.status = status;
+      exchange.ms = Date.now() - startedAt;
+      exchange.error = errMsg || null;
+      exchange.resHeaders = resHeaders ? redactHeaders(resHeaders) : {};
+      exchange.resBody = capObj || { text: '', bytes: 0, truncated: 0 };
+      emitter.emit('exchange', exchange);
+    }
 
     const lib = target.protocol === 'http:' ? http : https;
     const upReq = lib.request(
@@ -287,12 +351,16 @@ function createGateway({ getConfig }) {
           logged = true;
           const u = capturedUsage || {};
           emitter.emit('request', {
+            id: exId,
             method: req.method,
             path: req.url.split('?')[0],
             provider: provider.name || provider.id,
             requestedModel,
             outgoingModel: routing.outgoingModel,
+            clientFacingModel: routing.clientFacingModel,
             rewritten: needRewriteResponse,
+            sessionId,
+            agentId,
             status: upRes.statusCode,
             ms: Date.now() - startedAt,
             error: errMsg,
@@ -303,11 +371,35 @@ function createGateway({ getConfig }) {
           });
         };
 
-        // Streaming SSE: pass through (rewriting model if needed) while sniffing usage.
+        // Streaming SSE: pass through (rewriting model if needed) while sniffing usage,
+        // and tee a capped copy of the downstream bytes for the monitor inspector.
         if (ct.includes('text/event-stream')) {
           res.writeHead(upRes.statusCode, outHeaders);
           const t = createSseTransform(needRewriteResponse ? routing.clientFacingModel : null, (u) => { capturedUsage = u; });
-          pipeline(...stages, t, res, (err) => finishLog(err && err.message));
+          const resChunks = [];
+          let resCapLen = 0;
+          let resTotal = 0;
+          const tap = new Transform({
+            transform(chunk, _enc, cb) {
+              resTotal += chunk.length;
+              if (resCapLen < RES_CAP) {
+                const room = RES_CAP - resCapLen;
+                const piece = chunk.length <= room ? chunk : chunk.slice(0, room);
+                resChunks.push(piece);
+                resCapLen += piece.length;
+              }
+              cb(null, chunk);
+            },
+          });
+          pipeline(...stages, t, tap, res, (err) => {
+            const capped = resTotal > RES_CAP;
+            emitExchange(upRes.statusCode, outHeaders, {
+              text: Buffer.concat(resChunks).toString('utf8').replace(capped ? /�+$/ : /(?!)/, ''),
+              bytes: resTotal,
+              truncated: capped ? resTotal - RES_CAP : 0,
+            }, err && err.message);
+            finishLog(err && err.message);
+          });
           return;
         }
 
@@ -318,6 +410,7 @@ function createGateway({ getConfig }) {
           if (err) {
             if (!res.headersSent) respondJson(res, 502, JSON.parse(errorBody('Clawdy upstream stream error: ' + err.message, 'api_error')));
             else { try { res.destroy(); } catch (_) {} }
+            emitExchange(upRes.statusCode, outHeaders, capText(Buffer.concat(cs), RES_CAP), err.message);
             finishLog(err.message);
             return;
           }
@@ -337,6 +430,7 @@ function createGateway({ getConfig }) {
           outHeaders['content-length'] = Buffer.byteLength(buf);
           res.writeHead(upRes.statusCode, outHeaders);
           res.end(buf);
+          emitExchange(upRes.statusCode, outHeaders, capText(buf, RES_CAP));
           finishLog();
         });
       }
@@ -351,13 +445,18 @@ function createGateway({ getConfig }) {
         } catch (_) {}
       }
       log('error', 'upstream error: ' + err.message, { provider: provider.name });
+      emitExchange(502, null, null, err.message);
       emitter.emit('request', {
+        id: exId,
         method: req.method,
         path: req.url.split('?')[0],
         provider: provider.name || provider.id,
         requestedModel,
         outgoingModel: routing.outgoingModel,
+        clientFacingModel: routing.clientFacingModel,
         rewritten: needRewriteResponse,
+        sessionId,
+        agentId,
         status: 502,
         ms: Date.now() - startedAt,
         error: err.message,

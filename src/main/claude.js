@@ -50,12 +50,23 @@ function writeSettings(obj) {
 }
 
 function endpoint(port) {
-  return `http://127.0.0.1:${port}`;
+  return `http://localhost:${port}`;
+}
+
+function isGatewayUrl(url, port) {
+  if (!url) return false;
+  try {
+    const u = new URL(url);
+    const p = u.port || (u.protocol === 'https:' ? '443' : '80');
+    return (u.hostname === 'localhost' || u.hostname === '127.0.0.1') && String(p) === String(port);
+  } catch (_) {
+    return false;
+  }
 }
 
 function isConnected(port) {
   const s = readSettings();
-  return !!(s.env && s.env.ANTHROPIC_BASE_URL === endpoint(port));
+  return isGatewayUrl(s.env && s.env.ANTHROPIC_BASE_URL, port);
 }
 
 /** Connect Claude Code to the gateway. `store` is the app config store (get/save). */

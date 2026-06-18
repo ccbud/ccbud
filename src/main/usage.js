@@ -93,6 +93,8 @@ function createUsageStore(dir) {
     return { current: cur, longest };
   }
 
+  const HEATMAP_WEEKS = 26; // fixed calendar span — independent of stats range filter
+
   function buildHeatmap(weeks, now) {
     const today = startOfDay(now || Date.now());
     const span = weeks * 7;
@@ -136,7 +138,7 @@ function createUsageStore(dir) {
       byProvider: Object.entries(providers).sort((a, b) => b[1] - a[1]).map(([provider, t]) => ({ provider, tokens: t, pct: tokens ? t / tokens : 0 })),
       currentStreak: st.current,
       longestStreak: st.longest,
-      heatmap: buildHeatmap(8, now),
+      heatmap: buildHeatmap(HEATMAP_WEEKS, now),
     };
   }
 

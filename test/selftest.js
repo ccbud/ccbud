@@ -25,6 +25,8 @@ const config = { port: 0, activeProviderId: 'glm', providers: [GLM] };
 const gateway = createGateway({ getConfig: () => config });
 const reqEvents = [];
 gateway.on('request', (r) => reqEvents.push(r));
+const exchanges = [];
+gateway.on('exchange', (e) => exchanges.push(e));
 
 let pass = 0;
 let fail = 0;
@@ -204,6 +206,15 @@ function firstModelInSse(sse) {
   check('G captured input tokens from responses', withInput.length > 0, `events=${reqEvents.length}`);
   check('G captured output tokens from responses', withOutput.length > 0);
   check('G captured usage from a STREAM response', reqEvents.some((e) => e.outputTokens > 0));
+
+  // H) monitor inspector captures full exchanges with the upstream token REDACTED
+  await new Promise((r) => setTimeout(r, 300));
+  check('H captured >=1 exchange', exchanges.length > 0, `n=${exchanges.length}`);
+  check('H every exchange has an id', exchanges.every((e) => e.id != null));
+  check('H captured a request body', exchanges.some((e) => e.reqBody && e.reqBody.text && e.reqBody.text.includes('messages')));
+  check('H captured a response body', exchanges.some((e) => e.resBody && e.resBody.text && e.resBody.text.length > 0));
+  const allHeaders = exchanges.map((e) => JSON.stringify(e.reqHeaders || {}) + JSON.stringify(e.resHeaders || {})).join('');
+  check('H upstream token is REDACTED in captured headers', !allHeaders.includes(GLM.authToken) && allHeaders.includes('已隐藏'), 'token must never appear');
 
   await gateway.stop();
   console.log(`\n${pass} passed, ${fail} failed`);

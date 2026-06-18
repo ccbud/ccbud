@@ -1,11 +1,14 @@
 'use strict';
 
 const { app, BrowserWindow, ipcMain, shell, clipboard, Tray, Menu, nativeImage } = require('electron');
+const fs = require('fs');
 const path = require('path');
 const { createStore } = require('./store');
 const { createGateway } = require('./proxy');
 const claude = require('./claude');
 const { createUsageStore, formatTokens } = require('./usage');
+const { createHistoryWatcher } = require('./history');
+const { createMonitorStore } = require('./monitor');
 
 let mainWindow = null;
 let popover = null;
@@ -13,10 +16,35 @@ let tray = null;
 let store = null;
 let gateway = null;
 let usage = null;
+let history = null;
+let monitor = null;
 let lastStartError = null;
 let isQuitting = false;
 let lastPopoverHide = 0;
 let titleTimer = 0;
+let historyDirty = new Set();
+let historyTimer = null;
+let requestLogPath = null;
+
+function appendRequestLog(r) {
+  if (!requestLogPath) return;
+  const agent = r.agentId ? 'sub' : 'main';
+  const line = [
+    new Date().toISOString(),
+    agent,
+    r.requestedModel || '-',
+    '→',
+    r.outgoingModel || '-',
+    r.status,
+    (r.sessionId || '').slice(0, 8),
+  ].join(' ') + '\n';
+  try {
+    fs.appendFileSync(requestLogPath, line);
+    const buf = fs.readFileSync(requestLogPath, 'utf8');
+    const lines = buf.split('\n');
+    if (lines.length > 501) fs.writeFileSync(requestLogPath, lines.slice(-500).join('\n'));
+  } catch (_) {}
+}
 
 // Single-instance lock: a second launch must NOT try to bind the same port.
 const gotLock = app.requestSingleInstanceLock();
@@ -28,6 +56,19 @@ if (!gotLock) {
 
 function broadcast(channel, payload) {
   if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(channel, payload);
+}
+
+// Coalesce on-disk history change notifications into ~200ms batches before hitting IPC,
+// so a burst of file-watch events becomes one renderer refresh.
+function markHistoryDirty(files) {
+  (files || []).forEach((f) => historyDirty.add(f));
+  if (historyTimer) return;
+  historyTimer = setTimeout(() => {
+    const changed = [...historyDirty];
+    historyDirty.clear();
+    historyTimer = null;
+    broadcast('history:changed', { files: changed });
+  }, 200);
 }
 
 function currentToken() {
@@ -204,6 +245,16 @@ function registerIpc() {
   ipcMain.handle('server:status', () => statusPayload());
 
   ipcMain.handle('usage:get', (_e, range) => usage.query(range || '7d'));
+
+  // Monitor inspector: full captured exchange (headers + bodies) for one forwarded request.
+  ipcMain.handle('monitor:get', (_e, id) => (monitor ? monitor.get(id) : null));
+  ipcMain.handle('monitor:clear', () => { if (monitor) monitor.clear(); return true; });
+
+  // On-disk conversation history (~/.claude/projects) — the "对话" view's data source.
+  ipcMain.handle('history:projects', () => (history ? history.listProjects() : []));
+  ipcMain.handle('history:list', () => (history ? history.listSessions() : []));
+  ipcMain.handle('history:get', (_e, file) => (history ? history.getSession(file) : null));
+
   ipcMain.handle('app:openMain', () => { showWindow(); return true; });
   ipcMain.handle('app:quit', () => { app.quit(); return true; });
 
@@ -253,8 +304,8 @@ function updateTray() {
 /* ---------- tray popover (rich usage panel) ---------- */
 function createPopover() {
   popover = new BrowserWindow({
-    width: 408,
-    height: 472,
+    width: 380,
+    height: 300,
     show: false,
     frame: false,
     resizable: false,
@@ -303,11 +354,15 @@ function showWindow() {
 
 function createWindow() {
   mainWindow = new BrowserWindow({
-    width: 1080,
+    width: 1120,
     height: 780,
-    minWidth: 900,
+    minWidth: 950,
     minHeight: 620,
-    backgroundColor: '#f5f6f8',
+    titleBarStyle: 'hidden',
+    trafficLightPosition: { x: 20, y: 20 },
+    vibrancy: 'under-window',
+    visualEffectState: 'active',
+    backgroundColor: '#00000000',
     title: 'Clawdy — Claude Code Gateway',
     webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false },
   });
@@ -317,15 +372,27 @@ function createWindow() {
 
 if (gotLock) {
   app.whenReady().then(async () => {
-    store = createStore(app.getPath('userData'));
-    usage = createUsageStore(app.getPath('userData'));
+    const userData = app.getPath('userData');
+    requestLogPath = path.join(userData, 'requests.log');
+    store = createStore(userData);
+    usage = createUsageStore(userData);
+    monitor = createMonitorStore({ max: 30 });
     gateway = createGateway({ getConfig: () => store.get() });
     gateway.on('log', (l) => broadcast('gateway:log', l));
     gateway.on('request', (r) => {
+      appendRequestLog(r);
       broadcast('gateway:request', r);
       usage.record(Object.assign({ ts: Date.now() }, r));
       updateTrayTitle();
     });
+    // Full request/response capture (bounded, auth-redacted) for the monitor inspector.
+    gateway.on('exchange', (ex) => monitor.record(ex));
+
+    // Watch Claude Code's on-disk session history (~/.claude/projects); the "对话" view
+    // reads it directly and live-follows active sessions via the 'changed' broadcast.
+    history = createHistoryWatcher();
+    history.on('changed', (p) => markHistoryDirty(p && p.files));
+    try { history.start(); } catch (_) {}
 
     registerIpc();
     if (store.get().openAtLogin) applyOpenAtLogin(store.get());
@@ -364,5 +431,7 @@ app.on('before-quit', (e) => {
   if (isQuitting || !gateway) return;
   isQuitting = true;
   e.preventDefault();
+  if (historyTimer) { clearTimeout(historyTimer); historyTimer = null; }
+  try { if (history) history.stop(); } catch (_) {}
   Promise.resolve(gateway.stop()).finally(() => app.exit(0));
 });

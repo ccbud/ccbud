@@ -19,8 +19,18 @@ contextBridge.exposeInMainWorld('clawdy', {
 
   // usage panel
   usageGet: (range) => ipcRenderer.invoke('usage:get', range),
+
+  // monitor inspector — full captured request/response for a forwarded request
+  monitorGet: (id) => ipcRenderer.invoke('monitor:get', id),
+  monitorClear: () => ipcRenderer.invoke('monitor:clear'),
   openMain: () => ipcRenderer.invoke('app:openMain'),
   quitApp: () => ipcRenderer.invoke('app:quit'),
+
+  // conversation history (reads ~/.claude/projects directly)
+  historyProjects: () => ipcRenderer.invoke('history:projects'),
+  historyList: () => ipcRenderer.invoke('history:list'),
+  historyGet: (file) => ipcRenderer.invoke('history:get', file),
+  onHistoryChanged: (cb) => ipcRenderer.on('history:changed', (_e, p) => cb(p)),
 
   copy: (t) => ipcRenderer.invoke('util:copy', t),
   openExternal: (u) => ipcRenderer.invoke('util:openExternal', u),

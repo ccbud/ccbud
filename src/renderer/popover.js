@@ -3,6 +3,7 @@
 const api = window.clawdy;
 let range = '7d';
 let tab = 'overview';
+let heatmapReady = false;
 
 const $ = (id) => document.getElementById(id);
 
@@ -21,7 +22,21 @@ function hourLabel(h) {
 }
 function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
 
-async function render() {
+async function renderHeatmap() {
+  const u = await api.usageGet('all');
+  const hm = $('heatmap');
+  if (!hm) return;
+  hm.innerHTML = '';
+  for (const c of u.heatmap) {
+    const cell = document.createElement('div');
+    cell.className = 'hm-cell lv' + c.level;
+    cell.title = `${c.date}: ${fmt(c.tokens)} tokens`;
+    hm.appendChild(cell);
+  }
+  heatmapReady = true;
+}
+
+async function renderStats() {
   const u = await api.usageGet(range);
   $('sTokens').textContent = fmt(u.tokens);
   $('sReq').textContent = u.requests.toLocaleString();
@@ -32,23 +47,6 @@ async function render() {
   $('sPeak').textContent = u.peakHour == null ? '—' : hourLabel(u.peakHour);
   $('sModel').textContent = u.favoriteModel || '—';
 
-  // heatmap (column-major: 7 rows = weekday, columns = weeks)
-  const hm = $('heatmap');
-  hm.innerHTML = '';
-  for (const c of u.heatmap) {
-    const cell = document.createElement('div');
-    cell.className = 'hm-cell lv' + c.level;
-    cell.title = `${c.date}: ${fmt(c.tokens)} tokens`;
-    hm.appendChild(cell);
-  }
-
-  // fun comparison (The Hobbit ≈ 130k tokens)
-  const books = u.tokens / 130000;
-  $('popNote').textContent = u.tokens > 0
-    ? (books >= 1 ? `≈ 用掉了 ${books >= 10 ? Math.round(books) : books.toFixed(1)} 本《霍比特人》的文字量` : '继续用，攒够一本《霍比特人》～')
-    : '还没有用量数据，接入并对话后这里会更新。';
-
-  // models tab
   const ml = $('modelList');
   ml.innerHTML = '';
   if (!u.byModel.length) ml.innerHTML = '<div class="empty small">暂无数据</div>';
@@ -63,9 +61,14 @@ async function render() {
   }
 }
 
+async function render() {
+  if (!heatmapReady) await renderHeatmap();
+  await renderStats();
+}
+
 async function renderStatus() {
   const s = await api.serverStatus();
-  $('popStatus').querySelector('.live-dot').className = 'live-dot ' + (s.connected ? 'on' : 'off');
+  $('popStatus').querySelector('.pulse-dot, .live-dot').className = 'pulse-dot ' + (s.connected ? 'on' : 'off');
   $('popStatusText').textContent = s.connected ? '已接入' : '未接入';
   $('popConnect').textContent = s.connected ? '断开' : '一键接入';
   $('popConnect').dataset.connected = s.connected ? '1' : '';
@@ -80,7 +83,7 @@ function setTab(t) {
 function setRange(r) {
   range = r;
   document.querySelectorAll('#popRanges .seg-btn').forEach((b) => b.classList.toggle('active', b.dataset.range === r));
-  render();
+  renderStats();
 }
 
 function bind() {
@@ -94,8 +97,14 @@ function bind() {
   });
   $('popOpen').addEventListener('click', () => api.openMain());
   $('popQuit').addEventListener('click', () => api.quitApp());
-  // main process tells us to refresh whenever the popover is shown
-  if (api.onPopoverShow) api.onPopoverShow(() => { applyTheme(); render(); renderStatus(); });
+  if (api.onPopoverShow) {
+    api.onPopoverShow(async () => {
+      applyTheme();
+      heatmapReady = false;
+      await render();
+      renderStatus();
+    });
+  }
 }
 
 function applyTheme() {
