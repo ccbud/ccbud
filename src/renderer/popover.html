@@ -3,54 +3,56 @@
   <head>
     <meta charset="UTF-8" />
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'" />
-    <title>Clawdy 用量</title>
+    <title>Clawdy</title>
     <link rel="stylesheet" href="styles.css" />
   </head>
-  <body class="pop-body-root">
-    <div class="pop">
-      <div class="pop-head">
-        <div class="seg-tabs" id="popTabs">
-          <button class="seg-btn active" data-tab="overview">总览</button>
-          <button class="seg-btn" data-tab="models">模型</button>
+  <body class="pop-body-root select-none font-sans text-[13px] text-fg antialiased">
+    <div class="p-[11px] pb-0 h-full flex flex-col gap-2 overflow-hidden">
+      <div class="flex items-center justify-between gap-1.5 shrink-0">
+        <div class="inline-flex gap-0.5 p-0.5 bg-chip-bg rounded-[7px]" id="popTabs">
+          <button class="seg-btn border-0 bg-transparent text-muted text-[11px] font-medium px-2 py-0.75 rounded-[5px] cursor-pointer hover:text-fg [.active]:bg-bg-elev [.active]:text-fg [.active]:shadow-sm transition-all duration-150 active" data-tab="overview" data-i18n="pop.tabOverview">总览</button>
+          <button class="seg-btn border-0 bg-transparent text-muted text-[11px] font-medium px-2 py-0.75 rounded-[5px] cursor-pointer hover:text-fg [.active]:bg-bg-elev [.active]:text-fg [.active]:shadow-sm transition-all duration-150" data-tab="models" data-i18n="pop.tabModels">模型</button>
         </div>
-        <div class="seg-tabs ranges" id="popRanges">
-          <button class="seg-btn" data-range="1d">今日</button>
-          <button class="seg-btn active" data-range="7d">7天</button>
-          <button class="seg-btn" data-range="30d">30天</button>
-          <button class="seg-btn" data-range="all">全部</button>
-        </div>
-      </div>
-
-      <div class="pop-content">
-        <div id="tab-overview" class="pop-tab">
-          <div class="pop-stats">
-            <div class="pstat"><div class="pstat-label">用量</div><div class="pstat-val mono" id="sTokens">0</div></div>
-            <div class="pstat"><div class="pstat-label">请求</div><div class="pstat-val mono" id="sReq">0</div></div>
-            <div class="pstat"><div class="pstat-label">活跃天</div><div class="pstat-val mono" id="sDays">0</div></div>
-            <div class="pstat"><div class="pstat-label">服务</div><div class="pstat-val sm" id="sProv">—</div></div>
-            <div class="pstat"><div class="pstat-label">连续</div><div class="pstat-val mono" id="sCur">0<span class="u">天</span></div></div>
-            <div class="pstat"><div class="pstat-label">最长</div><div class="pstat-val mono" id="sLong">0<span class="u">天</span></div></div>
-            <div class="pstat"><div class="pstat-label">峰值</div><div class="pstat-val sm" id="sPeak">—</div></div>
-            <div class="pstat"><div class="pstat-label">模型</div><div class="pstat-val sm" id="sModel">—</div></div>
-          </div>
-          <div class="heatmap-panel">
-            <div class="heatmap" id="heatmap"></div>
-          </div>
-        </div>
-
-        <div id="tab-models" class="pop-tab hidden">
-          <div class="model-list" id="modelList"></div>
+        <div class="inline-flex gap-0.5 p-0.5 bg-chip-bg rounded-[7px]" id="popRanges">
+          <button class="seg-btn border-0 bg-transparent text-muted text-[11px] font-medium px-2 py-0.75 rounded-[5px] cursor-pointer hover:text-fg [.active]:bg-bg-elev [.active]:text-fg [.active]:shadow-sm transition-all duration-150" data-range="1d" data-i18n="range.1d">今日</button>
+          <button class="seg-btn border-0 bg-transparent text-muted text-[11px] font-medium px-2 py-0.75 rounded-[5px] cursor-pointer hover:text-fg [.active]:bg-bg-elev [.active]:text-fg [.active]:shadow-sm transition-all duration-150 active" data-range="7d" data-i18n="range.7d">7天</button>
+          <button class="seg-btn border-0 bg-transparent text-muted text-[11px] font-medium px-2 py-0.75 rounded-[5px] cursor-pointer hover:text-fg [.active]:bg-bg-elev [.active]:text-fg [.active]:shadow-sm transition-all duration-150" data-range="30d" data-i18n="range.30d">30天</button>
+          <button class="seg-btn border-0 bg-transparent text-muted text-[11px] font-medium px-2 py-0.75 rounded-[5px] cursor-pointer hover:text-fg [.active]:bg-bg-elev [.active]:text-fg [.active]:shadow-sm transition-all duration-150" data-range="all" data-i18n="range.all">全部</button>
         </div>
       </div>
 
-      <footer class="pop-actions">
-        <span class="pop-status" id="popStatus"><span class="pulse-dot off"></span><span id="popStatusText">未接入</span></span>
-        <span class="spacer"></span>
-        <button class="btn btn-sm" id="popConnect">接入</button>
-        <button class="btn btn-sm" id="popOpen">主界面</button>
-        <button class="btn btn-sm ghost" id="popQuit">退出</button>
+      <div class="flex-1 min-h-0 flex flex-col">
+        <div id="tab-overview" class="flex-1 min-h-0 flex flex-col gap-1.5">
+          <div class="grid grid-cols-4 gap-1.25 shrink-0">
+            <div class="bg-bg-elev border border-border-custom rounded-[7px] p-[5.5px] px-1.75 shadow-sm hover:shadow-md transition-shadow duration-150"><div class="text-[10px] font-semibold uppercase text-caption tracking-wider whitespace-nowrap" data-i18n="pop.usage">用量</div><div class="text-[14px] font-bold mt-0.5 tracking-tight text-fg font-mono" id="sTokens">0</div></div>
+            <div class="bg-bg-elev border border-border-custom rounded-[7px] p-[5.5px] px-1.75 shadow-sm hover:shadow-md transition-shadow duration-150"><div class="text-[10px] font-semibold uppercase text-caption tracking-wider whitespace-nowrap" data-i18n="pop.requests">请求</div><div class="text-[14px] font-bold mt-0.5 tracking-tight text-fg font-mono" id="sReq">0</div></div>
+            <div class="bg-bg-elev border border-border-custom rounded-[7px] p-[5.5px] px-1.75 shadow-sm hover:shadow-md transition-shadow duration-150"><div class="text-[10px] font-semibold uppercase text-caption tracking-wider whitespace-nowrap" data-i18n="pop.activeDays">活跃天</div><div class="text-[14px] font-bold mt-0.5 tracking-tight text-fg font-mono" id="sDays">0</div></div>
+            <div class="bg-bg-elev border border-border-custom rounded-[7px] p-[5.5px] px-1.75 shadow-sm hover:shadow-md transition-shadow duration-150"><div class="text-[10px] font-semibold uppercase text-caption tracking-wider whitespace-nowrap" data-i18n="pop.service">服务</div><div class="text-[11px] font-semibold mt-0.5 truncate text-fg" id="sProv">—</div></div>
+            <div class="bg-bg-elev border border-border-custom rounded-[7px] p-[5.5px] px-1.75 shadow-sm hover:shadow-md transition-shadow duration-150"><div class="text-[10px] font-semibold uppercase text-caption tracking-wider whitespace-nowrap" data-i18n="pop.streak">连续</div><div class="text-[14px] font-bold mt-0.5 tracking-tight text-fg font-mono" id="sCur">0</div></div>
+            <div class="bg-bg-elev border border-border-custom rounded-[7px] p-[5.5px] px-1.75 shadow-sm hover:shadow-md transition-shadow duration-150"><div class="text-[10px] font-semibold uppercase text-caption tracking-wider whitespace-nowrap" data-i18n="pop.longest">最长</div><div class="text-[14px] font-bold mt-0.5 tracking-tight text-fg font-mono" id="sLong">0</div></div>
+            <div class="bg-bg-elev border border-border-custom rounded-[7px] p-[5.5px] px-1.75 shadow-sm hover:shadow-md transition-shadow duration-150"><div class="text-[10px] font-semibold uppercase text-caption tracking-wider whitespace-nowrap" data-i18n="pop.peak">峰值</div><div class="text-[11px] font-semibold mt-0.5 truncate text-fg" id="sPeak">—</div></div>
+            <div class="bg-bg-elev border border-border-custom rounded-[7px] p-[5.5px] px-1.75 shadow-sm hover:shadow-md transition-shadow duration-150"><div class="text-[10px] font-semibold uppercase text-caption tracking-wider whitespace-nowrap" data-i18n="pop.model">模型</div><div class="text-[11px] font-semibold mt-0.5 truncate text-fg" id="sModel">—</div></div>
+          </div>
+          <div class="flex-1 min-h-0 flex items-center justify-start overflow-hidden">
+            <div class="heatmap shrink-0" id="heatmap"></div>
+          </div>
+        </div>
+
+        <div id="tab-models" class="flex-1 min-h-0 flex flex-col gap-1.5 hidden">
+          <div class="flex-1 min-h-0 flex flex-col gap-1.5 overflow-y-auto pb-1" id="modelList"></div>
+        </div>
+      </div>
+
+      <footer class="flex items-center gap-1.25 shrink-0 mt-auto pt-2 pb-2.5 border-t border-border-custom bg-inherit">
+        <span class="inline-flex items-center gap-1.25 text-[11px] text-muted" id="popStatus"><span class="pulse-dot off w-1.75 h-1.75 rounded-full shrink-0 bg-muted"></span><span id="popStatusText" data-i18n="status.disconnected">未接入</span></span>
+        <span class="flex-1"></span>
+        <button class="bg-bg-elev text-fg border border-border-custom rounded-[6px] px-2.25 py-1 text-[11px] font-medium cursor-pointer transition-all duration-150 hover:bg-chip-bg hover:border-border-strong active:scale-[0.98]" id="popConnect" data-i18n="pop.connect">接入</button>
+        <button class="bg-bg-elev text-fg border border-border-custom rounded-[6px] px-2.25 py-1 text-[11px] font-medium cursor-pointer transition-all duration-150 hover:bg-chip-bg hover:border-border-strong active:scale-[0.98]" id="popOpen" data-i18n="pop.openMain">主界面</button>
+        <button class="bg-transparent border-transparent text-muted rounded-[6px] px-2.25 py-1 text-[11px] font-medium cursor-pointer transition-all duration-150 hover:bg-chip-bg hover:text-fg active:scale-[0.98]" id="popQuit" data-i18n="pop.quit">退出</button>
       </footer>
     </div>
+    <script src="../shared/i18n-dict.js"></script>
+    <script src="i18n.js"></script>
     <script src="popover.js"></script>
   </body>
 </html>

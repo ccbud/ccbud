@@ -12,6 +12,9 @@ function defaultConfig() {
     openAtLogin: false,
     claudeBackup: null, // snapshot of the user's Claude settings before we connected
     trayUsage: { enabled: false, range: '7d' }, // show token usage in the menu bar
+    language: null, // ui language ('en'|'zh'|'zh-TW'|'ja'|'ko'); null = derive from system on first run
+    historyDirs: ['~/.claude'], // Claude config dirs to read history/usage from (each has projects/)
+    historyActive: 'all',       // which configured dir the conversation/usage views show ('all' or a path)
     providers: [],
   };
 }
@@ -43,6 +46,19 @@ function normalize(cfg) {
   c.claudeBackup = c.claudeBackup || null;
   const tu = c.trayUsage || {};
   c.trayUsage = { enabled: !!tu.enabled, range: ['1d', '7d', '30d', 'all'].includes(tu.range) ? tu.range : '7d' };
+  // language: keep null (= "not yet chosen", main.js fills it from the system locale on first run)
+  c.language = ['en', 'zh', 'zh-TW', 'ja', 'ko'].includes(c.language) ? c.language : null;
+  // History/usage directories: trimmed, trailing-slash-normalized (so '~/.claude' and
+  // '~/.claude/' don't both survive as phantom duplicates), unique, non-empty default.
+  let dirs = Array.isArray(c.historyDirs)
+    ? c.historyDirs.map((d) => String(d || '').trim().replace(/(.)[/\\]+$/, '$1')).filter(Boolean)
+    : [];
+  dirs = [...new Set(dirs)];
+  if (!dirs.includes('~/.claude')) {
+    dirs.unshift('~/.claude');
+  }
+  c.historyDirs = dirs;
+  c.historyActive = c.historyActive === 'all' || dirs.includes(c.historyActive) ? c.historyActive : 'all';
   return c;
 }
 

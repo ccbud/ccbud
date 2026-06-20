@@ -9,223 +9,389 @@
     <link id="hljs-dark" rel="stylesheet" href="vendor/hljs-dark.css" disabled />
   </head>
   <body>
-    <div class="app-window">
-      <aside class="sidebar drag-region">
-        <header class="sidebar-brand no-drag">
-          <div class="logo" id="appLogo" aria-hidden="true"></div>
-          <div class="brand-text">
-            <div class="brand-title" id="brandTitle">Clawdy</div>
-            <div class="brand-sub">Claude Code 网关</div>
+    <div class="app-window flex h-screen bg-bg-app backdrop-blur-[52px] saturate-[1.9] border border-window-border rounded-[14px] overflow-hidden shadow-[inset_0_0.5px_0_rgba(255,255,255,0.12)]">
+      <aside class="sidebar drag-region group/sidebar backdrop-blur-xl bg-bg-sidebar/70 border-r border-border-custom/40 w-[196px] group-[.collapsed]/sidebar:w-[52px] transition-[width] duration-220 ease-[cubic-bezier(0.23,1,0.32,1)] flex flex-col pt-0 pb-3.5 px-[10px] group-[.collapsed]/sidebar:px-[5px] flex-shrink-0">
+        <div class="h-14 drag-region shrink-0"></div>
+        <header class="sidebar-brand no-drag flex items-center gap-[9px] px-[6px] pb-5">
+          <div class="logo w-[30px] h-[30px] flex-shrink-0 drop-shadow-[0_2px_8px_var(--brand-glow)]" id="appLogo" aria-hidden="true"></div>
+          <div class="brand-text group-[.collapsed]/sidebar:hidden">
+            <div class="brand-title text-[15px] font-semibold tracking-[-0.02em] leading-[1.15] transition-colors duration-200 [&.running]:text-green" id="brandTitle">Clawdy</div>
+            <div class="brand-sub" data-i18n="brand.sub">Claude Code 网关</div>
           </div>
         </header>
 
-        <nav class="sidebar-nav no-drag" id="tabs" aria-label="主导航">
-          <button class="nav-item active" data-view="providers">
-            <span class="nav-icon" data-icon="providers"></span>
-            <span class="nav-label">服务</span>
+        <nav class="sidebar-nav no-drag flex flex-col gap-2 flex-grow" id="tabs" aria-label="Navigation">
+          <button class="nav-item flex items-center gap-[9px] px-3 py-2.5 border-none rounded-[10px] bg-transparent text-muted font-medium text-[13.5px] leading-[1.2] cursor-pointer text-left transition-all duration-180 ease-[cubic-bezier(0.23,1,0.32,1)] hover:bg-chip-bg hover:text-fg active:scale-[0.98] [&.active]:bg-brand-soft [&.active]:text-brand [&.active]:font-semibold group-[.collapsed]/sidebar:justify-center group-[.collapsed]/sidebar:px-0 active" data-view="providers">
+            <span class="nav-icon w-4 h-4 flex items-center justify-center opacity-85 [.active_&]:opacity-100" data-icon="providers"></span>
+            <span class="nav-label group-[.collapsed]/sidebar:hidden" data-i18n="nav.providers">服务</span>
           </button>
-          <button class="nav-item" data-view="conversations">
-            <span class="nav-icon" data-icon="conversations"></span>
-            <span class="nav-label">对话</span>
+          <button class="nav-item flex items-center gap-[9px] px-3 py-2.5 border-none rounded-[10px] bg-transparent text-muted font-medium text-[13.5px] leading-[1.2] cursor-pointer text-left transition-all duration-180 ease-[cubic-bezier(0.23,1,0.32,1)] hover:bg-chip-bg hover:text-fg active:scale-[0.98] [&.active]:bg-brand-soft [&.active]:text-brand [&.active]:font-semibold group-[.collapsed]/sidebar:justify-center group-[.collapsed]/sidebar:px-0" data-view="conversations">
+            <span class="nav-icon w-4 h-4 flex items-center justify-center opacity-85 [.active_&]:opacity-100" data-icon="conversations"></span>
+            <span class="nav-label group-[.collapsed]/sidebar:hidden" data-i18n="nav.conversations">对话</span>
           </button>
-          <button class="nav-item" data-view="monitor">
-            <span class="nav-icon" data-icon="monitor"></span>
-            <span class="nav-label">监控</span>
+          <button class="nav-item flex items-center gap-[9px] px-3 py-2.5 border-none rounded-[10px] bg-transparent text-muted font-medium text-[13.5px] leading-[1.2] cursor-pointer text-left transition-all duration-180 ease-[cubic-bezier(0.23,1,0.32,1)] hover:bg-chip-bg hover:text-fg active:scale-[0.98] [&.active]:bg-brand-soft [&.active]:text-brand [&.active]:font-semibold group-[.collapsed]/sidebar:justify-center group-[.collapsed]/sidebar:px-0" data-view="monitor">
+            <span class="nav-icon w-4 h-4 flex items-center justify-center opacity-85 [.active_&]:opacity-100" data-icon="monitor"></span>
+            <span class="nav-label group-[.collapsed]/sidebar:hidden" data-i18n="nav.monitor">监控</span>
           </button>
-          <button class="nav-item" data-view="settings">
-            <span class="nav-icon" data-icon="settings"></span>
-            <span class="nav-label">设置</span>
+          <button class="nav-item flex items-center gap-[9px] px-3 py-2.5 border-none rounded-[10px] bg-transparent text-muted font-medium text-[13.5px] leading-[1.2] cursor-pointer text-left transition-all duration-180 ease-[cubic-bezier(0.23,1,0.32,1)] hover:bg-chip-bg hover:text-fg active:scale-[0.98] [&.active]:bg-brand-soft [&.active]:text-brand [&.active]:font-semibold group-[.collapsed]/sidebar:justify-center group-[.collapsed]/sidebar:px-0" data-view="settings">
+            <span class="nav-icon w-4 h-4 flex items-center justify-center opacity-85 [.active_&]:opacity-100" data-icon="settings"></span>
+            <span class="nav-label group-[.collapsed]/sidebar:hidden" data-i18n="nav.settings">设置</span>
           </button>
         </nav>
 
-        <footer class="sidebar-foot no-drag">
-          <div class="status-chip" id="statusPill">
-            <span class="status-dot"></span>
-            <span class="status-text">未接入</span>
+        <footer class="sidebar-foot no-drag mt-auto pt-3 border-t border-border-custom/50 flex items-center justify-between gap-2 group-[.collapsed]/sidebar:justify-center">
+          <div class="status-chip inline-flex items-center gap-[5px] px-[10px] py-[3.5px] rounded-full text-[11.5px] font-semibold text-muted bg-chip-bg tracking-[-0.01em] [&.on]:text-green [&.on]:bg-green-soft group-[.collapsed]/sidebar:hidden" id="statusPill">
+            <span class="status-dot w-[5px] h-[5px] rounded-full bg-current"></span>
+            <span class="status-text" data-i18n="status.disconnected">未接入</span>
           </div>
-          <div class="foot-tools">
-            <button id="btnCollapseSidebar" class="tool-btn" title="收起侧边栏" aria-label="收起侧边栏">
+          <div class="foot-tools flex gap-1 shrink-0 group-[.collapsed]/sidebar:flex-col group-[.collapsed]/sidebar:items-center group-[.collapsed]/sidebar:gap-[3px]">
+            <button id="btnCollapseSidebar" class="tool-btn w-[26px] h-[26px] border border-border-custom rounded-[7px] bg-bg-elev text-muted cursor-pointer flex items-center justify-center transition-all duration-140 hover:text-fg hover:bg-chip-bg hover:border-border-strong" data-i18n-title="side.collapse" title="收起侧边栏" aria-label="收起侧边栏">
               <span data-icon="chevronLeft"></span>
             </button>
-            <button id="btnTheme" class="tool-btn" title="切换主题" aria-label="切换主题">
+            <button id="btnTheme" class="tool-btn w-[26px] h-[26px] border border-border-custom rounded-[7px] bg-bg-elev text-muted cursor-pointer flex items-center justify-center transition-all duration-140 hover:text-fg hover:bg-chip-bg hover:border-border-strong" data-i18n-title="side.theme" title="切换主题" aria-label="切换主题">
               <span data-icon="theme"></span>
             </button>
           </div>
         </footer>
       </aside>
 
-      <main class="main-panel">
-        <div class="titlebar-drag drag-region"></div>
-        <div class="main-scroll" id="mainScroll">
+      <main class="main-panel flex-1 min-h-0 flex flex-col overflow-hidden min-w-0">
+        <div class="titlebar-drag drag-region h-9 shrink-0"></div>
+        <div class="main-scroll flex-grow min-h-0 overflow-y-auto overflow-x-hidden scrollbar-gutter-stable has-[#view-conversations:not(.hidden)]:overflow-hidden has-[#view-conversations:not(.hidden)]:flex has-[#view-conversations:not(.hidden)]:flex-col has-[#view-settings:not(.hidden)]:overflow-hidden has-[#view-settings:not(.hidden)]:flex has-[#view-settings:not(.hidden)]:flex-col" id="mainScroll">
 
         <!-- 服务 -->
-        <section id="view-providers" class="panel">
-          <header class="panel-hero" id="hero">
-            <div class="hero-body">
-              <div class="hero-icon" id="heroIcon"></div>
+        <section id="view-providers" class="panel flex-none max-w-[880px] mx-auto px-10 pt-4 pb-10 w-full flex flex-col gap-6 animate-[panelIn_0.28s_ease-[cubic-bezier(0.23,1,0.32,1)]]">
+          <header class="panel-hero group/hero flex flex-wrap items-center gap-x-6 gap-y-5 p-6 bg-bg-elev border border-border-custom rounded-[18px] shadow-card transition-all duration-300 hover:border-brand-3/30 relative overflow-hidden [&.connected]:border-green/30 bg-gradient-to-tr from-brand-soft/20 via-transparent to-brand-3/5" id="hero">
+            <div class="hero-body flex items-center gap-3 flex-1 min-w-0">
+              <div class="hero-icon w-[38px] h-[38px] rounded-[10px] bg-chip-bg text-muted flex items-center justify-center shrink-0 transition-all duration-220 ease-[cubic-bezier(0.23,1,0.32,1)] group-[.connected]/hero:bg-green-soft group-[.connected]/hero:text-green" id="heroIcon"></div>
               <div class="hero-copy">
-                <h1 class="hero-title" id="heroTitle">未接入</h1>
-                <p class="hero-desc" id="heroSub">选择服务，一键写入 Claude Code 配置</p>
+                <h1 class="hero-title text-[16.5px] font-semibold tracking-[-0.02em] leading-tight" id="heroTitle" data-i18n="hero.titleIdle">未接入</h1>
+                <p class="hero-desc text-[12.5px] text-muted mt-[2.5px] leading-[1.35] [&_b]:text-fg [&_b]:font-medium" id="heroSub" data-i18n="hero.subIdle">选择服务，一键写入 Claude Code 配置</p>
               </div>
             </div>
-            <button class="hero-action" id="btnConnect">一键接入</button>
-            <p class="hero-hint hidden" id="heroNote"></p>
+            <button class="hero-action border-none rounded-[9px] px-[18px] py-2 font-semibold text-[12px] leading-none tracking-[-0.01em] cursor-pointer bg-gradient-to-b from-brand-2 to-brand text-white shadow-[0_1px_2px_rgba(88,86,214,0.25),_0_4px_12px_rgba(88,86,214,0.18)] transition-all duration-150 ease-out hover:-translate-y-0.5 hover:shadow-[0_2px_4px_rgba(88,86,214,0.3),_0_8px_20px_rgba(88,86,214,0.22)] active:scale-[0.96] whitespace-nowrap group-[.connected]/hero:bg-none group-[.connected]/hero:bg-red-soft group-[.connected]/hero:text-red group-[.connected]/hero:border group-[.connected]/hero:border-red/18 group-[.connected]/hero:shadow-none group-[.connected]/hero:hover:bg-red group-[.connected]/hero:hover:text-white group-[.connected]/hero:hover:border-transparent" id="btnConnect" data-i18n="hero.connect">一键接入</button>
+            <div class="hero-usage hidden w-full flex flex-col gap-2 pt-3 mt-1 border-t border-border-custom" id="heroUsage">
+              <div class="flex items-center justify-between gap-3 flex-wrap">
+                <button type="button" class="hero-endpoint inline-flex items-center gap-1.5 font-mono text-[12px] text-muted hover:text-fg transition-colors no-drag cursor-pointer" id="heroEndpoint" data-i18n-title="hero.copyEndpoint" title="复制网关地址"><span class="w-1.5 h-1.5 rounded-full bg-green shrink-0"></span><span id="heroEndpointText">localhost:8788</span></button>
+                <div class="inline-flex gap-0.5 p-0.5 bg-chip-bg rounded-[7px]" id="heroRanges">
+                  <button class="seg-btn border-0 bg-transparent text-muted text-[11px] font-medium px-2 py-0.75 rounded-[5px] cursor-pointer hover:text-fg [.active]:bg-bg-elev [.active]:text-fg [.active]:shadow-sm transition-all duration-150" data-hrange="7d" data-i18n="range.7d">7天</button>
+                  <button class="seg-btn border-0 bg-transparent text-muted text-[11px] font-medium px-2 py-0.75 rounded-[5px] cursor-pointer hover:text-fg [.active]:bg-bg-elev [.active]:text-fg [.active]:shadow-sm transition-all duration-150 active" data-hrange="30d" data-i18n="range.30d">30天</button>
+                  <button class="seg-btn border-0 bg-transparent text-muted text-[11px] font-medium px-2 py-0.75 rounded-[5px] cursor-pointer hover:text-fg [.active]:bg-bg-elev [.active]:text-fg [.active]:shadow-sm transition-all duration-150" data-hrange="all" data-i18n="range.all">全部</button>
+                </div>
+              </div>
+              <div class="flex items-baseline gap-2 flex-wrap leading-none">
+                <span class="text-[23px] font-bold tracking-tight text-fg font-mono" id="heroTokens">0</span>
+                <span class="text-[11px] text-muted">tokens</span>
+                <span class="text-border-strong px-0.5">·</span>
+                <span class="text-[12px] text-caption" id="heroReqs">0</span>
+                <span class="text-[12px] text-caption truncate max-w-[200px] font-mono" id="heroModel"></span>
+              </div>
+              <div class="hero-spark w-full h-[46px]" id="heroSpark"></div>
+            </div>
+            <p class="hero-hint hidden w-full px-2.5 py-1.5 rounded-[7px] text-[12px] leading-[1.4] text-fg bg-primary-soft border-l-2 border-primary [&.warn]:bg-amber-soft [&.warn]:border-l-amber" id="heroNote"></p>
           </header>
 
-          <div class="panel-toolbar">
-            <h2 class="panel-label">服务商</h2>
-            <div class="toolbar-end">
-              <span class="caption" id="provHint">点选切换 · 拖动排序</span>
-              <button id="btnAdd" class="fab" title="添加服务" aria-label="添加服务">
+          <div class="panel-toolbar flex items-center justify-between px-[2px] py-1">
+            <h2 class="panel-label text-[12.5px] font-semibold tracking-[0.04em] uppercase text-caption" data-i18n="providers.label">服务商</h2>
+            <div class="toolbar-end flex items-center gap-2.5">
+              <span class="caption text-[12px] text-caption" id="provHint" data-i18n="providers.hint">点选切换 · 拖动排序</span>
+              <button id="btnAdd" class="fab w-[26px] h-[26px] border-none rounded-full cursor-pointer bg-gradient-to-b from-[#FFAB40] to-orange text-white flex items-center justify-center shadow-[0_2px_8px_rgba(255,149,0,0.28)] transition-transform duration-140 ease-[cubic-bezier(0.23,1,0.32,1)] hover:scale-106" data-i18n-title="providers.add" title="添加服务" aria-label="添加服务">
                 <span data-icon="plus"></span>
               </button>
             </div>
           </div>
 
-          <div id="providerList" class="provider-list"></div>
+          <div id="providerList" class="provider-list flex flex-col gap-2"></div>
 
-          <div id="emptyProviders" class="state-empty">
-            <div class="state-icon" data-icon="empty"></div>
-            <p>尚未添加服务商</p>
-            <button class="btn btn-sm" id="btnAddEmpty">添加第一个服务</button>
+          <div id="emptyProviders" class="state-empty text-center px-5 py-8 border border-dashed border-border-custom rounded-xl text-muted text-[12px] leading-normal [&_p]:mb-3">
+            <div class="state-icon flex justify-center mb-2.5 text-caption" data-icon="empty"></div>
+            <p data-i18n="providers.empty">尚未添加服务商</p>
+            <button class="btn btn-sm bg-bg-elev text-fg border border-border-custom rounded-md px-2.25 py-1.25 font-medium text-[11px] leading-none cursor-pointer transition-all duration-140 hover:bg-chip-bg hover:border-border-strong active:scale-[0.985]" id="btnAddEmpty" data-i18n="providers.addFirst">添加第一个服务</button>
           </div>
         </section>
 
         <!-- 设置 -->
-        <section id="view-settings" class="panel hidden">
-          <header class="panel-toolbar settings-head">
-            <h2 class="panel-label">设置</h2>
-            <p class="caption">网关与应用偏好</p>
+        <section id="view-settings" class="panel hidden flex-1 min-h-0 max-w-[880px] mx-auto px-10 pt-4 pb-5 w-full flex flex-col gap-6 animate-[panelIn_0.28s_ease-[cubic-bezier(0.23,1,0.32,1)]]">
+          <header class="panel-toolbar settings-head shrink-0 mb-6 px-[2px] py-1">
+            <div class="settings-head-row flex items-center gap-2.5">
+              <button type="button" id="btnSubnavCollapse" class="tool-btn shrink-0 w-[26px] h-[26px] border border-border-custom rounded-[7px] bg-bg-elev text-muted cursor-pointer flex items-center justify-center transition-all duration-140 hover:text-fg hover:bg-chip-bg hover:border-border-strong" data-i18n-title="settings.nav.collapse" title="收起 / 展开" aria-label="收起 / 展开"><span data-icon="chevronLeft"></span></button>
+              <h2 class="panel-label text-[12.5px] font-semibold tracking-[0.04em] uppercase text-caption" data-i18n="settings.title">设置</h2>
+            </div>
+            <p class="caption text-[12px] text-caption settings-head-sub" data-i18n="settings.subtitle">网关与应用偏好</p>
           </header>
 
-          <div class="settings-page">
-            <div class="settings-card">
-              <h3 class="settings-card-title">网关</h3>
-              <p class="caption">本地代理地址与手动配置。接入后由本应用自动写入 Claude Code。</p>
-              <div class="endpoint-row">
-                <code id="endpoint" class="endpoint">http://localhost:8788</code>
-                <button class="btn btn-sm" data-copy="endpoint">复制</button>
-                <label class="port-label">端口<input id="portInput" class="port-input" type="number" min="1" max="65535" /></label>
+          <div class="settings-layout flex gap-9 items-stretch flex-1 min-h-0">
+            <nav id="settingsNav" class="settings-subnav shrink-0 flex flex-col gap-0.5" aria-label="Settings sections">
+              <button type="button" data-settings="gateway" class="settings-subnav-item active flex items-center gap-2.5 w-full px-2.5 py-2 rounded-[9px] border-none bg-transparent text-muted font-medium text-[13px] leading-tight cursor-pointer text-left transition-all duration-150 hover:bg-chip-bg hover:text-fg active:scale-[0.985] [&.active]:bg-brand-soft [&.active]:text-brand [&.active]:font-semibold">
+                <span class="w-4 h-4 flex items-center justify-center opacity-80 [.active_&]:opacity-100" data-icon="gateway"></span>
+                <span class="settings-subnav-label" data-i18n="settings.nav.gateway">网关</span>
+              </button>
+              <button type="button" data-settings="desktop" class="settings-subnav-item flex items-center gap-2.5 w-full px-2.5 py-2 rounded-[9px] border-none bg-transparent text-muted font-medium text-[13px] leading-tight cursor-pointer text-left transition-all duration-150 hover:bg-chip-bg hover:text-fg active:scale-[0.985] [&.active]:bg-brand-soft [&.active]:text-brand [&.active]:font-semibold">
+                <span class="w-4 h-4 flex items-center justify-center opacity-80 [.active_&]:opacity-100" data-icon="desktop"></span>
+                <span class="settings-subnav-label" data-i18n="settings.nav.desktop">桌面版</span>
+              </button>
+              <button type="button" data-settings="privacy" class="settings-subnav-item flex items-center gap-2.5 w-full px-2.5 py-2 rounded-[9px] border-none bg-transparent text-muted font-medium text-[13px] leading-tight cursor-pointer text-left transition-all duration-150 hover:bg-chip-bg hover:text-fg active:scale-[0.985] [&.active]:bg-brand-soft [&.active]:text-brand [&.active]:font-semibold">
+                <span class="w-4 h-4 flex items-center justify-center opacity-80 [.active_&]:opacity-100" data-icon="shield"></span>
+                <span class="settings-subnav-label" data-i18n="settings.nav.privacy">内容过滤</span>
+              </button>
+              <button type="button" data-settings="general" class="settings-subnav-item flex items-center gap-2.5 w-full px-2.5 py-2 rounded-[9px] border-none bg-transparent text-muted font-medium text-[13px] leading-tight cursor-pointer text-left transition-all duration-150 hover:bg-chip-bg hover:text-fg active:scale-[0.985] [&.active]:bg-brand-soft [&.active]:text-brand [&.active]:font-semibold">
+                <span class="w-4 h-4 flex items-center justify-center opacity-80 [.active_&]:opacity-100" data-icon="sliders"></span>
+                <span class="settings-subnav-label" data-i18n="settings.nav.general">常规</span>
+              </button>
+              <button type="button" data-settings="data" class="settings-subnav-item flex items-center gap-2.5 w-full px-2.5 py-2 rounded-[9px] border-none bg-transparent text-muted font-medium text-[13px] leading-tight cursor-pointer text-left transition-all duration-150 hover:bg-chip-bg hover:text-fg active:scale-[0.985] [&.active]:bg-brand-soft [&.active]:text-brand [&.active]:font-semibold">
+                <span class="w-4 h-4 flex items-center justify-center opacity-80 [.active_&]:opacity-100" data-icon="folder"></span>
+                <span class="settings-subnav-label" data-i18n="settings.nav.data">数据</span>
+              </button>
+            </nav>
+
+            <div id="settingsPanes" class="settings-content flex-1 min-w-0 min-h-0 max-w-[660px] overflow-y-auto overflow-x-hidden pr-1 pb-2 flex flex-col gap-7">
+            <div data-pane="gateway">
+            <div class="settings-card bg-bg-elev border border-border-custom rounded-xl shadow-card p-7 flex flex-col gap-6 transition-all duration-300">
+              <h3 class="settings-card-title text-[13px] font-semibold text-fg" data-i18n="settings.gateway">网关</h3>
+              <p class="caption text-[12px] text-caption" data-i18n="settings.gatewayDesc">本地代理地址与手动配置。接入后由本应用自动写入 Claude Code。</p>
+              <div class="endpoint-row flex items-center gap-2 flex-wrap">
+                <code id="endpoint" class="endpoint flex-1 min-w-[180px] font-mono text-[12px] text-brand bg-bg-input border border-border-custom rounded-[7px] px-2.5 py-1.75">http://localhost:8788</code>
+                <button class="btn btn-sm bg-bg-elev text-fg border border-border-custom rounded-md px-2.25 py-1.25 font-medium text-[11px] leading-none cursor-pointer transition-all duration-140 hover:bg-chip-bg hover:border-border-strong active:scale-[0.985]" data-copy="endpoint" data-i18n="settings.copy">复制</button>
+                <label class="port-label text-[12px] text-muted flex items-center gap-1.25"><span data-i18n="settings.port">端口</span><input id="portInput" class="port-input w-[72px] px-1.75 py-1.25 bg-bg-input border border-border-custom rounded-md text-fg font-mono text-[12px] outline-none focus:border-primary" type="number" min="1" max="65535" /></label>
               </div>
-              <pre id="exportBlock" class="code-block"></pre>
-              <div class="connect-actions">
-                <button class="btn btn-sm" id="btnCopyExport">复制 export</button>
-                <span class="caption" id="claudePath"></span>
+              <pre id="exportBlock" class="code-block font-mono text-[12px] leading-[1.55] !bg-[#0c0e12] !text-[#e8edf4] border border-white/8 rounded-lg px-3.25 py-2.75 overflow-x-auto"></pre>
+              <div class="connect-actions flex items-center gap-2.5">
+                <button class="btn btn-sm bg-bg-elev text-fg border border-border-custom rounded-md px-2.25 py-1.25 font-medium text-[11px] leading-none cursor-pointer transition-all duration-140 hover:bg-chip-bg hover:border-border-strong active:scale-[0.985]" id="btnCopyExport" data-i18n="settings.copyExport">复制 export</button>
+                <span class="caption text-[12px] text-caption" id="claudePath"></span>
               </div>
-              <p class="caption warn">若曾在终端 export ANTHROPIC_BASE_URL，请删除以免覆盖。</p>
+              <p class="caption warn text-[12px] text-caption [&.warn]:text-amber" data-i18n="settings.exportWarn">若曾在终端 export ANTHROPIC_BASE_URL，请删除以免覆盖。</p>
+            </div>
+            </div>
+            <div data-pane="desktop" class="hidden">
+            <div class="settings-card bg-bg-elev border border-border-custom rounded-xl shadow-card p-7 flex flex-col gap-6 transition-all duration-300" id="desktopCard">
+              <div class="settings-card-header flex justify-between items-center gap-3">
+                <h3 class="settings-card-title text-[13px] font-semibold text-fg flex items-center gap-2"><span data-i18n="settings.desktop">Claude 桌面版</span><span id="desktopStatusChip" class="desktop-chip text-[10.5px] font-semibold rounded-full px-2 py-0.25 bg-chip-bg text-muted"></span></h3>
+                <div class="flex items-center gap-1.5 shrink-0">
+                  <button id="btnDesktopRefresh" class="tool-btn w-[26px] h-[26px] border border-border-custom rounded-[7px] bg-bg-elev text-muted cursor-pointer flex items-center justify-center transition-all duration-140 hover:text-fg hover:bg-chip-bg hover:border-border-strong" type="button" data-i18n-title="settings.desktopRefresh" title="刷新状态"><span data-icon="refresh"></span></button>
+                  <button class="btn btn-sm btn-primary bg-primary text-white border-none rounded-md px-2.25 py-1.25 font-semibold text-[11px] leading-none cursor-pointer transition-all duration-140 hover:bg-primary-hover active:scale-[0.985]" id="btnDesktopConnect" type="button" data-i18n="settings.desktopConnect">接入</button>
+                </div>
+              </div>
+              <p class="caption text-[12px] text-caption" data-i18n="settings.desktopDesc">把 Claude 桌面版的模型推理也指向本地网关，和 Claude Code 共用同一套服务与模型映射。</p>
+              <p class="caption text-[12px] text-caption leading-[1.5] [&_b]:text-fg [&_b]:font-medium" id="desktopNote" data-i18n="settings.desktopNote">macOS 要求你在「系统设置 › 描述文件」里手动批准一次（输管理员密码）。这不是高危操作 —— 只是把推理指向本地网关，系统出于安全要求必须你亲自确认。还原同理。</p>
+            </div>
+            </div>
+            <div data-pane="privacy" class="hidden">
+            <div class="settings-card bg-bg-elev border border-border-custom rounded-xl shadow-card p-7 flex flex-col gap-6 transition-all duration-300" id="presidioCard">
+              <div class="settings-card-header flex justify-between items-center gap-3">
+                <h3 class="settings-card-title text-[13px] font-semibold text-fg flex items-center gap-2"><span data-i18n="settings.presidio">内容过滤（Presidio）</span><span id="presidioStatusChip" class="text-[10.5px] font-semibold rounded-full px-2 py-0.25 bg-chip-bg text-muted"></span></h3>
+                <label class="switch inline-flex items-center gap-1.75 cursor-pointer text-[12.5px] no-drag shrink-0">
+                  <input id="fPresidio" type="checkbox" class="hidden peer" />
+                  <span class="track w-8 h-[17px] rounded-full bg-border-strong relative transition-colors duration-180 ease-[cubic-bezier(0.23,1,0.32,1)] shrink-0 peer-checked:bg-primary after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:w-[13px] after:h-[13px] after:rounded-full after:bg-white after:shadow-[0_1px_2px_rgba(0,0,0,0.18)] after:transition-transform after:duration-180 after:ease-[cubic-bezier(0.23,1,0.32,1)] peer-checked:after:translate-x-[15px]"></span>
+                </label>
+              </div>
+              <p class="caption text-[12px] text-caption" data-i18n="settings.presidioDesc">在请求离开你机器前，自动检测并脱敏 PII，对你无感。本地运行，内容不外传。</p>
+
+              <div id="presidioTiers" class="flex flex-col gap-4 pt-4 border-t border-border-custom hidden">
+                <div class="flex items-center justify-between gap-3">
+                  <div class="min-w-0"><div class="text-[12.5px] font-medium text-fg" data-i18n="settings.presidioRegex">规则识别器</div><div class="text-[11.5px] text-caption mt-0.5" data-i18n="settings.presidioRegexDesc">跨语言：信用卡 / 邮箱 / IP / 加密钱包 / 电话等</div></div>
+                  <span class="text-[10.5px] font-semibold rounded-full px-2 py-0.25 bg-green-soft text-green shrink-0" data-i18n="settings.presidioRegexBadge">默认开</span>
+                </div>
+                <div class="flex items-center justify-between gap-3">
+                  <div class="min-w-0"><div class="text-[12.5px] font-medium text-fg" data-i18n="settings.presidioNer">NER 识别器</div><div class="text-[11.5px] text-caption mt-0.5" data-i18n="settings.presidioNerDesc">人名 / 地点（NLP 模型）· 占用内存与 CPU</div></div>
+                  <label class="switch inline-flex items-center cursor-pointer no-drag shrink-0"><input id="fPresidioNer" type="checkbox" class="hidden peer" /><span class="track w-8 h-[17px] rounded-full bg-border-strong relative transition-colors duration-180 ease-[cubic-bezier(0.23,1,0.32,1)] shrink-0 peer-checked:bg-primary after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:w-[13px] after:h-[13px] after:rounded-full after:bg-white after:shadow-[0_1px_2px_rgba(0,0,0,0.18)] after:transition-transform after:duration-180 after:ease-[cubic-bezier(0.23,1,0.32,1)] peer-checked:after:translate-x-[15px]"></span></label>
+                </div>
+                <div class="flex flex-col gap-2.5">
+                  <div class="flex items-center justify-between gap-3">
+                    <div class="min-w-0"><div class="text-[12.5px] font-medium text-fg" data-i18n="settings.presidioLlm">LLM 识别器</div><div class="text-[11.5px] text-caption mt-0.5" data-i18n="settings.presidioLlmDesc">上下文级、最适合中文 · 需本地 Ollama 服务</div></div>
+                    <label class="switch inline-flex items-center cursor-pointer no-drag shrink-0"><input id="fPresidioLlm" type="checkbox" class="hidden peer" /><span class="track w-8 h-[17px] rounded-full bg-border-strong relative transition-colors duration-180 ease-[cubic-bezier(0.23,1,0.32,1)] shrink-0 peer-checked:bg-primary after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:w-[13px] after:h-[13px] after:rounded-full after:bg-white after:shadow-[0_1px_2px_rgba(0,0,0,0.18)] after:transition-transform after:duration-180 after:ease-[cubic-bezier(0.23,1,0.32,1)] peer-checked:after:translate-x-[15px]"></span></label>
+                  </div>
+                  <input id="fOllamaUrl" type="text" placeholder="http://localhost:11434" class="hidden bg-bg-input border border-border-custom rounded-md px-2 py-1.25 text-fg font-mono text-[12px] outline-none transition-colors duration-120 focus:border-primary" />
+                </div>
+
+                <div class="flex items-center justify-between gap-3 pt-3.5 border-t border-border-custom">
+                  <div class="min-w-0"><div class="text-[12.5px] font-medium text-fg" data-i18n="settings.presidioDeid">脱敏方式</div><div class="text-[11.5px] text-caption mt-0.5" data-i18n="settings.presidioDeidDesc">检测到的 PII 如何处理</div></div>
+                  <select id="fPresidioDeid" class="mini-select bg-bg-input border border-border-custom rounded-md text-fg text-[12px] outline-none no-drag shrink-0 max-w-[150px]">
+                    <option value="replace" data-i18n="settings.deidReplace">替换 &lt;类型&gt;</option>
+                    <option value="redact" data-i18n="settings.deidRedact">删除</option>
+                    <option value="mask" data-i18n="settings.deidMask">掩码 ***</option>
+                    <option value="hash" data-i18n="settings.deidHash">哈希</option>
+                  </select>
+                </div>
+                <div class="flex items-center justify-between gap-3">
+                  <div class="min-w-0"><div class="text-[12.5px] font-medium text-fg" data-i18n="settings.presidioThreshold">置信度阈值</div><div class="text-[11.5px] text-caption mt-0.5" data-i18n="settings.presidioThresholdDesc">低于此分数的检测会被忽略</div></div>
+                  <div class="flex items-center gap-2.5 shrink-0">
+                    <input id="fPresidioThreshold" type="range" min="0" max="1" step="0.05" class="presidio-range w-[110px] no-drag" />
+                    <span id="fPresidioThresholdVal" class="text-[11.5px] font-mono text-fg w-[30px] text-right">0.40</span>
+                  </div>
+                </div>
+                <div class="flex items-center justify-between gap-3">
+                  <div class="min-w-0"><div class="text-[12.5px] font-medium text-fg" data-i18n="settings.presidioNerModel">NER 模型</div><div class="text-[11.5px] text-caption mt-0.5" data-i18n="settings.presidioNerModelDesc">NER 识别器使用的 NLP 模型</div></div>
+                  <select id="fPresidioNerModel" class="mini-select bg-bg-input border border-border-custom rounded-md text-fg text-[12px] outline-none no-drag shrink-0 max-w-[160px]">
+                    <option value="en_core_web_sm">en_core_web_sm</option>
+                  </select>
+                </div>
+              </div>
+
+              <p class="caption text-[12px] text-caption leading-[1.5]" id="presidioNote" data-i18n="settings.presidioNote">本地引擎已内置、开箱即用。规则类（跨语言）随开关自动开启；NER 需 NLP 模型，LLM 需配置 Ollama。</p>
             </div>
 
-            <div class="settings-card">
-              <h3 class="settings-card-title">应用</h3>
-              <div class="settings-row no-border">
-                <label class="switch"><input id="fOpenAtLogin" type="checkbox" /><span class="track"></span><span class="switch-label">开机自启动</span></label>
-                <label class="switch"><input id="fRequireToken" type="checkbox" /><span class="track"></span><span class="switch-label">本地访问令牌</span></label>
-                <span class="input-with-btn token-row hidden" id="tokenRow">
-                  <input id="fGatewayToken" type="text" placeholder="网关令牌" />
-                  <button class="btn btn-sm" id="btnGenToken" type="button">生成</button>
+            <div id="presidioConsole" class="mt-6 rounded-xl border border-border-custom overflow-hidden flex flex-col bg-[#0c0e12] shadow-card">
+              <div class="flex items-center justify-between gap-2 px-3 py-2 border-b border-white/8">
+                <div class="flex items-center gap-2 min-w-0">
+                  <span id="presidioLogDot" class="w-1.5 h-1.5 rounded-full bg-[#3a3f4b] shrink-0"></span>
+                  <div class="inline-flex gap-0.5 p-0.5 bg-white/5 rounded-[7px]" id="presidioConsoleTabs">
+                    <button type="button" class="ptab text-[10.5px] font-medium px-2 py-0.75 rounded-[5px] text-[#7b8494] hover:text-[#c5ccd6] [.active]:bg-white/10 [.active]:text-[#e8edf4] transition-colors active" data-ptab="console" data-i18n="settings.presidioConsole">控制台输出</button>
+                    <button type="button" class="ptab text-[10.5px] font-medium px-2 py-0.75 rounded-[5px] text-[#7b8494] hover:text-[#c5ccd6] [.active]:bg-white/10 [.active]:text-[#e8edf4] transition-colors inline-flex items-center gap-1" data-ptab="findings"><span data-i18n="settings.presidioFindings">Findings</span><span id="presidioFindCount" class="hidden text-[9px] font-bold leading-none bg-white/12 rounded-full px-1.25 py-0.5 min-w-[14px] text-center">0</span></button>
+                  </div>
+                </div>
+                <button id="btnPresidioLogClear" type="button" class="text-[10.5px] text-[#7b8494] hover:text-[#c5ccd6] transition-colors no-drag shrink-0" data-i18n="settings.presidioConsoleClear">清空</button>
+              </div>
+              <pre id="presidioLog" data-ptab-panel="console" class="m-0 px-4 py-3 font-mono text-[11px] leading-[1.6] text-[#c5ccd6] h-[260px] overflow-y-auto overflow-x-hidden whitespace-pre-wrap break-words"></pre>
+              <div id="presidioFindings" data-ptab-panel="findings" class="hidden h-[260px] overflow-auto"></div>
+            </div>
+            </div>
+            <div data-pane="general" class="hidden">
+            <div class="settings-card bg-bg-elev border border-border-custom rounded-xl shadow-card p-7 flex flex-col gap-6 transition-all duration-300">
+              <h3 class="settings-card-title text-[13px] font-semibold text-fg" data-i18n="settings.app">应用</h3>
+              <div class="settings-row no-border flex items-center gap-x-6 gap-y-4 flex-wrap pt-0 border-t-0">
+                <label class="switch inline-flex items-center gap-1.75 cursor-pointer text-[12.5px] no-drag">
+                  <input id="fOpenAtLogin" type="checkbox" class="hidden peer" />
+                  <span class="track w-8 h-[17px] rounded-full bg-border-strong relative transition-colors duration-180 ease-[cubic-bezier(0.23,1,0.32,1)] shrink-0 peer-checked:bg-primary after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:w-[13px] after:h-[13px] after:rounded-full after:bg-white after:shadow-[0_1px_2px_rgba(0,0,0,0.18)] after:transition-transform after:duration-180 after:ease-[cubic-bezier(0.23,1,0.32,1)] peer-checked:after:translate-x-[15px]"></span>
+                  <span class="switch-label" data-i18n="settings.openAtLogin">开机自启动</span>
+                </label>
+                <label class="switch inline-flex items-center gap-1.75 cursor-pointer text-[12.5px] no-drag">
+                  <input id="fRequireToken" type="checkbox" class="hidden peer" />
+                  <span class="track w-8 h-[17px] rounded-full bg-border-strong relative transition-colors duration-180 ease-[cubic-bezier(0.23,1,0.32,1)] shrink-0 peer-checked:bg-primary after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:w-[13px] after:h-[13px] after:rounded-full after:bg-white after:shadow-[0_1px_2px_rgba(0,0,0,0.18)] after:transition-transform after:duration-180 after:ease-[cubic-bezier(0.23,1,0.32,1)] peer-checked:after:translate-x-[15px]"></span>
+                  <span class="switch-label" data-i18n="settings.requireToken">本地访问令牌</span>
+                </label>
+                <span class="input-with-btn token-row hidden flex gap-1.75 items-center w-full max-w-[300px] [&.hidden]:hidden" id="tokenRow">
+                  <input id="fGatewayToken" class="bg-bg-input border border-border-custom rounded-md px-2 py-1.25 text-fg font-mono text-[12px] outline-none focus:border-primary flex-1" type="text" data-i18n-placeholder="settings.tokenPlaceholder" placeholder="网关令牌" />
+                  <button class="btn btn-sm bg-bg-elev text-fg border border-border-custom rounded-md px-2.25 py-1.25 font-medium text-[11px] leading-none cursor-pointer transition-all duration-140 hover:bg-chip-bg hover:border-border-strong active:scale-[0.985]" id="btnGenToken" type="button" data-i18n="settings.generate">生成</button>
                 </span>
               </div>
-              <div class="settings-row">
-                <label class="switch"><input id="fTrayUsage" type="checkbox" /><span class="track"></span><span class="switch-label">菜单栏显示用量</span></label>
-                <span class="token-row" id="trayRangeRow">
-                  <select id="fTrayRange" class="mini-select">
-                    <option value="1d">今日</option>
-                    <option value="7d">近 7 天</option>
-                    <option value="30d">近 30 天</option>
-                    <option value="all">全部</option>
+              <div class="settings-row flex items-center gap-x-6 gap-y-4 flex-wrap pt-6 border-t border-border-custom">
+                <label class="switch inline-flex items-center gap-1.75 cursor-pointer text-[12.5px] no-drag">
+                  <input id="fTrayUsage" type="checkbox" class="hidden peer" />
+                  <span class="track w-8 h-[17px] rounded-full bg-border-strong relative transition-colors duration-180 ease-[cubic-bezier(0.23,1,0.32,1)] shrink-0 peer-checked:bg-primary after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:w-[13px] after:h-[13px] after:rounded-full after:bg-white after:shadow-[0_1px_2px_rgba(0,0,0,0.18)] after:transition-transform after:duration-180 after:ease-[cubic-bezier(0.23,1,0.32,1)] peer-checked:after:translate-x-[15px]"></span>
+                  <span class="switch-label" data-i18n="settings.trayUsage">菜单栏显示用量</span>
+                </label>
+                <span class="token-row inline-flex gap-1.5 items-center max-w-[300px] [&.hidden]:hidden" id="trayRangeRow">
+                  <select id="fTrayRange" class="mini-select bg-bg-input border border-border-custom rounded-md px-2 py-1.25 text-fg font-inherit text-[12px] outline-none no-drag">
+                    <option value="1d" data-i18n="range.1d">今日</option>
+                    <option value="7d" data-i18n="range.7d">近 7 天</option>
+                    <option value="30d" data-i18n="range.30d">近 30 天</option>
+                    <option value="all" data-i18n="range.all">全部</option>
                   </select>
                 </span>
               </div>
+              <div class="settings-row flex items-center gap-x-6 gap-y-4 flex-wrap pt-6 border-t border-border-custom">
+                <label class="switch-label lang-label text-[12.5px] font-medium mr-2" data-i18n="settings.language">语言</label>
+                <select id="fLang" class="mini-select lang-select bg-bg-input border border-border-custom rounded-md px-2 py-1.25 text-fg font-inherit text-[12px] outline-none no-drag">
+                  <option value="en">English</option>
+                  <option value="zh">简体中文</option>
+                  <option value="zh-TW">繁體中文</option>
+                  <option value="ja">日本語</option>
+                  <option value="ko">한국어</option>
+                </select>
+              </div>
+            </div>
+            </div>
+            <div data-pane="data" class="hidden">
+            <div class="settings-card bg-bg-elev border border-border-custom rounded-xl shadow-card p-7 flex flex-col gap-6 transition-all duration-300">
+              <div class="settings-card-header flex justify-between items-center">
+                <h3 class="settings-card-title text-[13px] font-semibold text-fg" data-i18n="settings.histDir">历史目录</h3>
+                <button class="btn btn-sm btn-primary bg-primary text-white border-none rounded-md px-2.25 py-1.25 font-semibold text-[11px] leading-none cursor-pointer transition-all duration-140 hover:bg-primary-hover active:scale-[0.985]" id="btnPickHistDir" type="button" data-i18n="settings.pickDir">选择目录…</button>
+              </div>
+              <p class="caption text-[12px] text-caption" data-i18n="settings.histDirDesc">对话与用量统计的数据来源 —— Claude Code 的配置目录（含 projects/）。默认 ~/.claude；若用 CLAUDE_CONFIG_DIR / claude --config 指定了其他目录，在此添加，可在「对话」页切换查看。</p>
+              <div id="histDirList" class="hist-dir-list"></div>
+            </div>
             </div>
 
-            <div id="startError" class="alert alert-err hidden"></div>
+            <div id="startError" class="startError alert alert-err hidden text-[12px] px-3 py-2.25 rounded-lg border border-red/12 text-red bg-red-soft"></div>
+            </div>
           </div>
         </section>
 
         <!-- 监控 -->
-        <section id="view-monitor" class="panel hidden">
-          <div class="metric-grid">
-            <div class="metric">
-              <span class="metric-label">网关</span>
-              <span class="metric-value sm" id="mStatus"><span class="pulse-dot off"></span><span id="mStatusText">未接入</span></span>
-              <span class="metric-sub" id="mEndpoint">localhost:8788</span>
+        <section id="view-monitor" class="panel hidden flex-none max-w-[880px] mx-auto px-10 pt-4 pb-10 w-full flex flex-col gap-6 animate-[panelIn_0.28s_ease-[cubic-bezier(0.23,1,0.32,1)]]">
+          <div class="metric-grid grid grid-cols-4 gap-3.5">
+            <div class="metric bg-bg-elev border border-border-custom rounded-[16px] p-5 shadow-card flex flex-col gap-2">
+              <span class="metric-label text-[11px] font-semibold uppercase tracking-[0.03em] text-caption" data-i18n="monitor.gateway">网关</span>
+              <span class="metric-value sm text-[15px] font-bold tracking-[-0.02em] leading-[1.15] flex items-center gap-1.5" id="mStatus"><span class="pulse-dot w-2 h-2 rounded-full bg-muted transition-colors duration-200 [&.on]:bg-green [&.on]:animate-pulse off"></span><span id="mStatusText" data-i18n="status.disconnected">未接入</span></span>
+              <span class="metric-sub text-[11px] text-muted truncate" id="mEndpoint">localhost:8788</span>
             </div>
-            <div class="metric">
-              <span class="metric-label">活跃服务</span>
-              <span class="metric-value sm" id="mActive">—</span>
-              <span class="metric-sub" id="mActiveUrl">—</span>
+            <div class="metric bg-bg-elev border border-border-custom rounded-[16px] p-5 shadow-card flex flex-col gap-2">
+              <span class="metric-label text-[11px] font-semibold uppercase tracking-[0.03em] text-caption" data-i18n="monitor.activeService">活跃服务</span>
+              <span class="metric-value sm text-[15px] font-bold tracking-[-0.02em] leading-[1.15] flex items-center gap-1.5" id="mActive">—</span>
+              <span class="metric-sub text-[11px] text-muted truncate" id="mActiveUrl">—</span>
             </div>
-            <div class="metric">
-              <span class="metric-label">总请求</span>
-              <span class="metric-value mono" id="mTotal">0</span>
-              <span class="metric-sub" id="mSuccess">—</span>
+            <div class="metric bg-bg-elev border border-border-custom rounded-[16px] p-5 shadow-card flex flex-col gap-2">
+              <span class="metric-label text-[11px] font-semibold uppercase tracking-[0.03em] text-caption" data-i18n="monitor.totalReq">总请求</span>
+              <span class="metric-value mono text-[20px] font-bold tracking-[-0.02em] leading-[1.15] flex items-center gap-1.5 font-mono" id="mTotal">0</span>
+              <span class="metric-sub text-[11px] text-muted truncate" id="mSuccess">—</span>
             </div>
-            <div class="metric">
-              <span class="metric-label">平均耗时</span>
-              <span class="metric-value mono" id="mAvg">— <span class="unit">ms</span></span>
-              <span class="metric-sub" id="mLast">—</span>
+            <div class="metric bg-bg-elev border border-border-custom rounded-[16px] p-5 shadow-card flex flex-col gap-2">
+              <span class="metric-label text-[11px] font-semibold uppercase tracking-[0.03em] text-caption" data-i18n="monitor.avgLatency">平均耗时</span>
+              <span class="metric-value mono text-[20px] font-bold tracking-[-0.02em] leading-[1.15] flex items-center gap-1.5 font-mono" id="mAvg">— <span class="unit">ms</span></span>
+              <span class="metric-sub text-[11px] text-muted truncate" id="mLast">—</span>
             </div>
           </div>
 
-          <div class="panel-toolbar">
-            <h2 class="panel-label">请求流</h2>
-            <div class="toolbar-end">
-              <span class="caption" id="streamHint">等待请求</span>
-              <button class="btn btn-sm" id="btnClearLog">清空</button>
+          <div class="panel-toolbar flex items-center justify-between px-[2px] py-1">
+            <h2 class="panel-label text-[12.5px] font-semibold tracking-[0.04em] uppercase text-caption" data-i18n="monitor.reqStream">请求流</h2>
+            <div class="toolbar-end flex items-center gap-2.5">
+              <span class="caption text-[12px] text-caption" id="streamHint" data-i18n="monitor.waiting">等待请求</span>
+              <button class="btn btn-sm bg-bg-elev text-fg border border-border-custom rounded-md px-2.25 py-1.25 font-medium text-[11px] leading-none cursor-pointer transition-all duration-140 hover:bg-chip-bg hover:border-border-strong active:scale-[0.985]" id="btnClearLog" data-i18n="monitor.clear">清空</button>
             </div>
           </div>
-          <div id="streamList" class="stream-list">
-            <div class="state-inline">接入网关后，转发记录将实时显示</div>
+          <div id="streamList" class="stream-list bg-bg-elev border border-border-custom rounded-xl overflow-hidden shadow-card">
+            <div class="state-inline p-4 text-center text-[11.5px] text-caption" data-i18n="monitor.streamEmpty">接入网关后，转发记录将实时显示</div>
           </div>
 
-          <details class="disclosure raw-log-wrap">
-            <summary>网关日志</summary>
-            <div id="rawLog" class="raw-log"></div>
+          <details class="disclosure raw-log-wrap border border-border-custom rounded-xl bg-bg-elev overflow-hidden">
+            <summary class="flex items-center gap-2 px-3.5 py-2.25 cursor-pointer text-[12px] font-semibold text-muted list-none outline-none select-none [&::-webkit-details-marker]:hidden [details[open]_>_&]:border-b [details[open]_>_&]:border-border-custom"><span data-i18n="monitor.gatewayLog">网关日志</span><span id="gwLogStatus" class="raw-log-badge ml-auto"></span></summary>
+            <div id="rawLog" class="raw-log font-mono text-[10.5px] text-caption px-3.5 pb-3 max-h-[150px] overflow-y-auto leading-[1.55]"></div>
           </details>
         </section>
 
         <!-- 对话 -->
-        <section id="view-conversations" class="panel-full hidden">
-          <div class="conv-layout">
-            <aside class="conv-sidebar">
-              <div class="conv-search">
-                <button id="btnCollapseConvList" class="tool-btn" title="收起列表"><span data-icon="chevronLeft"></span></button>
-                <div class="search-field">
-                  <input id="convSearch" type="text" placeholder="搜索项目 / 会话…" />
-                  <button class="search-clear" id="convClear" type="button" title="清空搜索">清空</button>
+        <section id="view-conversations" class="panel-full hidden flex-grow min-h-0 w-full overflow-hidden flex animate-[panelIn_0.28s_ease-[cubic-bezier(0.23,1,0.32,1)]]">
+          <div class="conv-layout flex w-full h-full overflow-hidden">
+            <aside class="conv-sidebar group/conv-sidebar w-[248px] min-w-[200px] border-r border-border-custom flex flex-col shrink-0 transition-[width] duration-200 ease-[cubic-bezier(0.23,1,0.32,1)] overflow-hidden [&.collapsed]:w-[34px] [&.collapsed]:min-w-[34px] [&.collapsed]:overflow-visible">
+              <div class="conv-search p-[7px_8px] border-b border-border-custom flex gap-1.25 items-center min-w-0 shrink-0 group-[.collapsed]/conv-sidebar:p-0 group-[.collapsed]/conv-sidebar:h-full group-[.collapsed]/conv-sidebar:border-b-0 group-[.collapsed]/conv-sidebar:justify-center">
+                <button id="btnCollapseConvList" class="tool-btn w-[26px] h-[26px] border border-border-custom rounded-[7px] bg-bg-elev text-muted cursor-pointer flex items-center justify-center transition-all duration-140 hover:text-fg hover:bg-chip-bg hover:border-border-strong group-[.collapsed]/conv-sidebar:w-full group-[.collapsed]/conv-sidebar:h-full group-[.collapsed]/conv-sidebar:min-h-[72px] group-[.collapsed]/conv-sidebar:rounded-none group-[.collapsed]/conv-sidebar:border-none group-[.collapsed]/conv-sidebar:bg-transparent" data-i18n-title="conv.collapseList" title="收起列表"><span data-icon="chevronLeft"></span></button>
+                <div class="search-field flex-1 min-w-0 flex items-center gap-1 bg-bg-input border border-border-custom rounded-[7px] px-1 py-0 pl-2 focus-within:border-primary group-[.collapsed]/conv-sidebar:hidden">
+                  <input id="convSearch" class="flex-grow min-w-0 border-none bg-transparent py-1.25 text-fg text-[11.5px] outline-none" type="text" data-i18n-placeholder="conv.searchPlaceholder" placeholder="搜索项目 / 会话…" />
+                  <button class="search-clear shrink-0 border-none bg-transparent text-caption font-medium text-[10px] leading-none px-1.5 py-0.75 rounded cursor-pointer whitespace-nowrap transition-all duration-120 hover:text-fg hover:bg-chip-bg" id="convClear" type="button" data-i18n="conv.clear" data-i18n-title="conv.clearSearch" title="清空搜索">清空</button>
                 </div>
               </div>
-              <div id="convList" class="conv-list"></div>
+              <div id="convDirSwitch" class="conv-dir-switch hidden flex gap-1.5 px-3 py-2 border-b border-border-custom bg-bg-sidebar/20 flex-wrap"></div>
+              <div id="convList" class="conv-list flex-1 overflow-y-auto group-[.collapsed]/conv-sidebar:hidden"></div>
             </aside>
 
-            <main class="conv-main">
-              <div class="conv-detail-toolbar">
+            <main class="conv-main flex-grow min-w-0 flex flex-col bg-bg-elev">
+              <div class="conv-detail-toolbar flex items-center gap-2 px-4 py-2 border-b border-border-custom h-10 shrink-0">
                 <span class="search-icon" data-icon="search"></span>
-                <input id="convDetailSearch" type="text" placeholder="搜索消息…" />
-                <div class="conv-detail-search-controls">
-                  <span id="convDetailSearchCount" class="search-count"></span>
-                  <button id="convDetailSearchPrev" class="tool-btn" title="上一个"><span>↑</span></button>
-                  <button id="convDetailSearchNext" class="tool-btn" title="下一个"><span>↓</span></button>
-                  <button id="convDetailSearchClear" class="tool-btn" title="清除"><span>✕</span></button>
+                <input id="convDetailSearch" class="flex-grow min-w-0 border-none bg-transparent py-1.25 text-fg text-[11.5px] outline-none" type="text" data-i18n-placeholder="conv.searchMsg" placeholder="搜索消息…" />
+                <div class="conv-detail-search-controls flex items-center gap-[2px] shrink-0">
+                  <span id="convDetailSearchCount" class="search-count text-[10px] text-caption font-mono min-w-8 text-center"></span>
+                  <button id="convDetailSearchPrev" class="tool-btn w-[26px] h-[26px] border border-border-custom rounded-[7px] bg-bg-elev text-muted cursor-pointer flex items-center justify-center transition-all duration-140 hover:text-fg hover:bg-chip-bg hover:border-border-strong" data-i18n-title="conv.prev" title="上一个"><span>↑</span></button>
+                  <button id="convDetailSearchNext" class="tool-btn w-[26px] h-[26px] border border-border-custom rounded-[7px] bg-bg-elev text-muted cursor-pointer flex items-center justify-center transition-all duration-140 hover:text-fg hover:bg-chip-bg hover:border-border-strong" data-i18n-title="conv.next" title="下一个"><span>↓</span></button>
+                  <button id="convDetailSearchClear" class="tool-btn w-[26px] h-[26px] border border-border-custom rounded-[7px] bg-bg-elev text-muted cursor-pointer flex items-center justify-center transition-all duration-140 hover:text-fg hover:bg-chip-bg hover:border-border-strong" data-i18n-title="conv.clearSearch" title="清除"><span>✕</span></button>
                 </div>
               </div>
-              <div id="convDetail" class="conv-detail">
-                <div class="state-empty conv-empty">
-                  <div class="state-icon" data-icon="conversations"></div>
-                  <p>选择左侧会话，查看完整对话历史</p>
-                  <p class="muted small">数据来自 ~/.claude/projects · 活跃会话实时跟随</p>
+              <div id="convDetail" class="conv-detail flex-1 min-h-0 overflow-y-auto p-[22px_26px] flex flex-col gap-4">
+                <div class="state-empty conv-empty m-auto max-w-[320px] border-none text-center px-5 py-8 text-muted text-[12px] leading-normal [&_p]:mb-3">
+                  <div class="state-icon flex justify-center mb-2.5 text-caption" data-icon="conversations"></div>
+                  <p data-i18n="conv.emptyTitle">选择左侧会话，查看完整对话历史</p>
+                  <p class="muted small text-muted text-[11px]" data-i18n="conv.emptySub">数据来自 ~/.claude/projects · 活跃会话实时跟随</p>
                 </div>
               </div>
             </main>
 
-            <aside class="conv-nav">
-              <div class="conv-nav-top">
-                <button id="btnCollapseConvNav" class="tool-btn" title="收起面板"><span data-icon="chevronLeft"></span></button>
+            <aside class="conv-nav group/conv-nav w-[180px] border-l border-border-custom flex flex-col shrink-0 transition-[width] duration-200 ease-[cubic-bezier(0.23,1,0.32,1)] overflow-hidden [&.collapsed]:w-[34px] [&.collapsed]:min-w-[34px]">
+              <div class="conv-nav-top h-10 p-[7px_8px] border-b border-border-custom flex items-center justify-end group-[.collapsed]/conv-nav:p-0 group-[.collapsed]/conv-nav:h-full group-[.collapsed]/conv-nav:border-b-0 group-[.collapsed]/conv-nav:justify-center">
+                <button id="btnCollapseConvNav" class="tool-btn w-[26px] h-[26px] border border-border-custom rounded-[7px] bg-bg-elev text-muted cursor-pointer flex items-center justify-center transition-all duration-140 hover:text-fg hover:bg-chip-bg hover:border-border-strong group-[.collapsed]/conv-nav:w-full group-[.collapsed]/conv-nav:h-full group-[.collapsed]/conv-nav:min-h-[72px] group-[.collapsed]/conv-nav:rounded-none group-[.collapsed]/conv-nav:border-none group-[.collapsed]/conv-nav:bg-transparent" data-i18n-title="conv.collapsePanel" title="收起面板"><span data-icon="chevronLeft"></span></button>
               </div>
-              <div class="conv-nav-head">概览</div>
-              <div id="convStats" class="conv-stats"></div>
-              <div class="conv-nav-head">导航</div>
-              <div id="convToc" class="conv-toc"></div>
+              <div class="conv-nav-head text-[11px] font-semibold uppercase tracking-[0.03em] text-caption p-[14px_12px_6px] group-[.collapsed]/conv-nav:hidden" data-i18n="conv.overview">概览</div>
+              <div id="convStats" class="conv-stats p-[0_12px_6px] group-[.collapsed]/conv-nav:hidden"></div>
+              <div class="conv-nav-head text-[11px] font-semibold uppercase tracking-[0.03em] text-caption p-[14px_12px_6px] group-[.collapsed]/conv-nav:hidden" data-i18n="conv.nav">导航</div>
+              <div id="convToc" class="conv-toc overflow-y-auto flex-1 p-[0_7px_10px] group-[.collapsed]/conv-nav:hidden"></div>
             </aside>
           </div>
         </section>
@@ -234,95 +400,98 @@
     </div>
 
     <!-- 服务编辑 -->
-    <div id="modal" class="overlay hidden">
-      <div class="sheet">
-        <header class="sheet-head">
-          <button class="tool-btn" id="modalClose" aria-label="关闭"><span data-icon="chevronLeft"></span></button>
-          <h3 id="modalTitle">添加服务</h3>
+    <div id="modal" class="overlay fixed inset-0 bg-black/28 flex items-center justify-center z-[100] backdrop-blur-md hidden">
+      <div class="sheet w-[580px] max-w-[92vw] max-h-[86vh] overflow-y-auto bg-bg-elev backdrop-blur-[40px] border border-window-border rounded-2xl shadow-[0_24px_64px_rgba(0,0,0,0.18)] flex flex-col">
+        <header class="sheet-head flex items-center gap-2 p-[14px_18px] border-b border-border-custom sticky top-0 bg-inherit z-2">
+          <button class="tool-btn w-[26px] h-[26px] border border-border-custom rounded-[7px] bg-bg-elev text-muted cursor-pointer flex items-center justify-center transition-all duration-140 hover:text-fg hover:bg-chip-bg hover:border-border-strong" id="modalClose" data-i18n-title="modal.close" aria-label="关闭"><span data-icon="chevronLeft"></span></button>
+          <h3 id="modalTitle" class="text-[14px] font-semibold tracking-tight" data-i18n="modal.addTitle">添加服务</h3>
         </header>
-        <div class="sheet-body">
-          <div class="preset-block">
-            <span class="field-label">预设</span>
-            <div id="presetGrid" class="preset-grid"></div>
+        <div class="sheet-body p-[18px_20px] flex flex-col gap-4 overflow-y-auto">
+          <div class="preset-block flex flex-col gap-1.75">
+            <span class="field-label text-[11px] font-semibold text-caption uppercase tracking-[0.03em]" data-i18n="modal.preset">预设</span>
+            <div id="presetGrid" class="preset-grid flex flex-wrap gap-1.25"></div>
           </div>
 
-          <div class="icon-center"><div class="prov-icon lg" id="fIconPreview">C</div></div>
+          <div class="icon-center flex flex-col items-center gap-1 py-[2px]"><div class="prov-icon lg w-[52px] h-[52px] font-bold text-[18px] rounded-xl shrink-0 flex items-center justify-center text-white shadow-[0_1px_3px_rgba(0,0,0,0.1)] cursor-pointer transition-all duration-150 hover:ring-2 hover:ring-primary/40 hover:brightness-105 no-drag" id="fIconPreview" data-i18n-title="modal.iconEdit" title="点击自定义图标">C</div><span class="text-[10.5px] text-caption no-drag cursor-pointer" data-i18n="modal.iconHint">点击自定义图标</span></div>
 
-          <div class="field-row">
-            <label class="field">
-              <span class="field-label">名称</span>
-              <input id="fName" type="text" placeholder="智谱 GLM" />
+          <div class="field-row flex gap-2.5">
+            <label class="field flex flex-col gap-1.25 flex-1">
+              <span class="field-label text-[11px] font-semibold text-caption uppercase tracking-[0.03em]" data-i18n="modal.name">名称</span>
+              <input id="fName" class="bg-bg-input border border-border-custom rounded-[7px] px-2.75 py-2 text-fg text-[13px] font-mono w-full outline-none transition-colors duration-120 focus:border-primary" type="text" placeholder="GLM" />
             </label>
-            <label class="field">
-              <span class="field-label">API 地址</span>
-              <input id="fBaseUrl" type="text" placeholder="https://open.bigmodel.cn/api/anthropic" />
+            <label class="field flex flex-col gap-1.25 flex-1">
+              <span class="field-label text-[11px] font-semibold text-caption uppercase tracking-[0.03em]" data-i18n="modal.apiUrl">API 地址</span>
+              <input id="fBaseUrl" class="bg-bg-input border border-border-custom rounded-[7px] px-2.75 py-2 text-fg text-[13px] font-mono w-full outline-none transition-colors duration-120 focus:border-primary" type="text" placeholder="https://open.bigmodel.cn/api/anthropic" />
             </label>
           </div>
 
-          <label class="field">
-            <span class="field-label">API Key</span>
-            <span class="input-with-btn">
-              <input id="fToken" type="password" placeholder="粘贴密钥" />
-              <button class="btn btn-sm" id="fTokenToggle" type="button">显示</button>
+          <label class="field flex flex-col gap-1.25 flex-1">
+            <span class="field-label text-[11px] font-semibold text-caption uppercase tracking-[0.03em]" data-i18n="modal.apiKey">API Key</span>
+            <span class="input-with-btn flex gap-1.75 items-center w-full">
+              <input id="fToken" class="bg-bg-input border border-border-custom rounded-[7px] px-2.75 py-2 text-fg text-[13px] font-mono w-full outline-none transition-colors duration-120 focus:border-primary flex-1" type="password" data-i18n-placeholder="modal.pasteKey" placeholder="粘贴密钥" />
+              <button class="btn btn-sm bg-bg-elev text-fg border border-border-custom rounded-md px-2.25 py-1.25 font-medium text-[11px] leading-none cursor-pointer transition-all duration-140 hover:bg-chip-bg hover:border-border-strong active:scale-[0.985] shrink-0" id="fTokenToggle" type="button" data-i18n="modal.show">显示</button>
             </span>
           </label>
 
-          <div class="field-row">
-            <label class="field">
-              <span class="field-label">主模型</span>
-              <input id="fDefaultModel" type="text" placeholder="glm-5.1" />
+          <div class="field-row flex gap-2.5">
+            <label class="field flex flex-col gap-1.25 flex-1">
+              <span class="field-label text-[11px] font-semibold text-caption uppercase tracking-[0.03em]" data-i18n="modal.mainModel">主模型</span>
+              <input id="fDefaultModel" class="bg-bg-input border border-border-custom rounded-[7px] px-2.75 py-2 text-fg text-[13px] font-mono w-full outline-none transition-colors duration-120 focus:border-primary" type="text" placeholder="glm-5.2" />
             </label>
-            <label class="field">
-              <span class="field-label">轻量模型</span>
-              <input id="fSmallModel" type="text" placeholder="glm-5.1" />
+            <label class="field flex flex-col gap-1.25 flex-1">
+              <span class="field-label text-[11px] font-semibold text-caption uppercase tracking-[0.03em]" data-i18n="modal.smallModel">轻量模型</span>
+              <input id="fSmallModel" class="bg-bg-input border border-border-custom rounded-[7px] px-2.75 py-2 text-fg text-[13px] font-mono w-full outline-none transition-colors duration-120 focus:border-primary" type="text" placeholder="glm-5.2-air" />
             </label>
           </div>
 
-          <label class="switch">
-            <input id="fMapDefault" type="checkbox" checked /><span class="track"></span>
-            <span class="switch-label">自动映射 Claude 默认模型名</span>
+          <label class="switch inline-flex items-center gap-1.75 cursor-pointer text-[12.5px] no-drag">
+            <input id="fMapDefault" type="checkbox" checked class="hidden peer" />
+            <span class="track w-8 h-[17px] rounded-full bg-border-strong relative transition-colors duration-180 ease-[cubic-bezier(0.23,1,0.32,1)] shrink-0 peer-checked:bg-primary after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:w-[13px] after:h-[13px] after:rounded-full after:bg-white after:shadow-[0_1px_2px_rgba(0,0,0,0.18)] after:transition-transform after:duration-180 after:ease-[cubic-bezier(0.23,1,0.32,1)] peer-checked:after:translate-x-[15px]"></span>
+            <span class="switch-label" data-i18n="modal.autoMap">自动映射 Claude 默认模型名</span>
           </label>
 
-          <details class="disclosure mappings-details" open>
-            <summary>自定义模型别名（别名 ⇄ 上游模型）</summary>
-            <div class="mappings">
-              <p class="caption">把客户端请求的模型名精确映射到上游模型，回包自动改回原名。<b>带 [1m]（1M 上下文）等特殊模型务必在此显式映射到支持的上游</b>，避免被自动映射降级。未命中别名时才走「自动映射」。</p>
-              <div id="mapRows" class="map-rows"></div>
-              <button class="btn btn-sm" id="btnAddMap" type="button">+ 添加映射</button>
+          <details class="disclosure mappings-details border border-border-custom rounded-xl bg-bg-elev overflow-hidden" open>
+            <summary class="cursor-pointer text-[12.5px] text-muted outline-none py-0.75 px-0 list-none select-none [&::-webkit-details-marker]:hidden" data-i18n="modal.aliasSummary">自定义模型别名（别名 ⇄ 上游模型）</summary>
+            <div class="mappings border border-border-custom rounded-lg p-2.5 flex flex-col gap-1.75">
+              <p class="caption text-[12px] text-caption" data-i18n="modal.aliasDesc">把客户端请求的模型名精确映射到上游模型，回包自动改回原名。带 [1m]（1M 上下文）等特殊模型务必在此显式映射到支持的上游，避免被自动映射降级。未命中别名时才走「自动映射」。</p>
+              <div id="mapRows" class="map-rows flex flex-col gap-1.25"></div>
+              <button class="btn btn-sm bg-bg-elev text-fg border border-border-custom rounded-md px-2.25 py-1.25 font-medium text-[11px] leading-none cursor-pointer transition-all duration-140 hover:bg-chip-bg hover:border-border-strong active:scale-[0.985] self-start" id="btnAddMap" type="button" data-i18n="modal.addMapping">+ 添加映射</button>
             </div>
           </details>
 
-          <div id="testResult" class="alert hidden"></div>
+          <div id="testResult" class="alert hidden text-[12px] px-3 py-2.25 rounded-lg border border-transparent [&.err]:border-red/12 [&.err]:text-red [&.err]:bg-red-soft [&.ok]:border-green/12 [&.ok]:text-green [&.ok]:bg-green-soft [&.pending]:border-primary/12 [&.pending]:text-primary [&.pending]:bg-primary-soft"></div>
         </div>
-        <footer class="sheet-foot">
-          <button class="btn" id="btnTest">连接测试</button>
-          <span class="spacer"></span>
-          <button class="btn ghost" id="btnCancel">取消</button>
-          <button class="btn btn-primary" id="btnSave">保存</button>
+        <footer class="sheet-foot flex items-center gap-2 p-3 border-t border-border-custom sticky bottom-0 bg-inherit z-2">
+          <button class="btn bg-bg-elev text-fg border border-border-custom rounded-[7px] px-3 py-1.25 font-medium text-[12px] leading-none cursor-pointer transition-all duration-140 hover:bg-chip-bg hover:border-border-strong active:scale-[0.985]" id="btnTest" data-i18n="modal.test">连接测试</button>
+          <span class="spacer flex-1"></span>
+          <button class="btn ghost bg-transparent text-muted border-none rounded-[7px] px-3 py-1.25 font-medium text-[12px] leading-none cursor-pointer transition-all duration-140 hover:bg-chip-bg hover:text-fg active:scale-[0.985]" id="btnCancel" data-i18n="modal.cancel">取消</button>
+          <button class="btn btn-primary bg-primary text-white border-none rounded-[7px] px-3 py-1.25 font-semibold text-[12px] leading-none cursor-pointer transition-all duration-140 hover:bg-primary-hover active:scale-[0.985]" id="btnSave" data-i18n="modal.save">保存</button>
         </footer>
       </div>
     </div>
 
     <!-- 请求详情（监控检查器） -->
-    <div id="reqDrawer" class="drawer-overlay hidden">
-      <aside class="drawer">
-        <header class="drawer-head">
-          <div class="drawer-title">
-            <span class="dr-method" id="drMethod">POST</span>
-            <span class="dr-status" id="drStatus">—</span>
-            <span class="dr-model" id="drModel"></span>
+    <div id="reqDrawer" class="drawer-overlay fixed inset-0 z-50 bg-[#111827]/28 backdrop-blur-[2px] flex justify-end animate-[fadeIn_0.16s_ease-[cubic-bezier(0.23,1,0.32,1)]] hidden">
+      <aside class="drawer w-[min(640px,82vw)] h-full bg-bg-elev border-l border-border-custom shadow-[-12px_0_40px_rgba(17,24,39,0.18)] flex flex-col animate-[drawerIn_0.24s_ease-[cubic-bezier(0.23,1,0.32,1)]]">
+        <header class="drawer-head flex items-center gap-2.5 p-[16px_16px_12px] border-b border-border-custom">
+          <div class="drawer-title flex items-center gap-2.5 flex-1 min-w-0 font-mono text-[13px]">
+            <span class="dr-method font-bold text-brand" id="drMethod">POST</span>
+            <span class="dr-status font-bold px-2 py-0.25 rounded-full text-[12px] [&.ok]:text-green [&.ok]:bg-green-soft [&.err]:text-red [&.err]:bg-red-soft" id="drStatus">—</span>
+            <span class="dr-model text-muted truncate [&_.arrow]:text-caption [&_.arrow]:mx-[2px] [&_.rewrite]:text-amber" id="drModel"></span>
           </div>
-          <button class="tool-btn" id="reqDrawerClose" aria-label="关闭"><span>✕</span></button>
+          <button class="tool-btn w-[26px] h-[26px] border border-border-custom rounded-[7px] bg-bg-elev text-muted cursor-pointer flex items-center justify-center transition-all duration-140 hover:text-fg hover:bg-chip-bg hover:border-border-strong" id="reqDrawerClose" data-i18n-title="drawer.close" aria-label="关闭"><span>✕</span></button>
         </header>
-        <div class="drawer-meta" id="reqMeta"></div>
-        <div class="drawer-tabs">
-          <button class="dr-tab active" data-tab="req">请求</button>
-          <button class="dr-tab" data-tab="res">响应</button>
+        <div class="drawer-meta flex flex-wrap gap-1.5 p-[12px_16px] border-b border-border-custom" id="reqMeta"></div>
+        <div class="drawer-tabs flex gap-1 p-[10px_16px_0] border-b border-border-custom">
+          <button class="dr-tab active border-none bg-transparent text-muted font-semibold text-[13px] leading-none p-[8px_14px] rounded-t-md cursor-pointer border-b-2 border-transparent -mb-[1px] hover:text-fg [&.active]:text-brand [&.active]:border-b-brand" data-tab="req" data-i18n="drawer.req">请求</button>
+          <button class="dr-tab border-none bg-transparent text-muted font-semibold text-[13px] leading-none p-[8px_14px] rounded-t-md cursor-pointer border-b-2 border-transparent -mb-[1px] hover:text-fg [&.active]:text-brand [&.active]:border-b-brand" data-tab="res" data-i18n="drawer.res">响应</button>
         </div>
-        <div class="drawer-body" id="reqDrawerBody"></div>
+        <div class="drawer-body flex-grow min-h-0 overflow-y-auto p-[4px_16px_24px]" id="reqDrawerBody"></div>
       </aside>
     </div>
 
+    <script src="../shared/i18n-dict.js"></script>
+    <script src="i18n.js"></script>
     <script src="icons.js"></script>
     <script src="vendor/marked.umd.js"></script>
     <script src="vendor/highlight.min.js"></script>

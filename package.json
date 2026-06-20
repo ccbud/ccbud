@@ -1,6 +1,6 @@
 {
   "name": "clawdy",
-  "version": "1.0.0",
+  "version": "1.0.2",
   "description": "Clawdy — Claude Code Gateway. A cross-platform desktop app that proxies Claude Code to any Anthropic-compatible provider, with one-click switching and model name mapping.",
   "main": "src/main/main.js",
   "author": {
@@ -9,19 +9,23 @@
   },
   "license": "MIT",
   "scripts": {
-    "start": "electron .",
+    "build:css": "tailwindcss -i src/renderer/input.css -o src/renderer/styles.css",
+    "start": "npm run build:css && electron .",
     "test": "node test/selftest.js",
+    "prepare:presidio": "bash scripts/prepare-presidio.sh",
     "pack": "electron-builder --dir",
-    "dist": "electron-builder",
-    "dist:mac": "electron-builder --mac",
-    "dist:win": "electron-builder --win",
-    "dist:linux": "electron-builder --linux"
+    "dist": "npm run prepare:presidio && electron-builder",
+    "dist:mac": "npm run prepare:presidio && electron-builder --mac",
+    "dist:win": "npm run prepare:presidio && electron-builder --win",
+    "dist:linux": "npm run prepare:presidio && electron-builder --linux"
   },
   "devDependencies": {
     "@highlightjs/cdn-assets": "^11.11.1",
+    "@tailwindcss/cli": "^4.3.1",
     "electron": "^33.2.1",
     "electron-builder": "^25.1.8",
-    "marked": "^18.0.5"
+    "marked": "^18.0.5",
+    "tailwindcss": "^4.3.1"
   },
   "build": {
     "appId": "dev.clawdy.gateway",
@@ -33,6 +37,16 @@
     "files": [
       "src/**/*",
       "!**/*.map"
+    ],
+    "extraResources": [
+      {
+        "from": "vendor/presidio-env",
+        "to": "presidio-env"
+      },
+      {
+        "from": "vendor/presidio-src",
+        "to": "presidio"
+      }
     ],
     "mac": {
       "category": "public.app-category.developer-tools",

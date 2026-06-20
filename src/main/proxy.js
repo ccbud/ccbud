@@ -18,6 +18,7 @@
 const http = require('http');
 const https = require('https');
 const zlib = require('zlib');
+const presidio = require('./presidio');
 const { URL } = require('url');
 const { Transform, Writable, pipeline } = require('stream');
 const { EventEmitter } = require('events');
@@ -123,6 +124,45 @@ function capText(buf, cap) {
   return { text: buf.slice(0, limit).toString('utf8').replace(/�+$/, ''), bytes: total, truncated: total - limit };
 }
 
+/* ---- /v1/models augmentation ----
+ * Some providers don't implement /v1/models, and even those that do never list the user's
+ * configured aliases. So when a provider HAS the endpoint we pass its list through and ADD
+ * the alias models; when it doesn't (404 / unreachable) we synthesize the list from aliases. */
+function modelEntry(id) {
+  return { type: 'model', id, display_name: id, created_at: '2025-01-01T00:00:00Z' };
+}
+function aliasModelEntries(config) {
+  const out = [];
+  const seen = new Set();
+  for (const p of (config && config.providers) || []) {
+    for (const m of p.models || []) {
+      if (m && m.alias && !seen.has(m.alias)) { seen.add(m.alias); out.push(modelEntry(m.alias)); }
+    }
+  }
+  return out;
+}
+function mergeModels(upstream, config) {
+  const data = Array.isArray(upstream && upstream.data) ? upstream.data.slice() : [];
+  const have = new Set(data.map((m) => m && m.id));
+  const adds = aliasModelEntries(config).filter((a) => !have.has(a.id));
+  const merged = Object.assign({}, upstream || {});
+  merged.data = adds.concat(data); // aliases first so they stand out
+  return merged;
+}
+function synthesizeModels(config) {
+  let out = aliasModelEntries(config);
+  if (!out.length) {
+    // no aliases configured → fall back to the active provider's real models so it isn't empty
+    const providers = (config && config.providers) || [];
+    const active = providers.find((p) => p.id === config.activeProviderId) || providers[0];
+    const seen = new Set();
+    for (const id of [active && active.defaultModel, active && active.smallFastModel]) {
+      if (id && !seen.has(id)) { seen.add(id); out.push(modelEntry(id)); }
+    }
+  }
+  return { data: out, has_more: false, first_id: out[0] ? out[0].id : null, last_id: out.length ? out[out.length - 1].id : null };
+}
+
 /** Normalize an Anthropic `usage` object into our token shape. */
 function extractUsage(u) {
   if (!u) return null;
@@ -195,6 +235,38 @@ function createSseTransform(model, opts) {
   });
 }
 
+// Redact PII from an Anthropic /v1/messages request body (system prompt + each message's text and
+// tool_result text), mutating it in place. All text fields go through Presidio concurrently.
+async function redactRequestBody(parsed, px) {
+  const opts = {
+    language: px.language || 'en',
+    ner: !!px.ner,                              // NER tier (opt-in)
+    llm: !!(px.llm && px.ollamaUrl),            // LLM tier (opt-in, needs Ollama)
+    ollamaUrl: px.ollamaUrl,
+    ollamaModel: px.ollamaModel,
+    threshold: typeof px.threshold === 'number' ? px.threshold : undefined,  // acceptance threshold
+    deidentify: px.deidentify || 'replace',     // replace | redact | mask | hash
+  };
+  const tasks = [];
+  const red = (s) => presidio.redactText(s, opts);
+  const onText = (obj, key) => {
+    const v = obj[key];
+    if (typeof v === 'string') { if (v.trim()) tasks.push(red(v).then((r) => { obj[key] = r; })); return; }
+    if (!Array.isArray(v)) return;
+    for (const b of v) {
+      if (!b || typeof b !== 'object') continue;
+      if (b.type === 'text' && typeof b.text === 'string') tasks.push(red(b.text).then((r) => { b.text = r; }));
+      else if (b.type === 'tool_result') {
+        if (typeof b.content === 'string') tasks.push(red(b.content).then((r) => { b.content = r; }));
+        else if (Array.isArray(b.content)) for (const c of b.content) if (c && c.type === 'text' && typeof c.text === 'string') tasks.push(red(c.text).then((r) => { c.text = r; }));
+      }
+    }
+  };
+  if (parsed.system != null) onText(parsed, 'system');
+  if (Array.isArray(parsed.messages)) for (const m of parsed.messages) if (m && m.content != null) onText(m, 'content');
+  await Promise.all(tasks);
+}
+
 function createGateway({ getConfig }) {
   const emitter = new EventEmitter();
   let server = null;
@@ -205,7 +277,7 @@ function createGateway({ getConfig }) {
     emitter.emit('log', Object.assign({ level, msg }, extra || {}));
   }
 
-  function handle(req, res, startedAt) {
+  async function handle(req, res, startedAt) {
     const config = getConfig() || {};
 
     // Optional local access token (defense in depth; we already bind to localhost).
@@ -238,9 +310,26 @@ function createGateway({ getConfig }) {
     }
     const provider = routing.provider;
 
+    // Presidio: redact PII from the outbound request body before it leaves the machine.
+    let redactedBody = false;
+    const px = config.presidio || {};
+    if (px.enabled && parsed && (Array.isArray(parsed.messages) || parsed.system != null)) {
+      try {
+        await redactRequestBody(parsed, px);
+        redactedBody = true;
+      } catch (e) {
+        if (!px.failOpen) {
+          respondJson(res, 503, JSON.parse(errorBody('Clawdy: Presidio content filter not ready — request blocked to prevent leaks. Check Presidio in Settings or turn it off.', 'api_error')));
+          log('warn', 'presidio redact failed (fail-closed): ' + (e && e.message));
+          return;
+        }
+        log('warn', 'presidio redact failed (fail-open, forwarding raw): ' + (e && e.message));
+      }
+    }
+
     let outBody = req.body || Buffer.alloc(0);
-    if (parsed && routing.outgoingModel && routing.outgoingModel !== requestedModel) {
-      parsed.model = routing.outgoingModel;
+    if (parsed && (redactedBody || (routing.outgoingModel && routing.outgoingModel !== requestedModel))) {
+      if (routing.outgoingModel && routing.outgoingModel !== requestedModel) parsed.model = routing.outgoingModel;
       outBody = Buffer.from(JSON.stringify(parsed), 'utf8');
     }
     const needRewriteResponse =
@@ -251,6 +340,16 @@ function createGateway({ getConfig }) {
     // Session/agent ids (for the request log + usage attribution).
     const sessionId = req.headers['x-claude-code-session-id'] || req.headers['x-claude-session-id'] || req.headers['x-session-id'] || req.headers['anthropic-client-session-id'] || null;
     const agentId = req.headers['x-claude-code-agent-id'] || null;
+
+    // GET /v1/models — pass the upstream list through but augment with the user's aliases,
+    // or synthesize it from aliases when the provider has no (working) models endpoint.
+    const reqPath = req.url.split('?')[0];
+    const isModelsList = req.method === 'GET' && /\/v1\/models\/?$/.test(reqPath);
+    // Claude Desktop/Code probes the endpoint with `HEAD /` as a liveness check. Some
+    // Anthropic-compatible upstreams don't implement it and answer 404, which makes the
+    // client treat the endpoint as down. We still forward the probe honestly, but if it
+    // 404s we substitute a 200 from the gateway (see the upstream-response handler).
+    const isHeadRoot = req.method === 'HEAD' && reqPath === '/';
 
     let target;
     try {
@@ -346,7 +445,7 @@ function createGateway({ getConfig }) {
 
         let logged = false;
         let capturedUsage = null;
-        const finishLog = (errMsg) => {
+        const finishLog = (errMsg, statusOverride) => {
           if (logged) return;
           logged = true;
           const u = capturedUsage || {};
@@ -361,7 +460,7 @@ function createGateway({ getConfig }) {
             rewritten: needRewriteResponse,
             sessionId,
             agentId,
-            status: upRes.statusCode,
+            status: statusOverride != null ? statusOverride : upRes.statusCode,
             ms: Date.now() - startedAt,
             error: errMsg,
             inputTokens: u.inputTokens || 0,
@@ -370,6 +469,23 @@ function createGateway({ getConfig }) {
             cacheCreation: u.cacheCreation || 0,
           });
         };
+
+        // `HEAD /` liveness probe that the upstream rejected with 404: answer 200 from the
+        // gateway (no body) so the client sees the endpoint as healthy. We flag the bypass
+        // in the response headers so it's never mistaken for a genuine upstream 200.
+        if (isHeadRoot && upRes.statusCode === 404) {
+          upRes.resume(); // drain the upstream so its socket can be freed/reused
+          const fbHeaders = Object.assign({}, outHeaders);
+          fbHeaders['content-length'] = '0';
+          fbHeaders['x-clawdy-fallback'] = 'head-root-404-to-200';
+          fbHeaders['x-clawdy-upstream-status'] = '404';
+          res.writeHead(200, fbHeaders);
+          res.end();
+          log('info', 'HEAD / fallback: upstream 404 → gateway 200 (' + (provider.name || provider.id) + ')');
+          emitExchange(200, fbHeaders, { text: '', bytes: 0, truncated: 0 });
+          finishLog(null, 200);
+          return;
+        }
 
         // Streaming SSE: pass through (rewriting model if needed) while sniffing usage,
         // and tee a capped copy of the downstream bytes for the monitor inspector.
@@ -408,6 +524,16 @@ function createGateway({ getConfig }) {
         const collector = new Writable({ write(chunk, _enc, cb) { cs.push(chunk); cb(); } });
         pipeline(...stages, collector, (err) => {
           if (err) {
+            if (isModelsList && !res.headersSent) {
+              const mbuf = Buffer.from(JSON.stringify(synthesizeModels(config)), 'utf8');
+              outHeaders['content-type'] = 'application/json';
+              outHeaders['content-length'] = Buffer.byteLength(mbuf);
+              res.writeHead(200, outHeaders);
+              res.end(mbuf);
+              emitExchange(200, outHeaders, capText(mbuf, RES_CAP));
+              finishLog();
+              return;
+            }
             if (!res.headersSent) respondJson(res, 502, JSON.parse(errorBody('Clawdy upstream stream error: ' + err.message, 'api_error')));
             else { try { res.destroy(); } catch (_) {} }
             emitExchange(upRes.statusCode, outHeaders, capText(Buffer.concat(cs), RES_CAP), err.message);
@@ -415,6 +541,22 @@ function createGateway({ getConfig }) {
             return;
           }
           let buf = Buffer.concat(cs);
+          // /v1/models: merge aliases into a working upstream list, else synthesize from aliases.
+          if (isModelsList) {
+            let upstreamObj = null;
+            if (upRes.statusCode >= 200 && upRes.statusCode < 300) {
+              try { const o = JSON.parse(buf.toString('utf8')); if (o && Array.isArray(o.data)) upstreamObj = o; } catch (_) {}
+            }
+            const result = upstreamObj ? mergeModels(upstreamObj, config) : synthesizeModels(config);
+            buf = Buffer.from(JSON.stringify(result), 'utf8');
+            outHeaders['content-type'] = 'application/json';
+            outHeaders['content-length'] = Buffer.byteLength(buf);
+            res.writeHead(200, outHeaders);
+            res.end(buf);
+            emitExchange(200, outHeaders, capText(buf, RES_CAP));
+            finishLog();
+            return;
+          }
           if (ct.includes('application/json')) {
             try {
               const o = JSON.parse(buf.toString('utf8'));
@@ -437,6 +579,22 @@ function createGateway({ getConfig }) {
     );
 
     upReq.on('error', (err) => {
+      // Provider unreachable / no models endpoint → still answer /v1/models from the aliases.
+      if (isModelsList && !res.headersSent) {
+        const mbuf = Buffer.from(JSON.stringify(synthesizeModels(config)), 'utf8');
+        try {
+          res.writeHead(200, { 'content-type': 'application/json', 'content-length': Buffer.byteLength(mbuf) });
+          res.end(mbuf);
+        } catch (_) {}
+        log('info', '/v1/models synthesized from aliases (upstream unreachable: ' + err.message + ')');
+        emitExchange(200, { 'content-type': 'application/json' }, capText(mbuf, RES_CAP));
+        emitter.emit('request', {
+          id: exId, method: req.method, path: reqPath, provider: provider.name || provider.id,
+          requestedModel, outgoingModel: routing.outgoingModel, clientFacingModel: routing.clientFacingModel,
+          rewritten: needRewriteResponse, sessionId, agentId, status: 200, ms: Date.now() - startedAt, error: null,
+        });
+        return;
+      }
       if (!res.headersSent) {
         respondJson(res, 502, JSON.parse(errorBody('Clawdy upstream error: ' + err.message, 'api_error')));
       } else {
@@ -473,11 +631,14 @@ function createGateway({ getConfig }) {
     req.on('data', (c) => chunks.push(c));
     req.on('end', () => {
       req.body = Buffer.concat(chunks);
-      try {
-        handle(req, res, startedAt);
-      } catch (e) {
-        respondJson(res, 500, JSON.parse(errorBody('Clawdy internal error: ' + e.message, 'api_error')));
-      }
+      Promise.resolve()
+        .then(() => handle(req, res, startedAt))
+        .catch((e) => {
+          try {
+            if (!res.headersSent) respondJson(res, 500, JSON.parse(errorBody('Clawdy internal error: ' + (e && e.message ? e.message : e), 'api_error')));
+            else res.destroy();
+          } catch (_) {}
+        });
     });
     req.on('error', () => {
       try {

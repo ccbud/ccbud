@@ -4,6 +4,7 @@ const api = window.clawdy;
 let config = { port: 8788, activeProviderId: null, providers: [] };
 let status = { running: false, port: null, connected: false, lastStartError: null, claudePath: '' };
 let editingId = null;
+let modalIcon = null;   // the icon being edited in the add/edit modal (emoji or image data-URL)
 let dragId = null;
 const stats = { total: 0, ok: 0, sumMs: 0, last: null };
 
@@ -18,115 +19,154 @@ function injectIcons(root) {
 }
 
 const PRESETS = {
-  glm: { name: '智谱 GLM', baseUrl: 'https://open.bigmodel.cn/api/anthropic', defaultModel: 'glm-5.1', smallFastModel: 'glm-5.1' },
-  deepseek: { name: 'DeepSeek', baseUrl: 'https://api.deepseek.com/anthropic', defaultModel: 'deepseek-chat', smallFastModel: 'deepseek-chat' },
-  mimo: { name: '小米 MiMo', baseUrl: 'https://token-plan-sgp.xiaomimimo.com/anthropic', defaultModel: '', smallFastModel: '' },
-  kimi: { name: '月之暗面 Kimi', baseUrl: 'https://api.moonshot.cn/anthropic', defaultModel: 'kimi-k2-0905-preview', smallFastModel: 'kimi-k2-0905-preview' },
+  glm: { name: 'GLM', baseUrl: 'https://open.bigmodel.cn/api/anthropic', defaultModel: 'glm-5.2', smallFastModel: 'glm-5.2' },
+  deepseek: { name: 'DeepSeek', baseUrl: 'https://api.deepseek.com/anthropic', defaultModel: 'deepseek-v4-pro', smallFastModel: 'deepseek-v4-flash' },
+  mimo: { name: 'MiMo', baseUrl: 'https://token-plan-sgp.xiaomimimo.com/anthropic', defaultModel: 'mimo-v2.5-pro', smallFastModel: 'mimo-v2.5' },
+  kimi: { name: 'Kimi', baseUrl: 'https://api.moonshot.cn/anthropic', defaultModel: 'kimi-for-coding', smallFastModel: 'kimi-for-coding' },
   custom: { name: '', baseUrl: '', defaultModel: '', smallFastModel: '' },
 };
-const PRESET_LABELS = { glm: '智谱 GLM', deepseek: 'DeepSeek', mimo: '小米 MiMo', kimi: '月之暗面 Kimi', custom: '自定义' };
+const PRESET_LABELS = { glm: 'GLM', deepseek: 'DeepSeek', mimo: 'MiMo', kimi: 'Kimi', custom: '自定义' };
 
 /* ---------- helpers ---------- */
 function escapeHtml(s) {
   return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
+// Unified 24-hour clock (HH:MM:SS) everywhere — language-independent, so the monitor stays
+// consistent across language switches and the timestamp never wraps with a 12-hour "PM" suffix.
+function fmtTime(d) {
+  const t = d == null ? new Date() : (d instanceof Date ? d : new Date(d));
+  const p = (n) => String(n).padStart(2, '0');
+  return `${p(t.getHours())}:${p(t.getMinutes())}:${p(t.getSeconds())}`;
+}
+function fmtNum(n) {
+  n = n || 0;
+  if (n < 1000) return String(n);
+  if (n < 1e6) return (n / 1e3).toFixed(n < 1e4 ? 1 : 0).replace(/\.0$/, '') + 'K';
+  if (n < 1e9) return (n / 1e6).toFixed(n < 1e7 ? 1 : 0).replace(/\.0$/, '') + 'M';
+  return (n / 1e9).toFixed(1).replace(/\.0$/, '') + 'B';
+}
+// Smooth brand-tinted area sparkline; stretches to its container via preserveAspectRatio="none".
+function sparkSVG(vals) {
+  const W = 300, H = 46, pad = 4;
+  const data = (vals && vals.length) ? vals : [0, 0];
+  const n = data.length;
+  const max = Math.max(1, ...data);
+  const xs = (i) => (n === 1 ? W / 2 : pad + (i / (n - 1)) * (W - 2 * pad));
+  const ys = (v) => H - pad - (v / max) * (H - 2 * pad - 2);
+  const pts = data.map((v, i) => [xs(i), ys(v)]);
+  let line = `M ${pts[0][0].toFixed(1)} ${pts[0][1].toFixed(1)}`;
+  for (let i = 0; i < pts.length - 1; i++) {
+    const p0 = pts[i - 1] || pts[i], p1 = pts[i], p2 = pts[i + 1], p3 = pts[i + 2] || p2;
+    const c1x = p1[0] + (p2[0] - p0[0]) / 6, c1y = p1[1] + (p2[1] - p0[1]) / 6;
+    const c2x = p2[0] - (p3[0] - p1[0]) / 6, c2y = p2[1] - (p3[1] - p1[1]) / 6;
+    line += ` C ${c1x.toFixed(1)} ${c1y.toFixed(1)}, ${c2x.toFixed(1)} ${c2y.toFixed(1)}, ${p2[0].toFixed(1)} ${p2[1].toFixed(1)}`;
+  }
+  const area = `${line} L ${pts[n - 1][0].toFixed(1)} ${H - pad} L ${pts[0][0].toFixed(1)} ${H - pad} Z`;
+  return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" style="width:100%;height:100%;display:block"><defs><linearGradient id="hsg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="var(--brand)" stop-opacity="0.30"/><stop offset="1" stop-color="var(--brand)" stop-opacity="0"/></linearGradient></defs><path d="${area}" fill="url(#hsg)"/><path d="${line}" fill="none" stroke="var(--brand)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/></svg>`;
+}
 const activeProvider = () => config.providers.find((p) => p.id === config.activeProviderId) || null;
 function hashHue(s) { let h = 0; for (let i = 0; i < (s || '').length; i++) h = (h * 31 + s.charCodeAt(i)) % 360; return h; }
-function renderProviderIcon(name) {
-  const n = (name || '').trim().toLowerCase();
-
-  if (n.includes('kimi') || n.includes('moonshot') || n.includes('月之')) {
-    return {
-      style: 'background: transparent; box-shadow: none;',
-      html: `<img src="assets/kimi.svg" class="prov-svg" style="width: 100%; height: 100%; display: block;" />`
-    };
-  }
-  if (n.includes('deepseek')) {
-    return {
-      style: 'background: transparent; box-shadow: none;',
-      html: `<img src="assets/deepseek.svg" class="prov-svg" style="width: 100%; height: 100%; display: block;" />`
-    };
-  }
-  if (n.includes('glm') || n.includes('智谱') || n.includes('bigmodel')) {
-    return {
-      style: 'background: transparent; box-shadow: none;',
-      html: `<img src="assets/zhipu.svg" class="prov-svg" style="width: 100%; height: 100%; display: block;" />`
-    };
-  }
-  if (n.includes('mimo') || n.includes('小米') || n.includes('xiaomi')) {
-    return {
-      style: 'background: transparent; box-shadow: none;',
-      html: `<img src="assets/xiaomi.svg" class="prov-svg" style="width: 100%; height: 100%; display: block;" />`
-    };
-  }
-  if (n.includes('zenmux')) {
-    return {
-      style: 'background: transparent; box-shadow: none;',
-      html: `<img src="assets/zenmux.svg" class="prov-svg" style="width: 100%; height: 100%; display: block;" />`
-    };
-  }
-
-  let svgContent = '';
-  let themeColor = 'hsl(215, 100%, 60%)'; // default blue
-
-  if (n.includes('claude') || n.includes('anthropic')) {
-    themeColor = 'hsl(28, 70%, 48%)'; // Anthropic Bronze
-    svgContent = `<path d="M12 2L3 7v10l9 5 9-5V7l-9-5z M12 2v20 M3 12h18" stroke-linecap="round"/>`;
-  } else {
-    // Custom generic high-tech cube icon
-    const h = hashHue(name || '?');
-    themeColor = `hsl(${h}, 70%, 52%)`;
-    svgContent = `<path d="M12 2L3 7v10l9 5 9-5V7l-9-5z" stroke-linecap="round"/><path d="M12 22V12M12 12L3 7M12 12l9-5" stroke-linecap="round"/>`;
-  }
-
+// Deterministic "random" emoji set — a custom provider with no brand logo gets a stable one.
+const ICON_EMOJIS = ['🤖', '🧠', '⚡', '🚀', '🦊', '🐳', '🌟', '💎', '🔮', '🎯', '🛰️', '🧩', '🔆', '🌀', '🦁', '🐲', '🦄', '🍀', '🔥', '❄️', '🌈', '🎨', '🧪', '📡', '🛡️', '🎲', '🌶️', '🦉', '🐙', '🪐', '✨', '🌊'];
+function emojiIcon(emoji, name) {
   const h = hashHue(name || '?');
-  const gradient = `background: linear-gradient(135deg, ${themeColor}, hsl(${(h + 40) % 360}, 75%, 45%))`;
-  
-  return {
-    style: gradient,
-    html: `<svg class="prov-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">${svgContent}</svg>`
-  };
+  return { style: `background: linear-gradient(135deg, hsl(${h},62%,56%), hsl(${(h + 45) % 360},68%,46%))`, html: `<span class="prov-emoji">${escapeHtml(emoji)}</span>` };
 }
-function mask(t) { return !t ? '未填密钥' : t.length <= 10 ? '••••' : t.slice(0, 4) + '••••' + t.slice(-4); }
+// icon (optional): a user-set image (data:/http) or emoji; otherwise brand logo, else a default emoji.
+function renderProviderIcon(name, icon) {
+  if (icon && typeof icon === 'string') {
+    if (/^(data:|https?:|assets\/)/.test(icon)) return { style: 'background: transparent; box-shadow: none;', html: `<img src="${escapeHtml(icon)}" class="prov-svg" style="width:100%;height:100%;object-fit:cover;display:block" />` };
+    return emojiIcon(icon, name); // a chosen emoji
+  }
+  const n = (name || '').trim().toLowerCase();
+  const brand = { kimi: ['kimi', 'moonshot', '月之'], deepseek: ['deepseek'], zhipu: ['glm', '智谱', 'bigmodel'], xiaomi: ['mimo', '小米', 'xiaomi'], zenmux: ['zenmux'] };
+  for (const file in brand) {
+    if (brand[file].some((k) => n.includes(k))) return { style: 'background: transparent; box-shadow: none;', html: `<img src="assets/${file}.svg" class="prov-svg" style="width:100%;height:100%;display:block" />` };
+  }
+  if (n.includes('claude') || n.includes('anthropic')) {
+    const h = hashHue(name || '?');
+    return { style: `background: linear-gradient(135deg, hsl(28,70%,48%), hsl(${(h + 40) % 360},75%,45%))`, html: `<svg class="prov-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L3 7v10l9 5 9-5V7l-9-5z" stroke-linecap="round"/><path d="M12 2v20 M3 12h18" stroke-linecap="round"/></svg>` };
+  }
+  return emojiIcon(ICON_EMOJIS[hashHue(name || '?') % ICON_EMOJIS.length], name); // default: deterministic emoji
+}
+function mask(t) { return !t ? I18n.t('providers.noKey') : t.length <= 10 ? '••••' : t.slice(0, 4) + '••••' + t.slice(-4); }
 
 /* ---------- hero / status ---------- */
 function showHeroNote(text, warn) {
   const n = $('heroNote');
-  n.textContent = text;
-  n.className = 'hero-hint' + (warn ? ' warn' : '');
+  if (n) {
+    n.textContent = text;
+    n.classList.remove('hidden');
+    n.classList.toggle('warn', !!warn);
+  }
 }
-function hideHeroNote() { $('heroNote').className = 'hero-hint hidden'; }
+function hideHeroNote() {
+  const n = $('heroNote');
+  if (n) {
+    n.classList.add('hidden');
+  }
+}
+
+let heroRange = '30d';
+async function renderHeroUsage() {
+  const wrap = $('heroUsage');
+  if (!wrap || !api.usageGet) return;
+  let u; try { u = await api.usageGet(heroRange); } catch (_) { return; }
+  if (!u) return;
+  const port = (status.running && status.port) || config.port;
+  const ep = $('heroEndpointText'); if (ep) ep.textContent = `localhost:${port}`;
+  const tk = $('heroTokens'); if (tk) tk.textContent = fmtNum(u.tokens || 0);
+  const rq = $('heroReqs'); if (rq) rq.textContent = I18n.t('hero.reqsN', { n: (u.requests || 0).toLocaleString() });
+  const md = $('heroModel'); if (md) md.textContent = u.favoriteModel && u.favoriteModel !== '—' ? `· ${u.favoriteModel}` : '';
+  const days = heroRange === '7d' ? 7 : heroRange === '30d' ? 30 : 90;
+  const series = (u.heatmap || []).slice(-days).map((c) => c.tokens || 0);
+  const sp = $('heroSpark'); if (sp) sp.innerHTML = sparkSVG(series);
+}
+let _heroUsageT = null;
+function scheduleHeroUsage() {
+  clearTimeout(_heroUsageT);
+  _heroUsageT = setTimeout(() => { const w = $('heroUsage'); if (status.connected && w && !w.classList.contains('hidden')) renderHeroUsage(); }, 2500);
+}
 
 function renderHero() {
   const hero = $('hero');
   const ap = activeProvider();
   if (status.connected) {
     hero.classList.add('connected');
-    $('heroIcon').innerHTML = I.connected || '';
-    $('heroTitle').textContent = ap ? ap.name : '已接入';
-    $('heroSub').innerHTML = ap ? `经 <b>${escapeHtml(ap.name)}</b> 转发 · 点卡片切换` : '网关运行中';
-    $('btnConnect').textContent = '断开';
-    showHeroNote('保持运行。切换服务后重启 Claude Code 新会话生效。', false);
+    const icon = $('heroIcon');
+    if (ap) { const pi = renderProviderIcon(ap.name, ap.icon); icon.setAttribute('style', pi.style || ''); icon.innerHTML = pi.html; }
+    else { icon.removeAttribute('style'); icon.innerHTML = I.connected || ''; }
+    $('heroTitle').textContent = ap ? ap.name : I18n.t('hero.connected');
+    $('heroSub').innerHTML = ap ? I18n.t('hero.connectedVia', { name: escapeHtml(ap.name) }) : I18n.t('hero.running');
+    $('btnConnect').textContent = I18n.t('hero.disconnect');
+    hideHeroNote();
+    $('heroUsage').classList.remove('hidden');
+    renderHeroUsage();
   } else {
     hero.classList.remove('connected');
-    $('heroIcon').innerHTML = I.connect || '';
-    $('heroTitle').textContent = '未接入';
-    $('heroSub').textContent = '选择服务，一键写入 Claude Code 配置';
-    $('btnConnect').textContent = '一键接入';
+    const icon = $('heroIcon');
+    icon.removeAttribute('style');
+    icon.innerHTML = I.connect || '';
+    $('heroTitle').textContent = I18n.t('hero.titleIdle');
+    $('heroSub').textContent = I18n.t('hero.subIdle');
+    $('btnConnect').textContent = I18n.t('hero.connect');
     hideHeroNote();
+    $('heroUsage').classList.add('hidden');
   }
 }
 
 function renderStatus() {
   const chip = $('statusPill');
-  if (status.connected) {
-    chip.className = 'status-chip on';
-    chip.innerHTML = '<span class="status-dot"></span><span class="status-text">已接入</span>';
-    $('brandTitle').classList.add('running');
-  } else {
-    chip.className = 'status-chip';
-    chip.innerHTML = '<span class="status-dot"></span><span class="status-text">未接入</span>';
-    $('brandTitle').classList.remove('running');
+  if (chip) {
+    chip.classList.toggle('on', !!status.connected);
+    const txt = chip.querySelector('.status-text');
+    if (txt) {
+      txt.textContent = I18n.t(status.connected ? 'status.connected' : 'status.disconnected');
+    }
+    const bt = $('brandTitle');
+    if (bt) {
+      bt.classList.toggle('running', !!status.connected);
+    }
   }
 }
 
@@ -139,9 +179,9 @@ function renderConnect() {
     `export ANTHROPIC_BASE_URL=http://localhost:${port}`,
     `export ANTHROPIC_AUTH_TOKEN=${token}`,
     '',
-    '# 一般无需手动设置，点上方「一键接入」即可',
+    I18n.t('settings.exportHint'),
   ].join('\n');
-  $('claudePath').textContent = status.claudePath ? 'Claude 配置：' + status.claudePath : '';
+  $('claudePath').textContent = status.claudePath ? I18n.t('settings.claudePath') + status.claudePath : '';
   $('fOpenAtLogin').checked = !!config.openAtLogin;
   $('fRequireToken').checked = !!config.requireToken;
   $('fGatewayToken').value = config.gatewayToken || '';
@@ -150,9 +190,186 @@ function renderConnect() {
   $('fTrayUsage').checked = !!tu.enabled;
   $('fTrayRange').value = tu.range || '7d';
   $('trayRangeRow').classList.toggle('hidden', !tu.enabled);
+  if ($('fLang')) $('fLang').value = config.language || I18n.lang;
   const se = $('startError');
   if (status.lastStartError) { se.textContent = status.lastStartError; se.classList.remove('hidden'); }
   else se.classList.add('hidden');
+  renderHistoryDirs();
+  renderDesktopCard();
+  renderPresidioCard();
+}
+
+/* ---------- Claude Desktop ("Third-Party Inference") integration ---------- */
+async function renderDesktopCard() {
+  const card = $('desktopCard');
+  if (!card || !api.desktopStatus) return;
+  let st;
+  try { st = await api.desktopStatus(); } catch (_) { return; }
+  const chip = $('desktopStatusChip');
+  const btn = $('btnDesktopConnect');
+  const note = $('desktopNote');
+  if (!chip || !btn || !note) return;
+  chip.className = 'desktop-chip text-[10.5px] font-semibold rounded-full px-2 py-0.25 ' + (st.connected ? 'bg-green-soft text-green' : 'bg-chip-bg text-muted');
+  if (!st.supported || !st.installed) {
+    card.classList.add('opacity-60');
+    btn.disabled = true;
+    btn.dataset.connected = '';
+    btn.textContent = I18n.t('settings.desktopConnect');
+    chip.textContent = I18n.t(st.supported ? 'settings.desktopNotInstalled' : 'settings.desktopUnsupported');
+    delete note.dataset.transient;
+    note.textContent = I18n.t(st.supported ? 'settings.desktopNote' : 'settings.desktopUnsupportedNote');
+    return;
+  }
+  card.classList.remove('opacity-60');
+  btn.disabled = false;
+  btn.dataset.connected = st.connected ? '1' : '';
+  btn.textContent = I18n.t(st.connected ? 'settings.desktopRestore' : 'settings.desktopConnect');
+  chip.textContent = I18n.t(st.connected ? 'settings.desktopConnected' : 'settings.desktopDisconnected');
+  // The post-action guidance (steps / restored) is marked transient so a status re-render
+  // doesn't wipe it before the user has gone to System Settings.
+  if (st.connected) { delete note.dataset.transient; note.textContent = I18n.t('settings.desktopConnectedNote'); }
+  else if (!note.dataset.transient) { note.textContent = I18n.t('settings.desktopNote'); }
+}
+
+// The Claude Desktop status is read from the installed system profile (not a live event), so
+// poll lightly while the Settings view is open — picks up an install/removal within a few seconds.
+let desktopPollTimer = null;
+function startDesktopPoll() {
+  stopDesktopPoll();
+  renderDesktopCard(); renderPresidioCard();
+  desktopPollTimer = setInterval(() => { renderDesktopCard(); renderPresidioCard(); }, 4000);
+}
+function stopDesktopPoll() {
+  if (desktopPollTimer) { clearInterval(desktopPollTimer); desktopPollTimer = null; }
+}
+
+/* ---------- Presidio (local PII content filter) ---------- */
+async function renderPresidioCard() {
+  const card = $('presidioCard');
+  if (!card || !api.presidioStatus) return;
+  let st;
+  try { st = await api.presidioStatus(); } catch (_) { return; }
+  const chip = $('presidioStatusChip');
+  const sw = $('fPresidio');
+  const note = $('presidioNote');
+  if (!chip || !sw || !note) return;
+  const enabled = !!(config.presidio && config.presidio.enabled);
+  if (document.activeElement !== sw) sw.checked = enabled;
+  // Tier sub-options (regex auto-on; NER / LLM opt-in).
+  const tiers = $('presidioTiers');
+  if (tiers) tiers.classList.toggle('hidden', !enabled);
+  const px = config.presidio || {};
+  const nerSw = $('fPresidioNer'), llmSw = $('fPresidioLlm'), ollama = $('fOllamaUrl');
+  if (nerSw && document.activeElement !== nerSw) nerSw.checked = !!px.ner;
+  if (llmSw && document.activeElement !== llmSw) llmSw.checked = !!px.llm;
+  if (ollama) { ollama.classList.toggle('hidden', !px.llm); if (document.activeElement !== ollama) ollama.value = px.ollamaUrl || ''; }
+  // advanced controls
+  const deid = $('fPresidioDeid'); if (deid && document.activeElement !== deid) deid.value = px.deidentify || 'replace';
+  const thr = $('fPresidioThreshold'), thrVal = $('fPresidioThresholdVal');
+  const tv = (typeof px.threshold === 'number') ? px.threshold : 0.4;
+  if (thr && document.activeElement !== thr) thr.value = tv;
+  if (thrVal) thrVal.textContent = tv.toFixed(2);
+  const nerM = $('fPresidioNerModel'); if (nerM && document.activeElement !== nerM) nerM.value = px.nerModel || 'en_core_web_sm';
+  let txt, cls = 'bg-chip-bg text-muted';
+  if (!st.supported) { sw.disabled = true; txt = 'settings.desktopUnsupported'; }
+  else {
+    sw.disabled = false;
+    if (!enabled) txt = 'settings.presidioOff';
+    else if (st.setup === 'installing') { txt = 'settings.presidioInstalling'; cls = 'bg-amber-soft text-amber'; }
+    else if (st.setup === 'missing-source') { txt = 'settings.presidioNoSource'; cls = 'bg-amber-soft text-amber'; }
+    else if (st.running) { txt = 'settings.presidioRunning'; cls = 'bg-green-soft text-green'; }
+    else { txt = 'settings.presidioStarting'; cls = 'bg-amber-soft text-amber'; }
+  }
+  chip.className = 'text-[10.5px] font-semibold rounded-full px-2 py-0.25 ' + cls;
+  chip.textContent = I18n.t(txt);
+  const dot = $('presidioLogDot');
+  if (dot) dot.style.background = (enabled && st.running) ? '#34c759' : (enabled ? '#ff9f0a' : '#3a3f4b');
+  if (enabled && st.running) { delete note.dataset.transient; note.textContent = I18n.t('settings.presidioRunningNote'); }
+  else if (!note.dataset.transient) note.textContent = I18n.t(enabled && st.setup === 'installing' ? 'settings.presidioInstallingNote' : 'settings.presidioNote');
+}
+
+// Presidio console — live service output, so "启动中" is never a mystery.
+function appendPresidioLog(line) {
+  const pre = $('presidioLog');
+  if (!pre) return;
+  const nearBottom = pre.scrollHeight - pre.scrollTop - pre.clientHeight < 40;
+  pre.textContent += (pre.textContent ? '\n' : '') + line;
+  if (nearBottom) pre.scrollTop = pre.scrollHeight;
+}
+function renderPresidioLog() {
+  const pre = $('presidioLog');
+  if (!pre || !api.presidioLogs) return;
+  api.presidioLogs().then((lines) => {
+    pre.textContent = (lines || []).join('\n');
+    pre.scrollTop = pre.scrollHeight;
+  }).catch(() => {});
+}
+// Presidio console tabs: console output ↔ Findings table (detected PII).
+let presidioTab = 'console';
+function setPresidioTab(t) {
+  presidioTab = t;
+  document.querySelectorAll('#presidioConsoleTabs .ptab').forEach((b) => b.classList.toggle('active', b.dataset.ptab === t));
+  document.querySelectorAll('#presidioConsole [data-ptab-panel]').forEach((p) => p.classList.toggle('hidden', p.dataset.ptabPanel !== t));
+  if (t === 'findings') renderPresidioFindings();
+}
+function updateFindCount(n) {
+  const c = $('presidioFindCount');
+  if (!c) return;
+  c.textContent = n > 99 ? '99+' : String(n);
+  c.classList.toggle('hidden', !n);
+}
+function findingsTableHTML(rows) {
+  if (!rows || !rows.length) return `<div class="fd-empty">${escapeHtml(I18n.t('settings.presidioFindNone'))}</div>`;
+  const head = `<thead><tr><th>${escapeHtml(I18n.t('settings.findEntity'))}</th><th>${escapeHtml(I18n.t('settings.findText'))}</th><th style="text-align:right">${escapeHtml(I18n.t('settings.findScore'))}</th></tr></thead>`;
+  const body = rows.slice().reverse().map((f) => `<tr><td class="fd-entity">${escapeHtml(f.entity || '')}</td><td class="fd-text">${escapeHtml(f.text || '')}</td><td class="fd-score">${f.score != null ? f.score : ''}</td></tr>`).join('');
+  return `<table>${head}<tbody>${body}</tbody></table>`;
+}
+function renderPresidioFindings() {
+  const host = $('presidioFindings');
+  if (!host || !api.presidioFindings) return;
+  api.presidioFindings().then((rows) => {
+    host.innerHTML = findingsTableHTML(rows || []);
+    updateFindCount((rows || []).length);
+  }).catch(() => {});
+}
+function refreshFindCount() {
+  if (!api.presidioFindings) return;
+  api.presidioFindings().then((rows) => updateFindCount((rows || []).length)).catch(() => {});
+}
+function appendFinding() {
+  const c = $('presidioFindCount');
+  if (c) updateFindCount((parseInt(c.textContent, 10) || 0) + 1);
+  if (presidioTab === 'findings') renderPresidioFindings();
+}
+
+async function renderHistoryDirs() {
+  const host = $('histDirList');
+  if (!host) return;
+  let data; try { data = await api.historyDirs(); } catch (_) { data = { dirs: [] }; }
+  const dirs = data.dirs || [];
+  host.innerHTML = dirs.map((d) => {
+    const status = d.exists === false
+      ? `<span class="hist-dir-warn text-red font-semibold text-[11px] shrink-0 bg-red-soft px-2.5 py-0.75 rounded-full" title="${escapeHtml(I18n.t('settings.dirMissing'))}">${escapeHtml(I18n.t('settings.dirMissing'))}</span>`
+      : `<span class="hist-dir-count text-brand font-semibold text-[11px] shrink-0 bg-brand-soft px-2.5 py-0.75 rounded-full">${escapeHtml(I18n.t('settings.sessions', { n: d.sessions }))}</span>`;
+    return `<div class="hist-dir-row flex items-center gap-3.5 p-3 px-4 bg-bg-elev border border-border-custom rounded-md text-[13px] shadow-sm transition-all duration-200 ease-out hover:-translate-y-0.5 hover:border-border-strong hover:shadow-card-hover [.missing_&]:opacity-70 [.missing_&_.hist-dir-label]:text-muted [.missing_&_.hist-dir-label]:line-through${d.exists === false ? ' missing' : ''}">
+      <span class="hist-dir-label flex-1 font-mono truncate text-fg text-[12.5px]" title="${escapeHtml(d.projectsDir || '')}">${escapeHtml(d.label)}</span>
+      ${status}
+      <button class="hist-dir-del w-7 h-7 border-0 rounded-full bg-transparent text-muted cursor-pointer flex items-center justify-center shrink-0 transition-colors duration-200 hover:enabled:text-red hover:enabled:bg-red-soft disabled:opacity-25 disabled:cursor-not-allowed" data-del-dir="${escapeHtml(d.id)}" title="${escapeHtml(I18n.t('providers.remove'))}"${d.id === '~/.claude' ? ' disabled' : ''}>${I.trash || '⌫'}</button>
+    </div>`;
+  }).join('') || `<div class="caption text-caption text-xs">${escapeHtml(I18n.t('settings.none'))}</div>`;
+}
+async function addHistDirPath(v) {
+  v = (v || '').trim();
+  if (!v) return;
+  const dirs = (config.historyDirs || []).slice();
+  if (!dirs.includes(v)) dirs.push(v);
+  await persist({ historyDirs: dirs });
+}
+async function pickHistDir() {
+  if (!api.historyPickDir) return;
+  let res; try { res = await api.historyPickDir(); } catch (_) { return; }
+  if (!res || res.canceled || !res.path) return;
+  await addHistDirPath(res.path);
 }
 
 function renderProviders() {
@@ -162,44 +379,50 @@ function renderProviders() {
   for (const p of config.providers) {
     const isActive = p.id === config.activeProviderId;
     const el = document.createElement('div');
-    el.className = 'provider' + (isActive ? ' active' : '');
+    el.className = 'provider group grid grid-cols-[14px_36px_1fr_minmax(72px,auto)_auto] items-center gap-3 p-2.5 pr-3.5 pl-2.5 min-h-[60px] bg-bg-elev border border-border-custom rounded-[13px] shadow-card cursor-pointer relative transition-all duration-150 hover:border-border-strong hover:shadow-card-hover hover:-translate-y-0.25 [&.active]:border-green/38 [&.active]:bg-[color-mix(in_srgb,var(--bg-elev)_90%,var(--green)_10%)] [&.dragging]:opacity-40 [&.dragging]:scale-99 [&.drag-over]:border-brand [&.drag-over]:bg-brand-soft ' + (isActive ? 'active' : '');
     el.draggable = true;
     el.dataset.id = p.id;
 
     const tags = [];
-    if (p.defaultModel) tags.push(`<span class="tag">主 ${escapeHtml(p.defaultModel)}</span>`);
-    if (p.smallFastModel && p.smallFastModel !== p.defaultModel) tags.push(`<span class="tag">快 ${escapeHtml(p.smallFastModel)}</span>`);
-    for (const m of p.models || []) tags.push(`<span class="tag map">${escapeHtml(m.alias)} → ${escapeHtml(m.upstream)}</span>`);
+    if (p.defaultModel) tags.push(`<span class="tag text-[11px] font-mono bg-chip-bg rounded-[4px] px-1.5 py-0.25 text-fg whitespace-nowrap">${escapeHtml(I18n.t('providers.tagMain'))} ${escapeHtml(p.defaultModel)}</span>`);
+    if (p.smallFastModel && p.smallFastModel !== p.defaultModel) tags.push(`<span class="tag text-[11px] font-mono bg-chip-bg rounded-[4px] px-1.5 py-0.25 text-fg whitespace-nowrap">${escapeHtml(I18n.t('providers.tagFast'))} ${escapeHtml(p.smallFastModel)}</span>`);
+    for (const m of p.models || []) tags.push(`<span class="tag map text-[11px] font-mono bg-brand-soft rounded-[4px] px-1.5 py-0.25 text-brand font-medium whitespace-nowrap">${escapeHtml(m.alias)} → ${escapeHtml(m.upstream)}</span>`);
 
-    const iconData = renderProviderIcon(p.name);
+    const iconData = renderProviderIcon(p.name, p.icon);
     el.innerHTML = `
-      <span class="grip" title="拖动排序">⠿</span>
-      <div class="prov-icon" style="${iconData.style}">${iconData.html}</div>
-      <div class="pinfo">
-        <div class="pname">${escapeHtml(p.name)} ${isActive ? '<span class="badge-active">活跃</span>' : ''}</div>
-        <div class="pmeta">${escapeHtml(mask(p.authToken))} · ${escapeHtml(p.baseUrl.replace(/^https?:\/\//,''))}</div>
+      <span class="grip text-caption cursor-grab text-[12px] opacity-30 leading-none select-none group-hover:opacity-65 transition-opacity duration-150" title="${escapeHtml(I18n.t('providers.reorder'))}">⠿</span>
+      <div class="prov-icon w-9 h-9 rounded-[9px] shrink-0 flex items-center justify-center text-white font-bold text-[13px] tracking-tight shadow-sm" style="${iconData.style}">${iconData.html}</div>
+      <div class="pinfo min-w-0">
+        <div class="pname flex items-center gap-1.5 font-semibold text-[14.5px] tracking-tight text-fg">${escapeHtml(p.name)} ${isActive ? '<span class="badge-active text-[10.5px] font-semibold text-green bg-green-soft rounded-full px-1.75 py-0.25">' + escapeHtml(I18n.t('providers.active')) + '</span>' : ''}</div>
+        <div class="pmeta mt-0.5 text-xs font-mono text-caption truncate">${escapeHtml(mask(p.authToken))} · ${escapeHtml(p.baseUrl.replace(/^https?:\/\//,''))}</div>
       </div>
-      <div class="pmodels">${tags.join('') || '<span class="caption">—</span>'}</div>
-      <div class="pactions">
-        <button title="测试" data-test="${p.id}">${I.refresh || '↻'}</button>
-        <button title="编辑" data-edit="${p.id}">${I.edit || '✎'}</button>
-        <button title="删除" class="danger" data-del="${p.id}">${I.trash || '⌫'}</button>
+      <div class="pmodels flex gap-1 flex-wrap justify-end max-w-[200px]">${tags.join('') || '<span class="caption text-caption text-xs">—</span>'}</div>
+      <div class="pactions flex gap-0.25">
+        <button class="w-6.5 h-6.5 border-0 rounded-[6px] bg-transparent text-muted cursor-pointer flex items-center justify-center transition-all duration-100 hover:bg-chip-bg hover:text-fg" title="${escapeHtml(I18n.t('providers.test'))}" data-test="${p.id}">${I.refresh || '↻'}</button>
+        <button class="w-6.5 h-6.5 border-0 rounded-[6px] bg-transparent text-muted cursor-pointer flex items-center justify-center transition-all duration-100 hover:bg-chip-bg hover:text-fg" title="${escapeHtml(I18n.t('providers.edit'))}" data-edit="${p.id}">${I.edit || '✎'}</button>
+        <button class="w-6.5 h-6.5 border-0 rounded-[6px] bg-transparent text-muted cursor-pointer flex items-center justify-center transition-all duration-100 hover:bg-red-soft hover:text-red danger" title="${escapeHtml(I18n.t('providers.delete'))}" data-del="${p.id}">${I.trash || '⌫'}</button>
       </div>`;
     list.appendChild(el);
   }
 }
 
 function renderMonitor() {
-  $('mStatusText').textContent = status.connected ? '已接入' : status.running ? '运行中' : '未接入';
-  $('mStatus').querySelector('.pulse-dot, .live-dot').className = 'pulse-dot ' + (status.connected || status.running ? 'on' : 'off');
+  $('mStatusText').textContent = status.connected ? I18n.t('status.connected') : status.running ? I18n.t('status.running') : I18n.t('status.disconnected');
+  const dot = $('mStatus').querySelector('.pulse-dot, .live-dot');
+  if (dot) {
+    const isLive = !!(status.connected || status.running);
+    dot.classList.toggle('on', isLive);
+    dot.classList.toggle('off', !isLive);
+  }
   $('mEndpoint').textContent = `localhost:${(status.running && status.port) || config.port}`;
   const ap = activeProvider();
   $('mActive').textContent = ap ? ap.name : '—';
-  $('mActiveUrl').textContent = ap ? ap.baseUrl : '未选择服务';
+  $('mActiveUrl').textContent = ap ? ap.baseUrl : I18n.t('monitor.noService');
   $('mTotal').textContent = stats.total;
-  $('mSuccess').textContent = stats.total ? `成功率 ${Math.round((stats.ok / stats.total) * 100)}%` : '成功率 —';
+  $('mSuccess').textContent = stats.total ? I18n.t('monitor.successRate', { pct: Math.round((stats.ok / stats.total) * 100) }) : I18n.t('monitor.successRateNone');
   $('mAvg').innerHTML = stats.total ? `${Math.round(stats.sumMs / stats.total)} <span class="unit">ms</span>` : `— <span class="unit">ms</span>`;
-  $('mLast').textContent = stats.last ? `最近 ${stats.last}` : '最近 —';
+  $('mLast').textContent = stats.last ? I18n.t('monitor.recent', { time: stats.last }) : I18n.t('monitor.recentNone');
+  renderGwLogStatus();
 }
 
 function renderAll() { renderStatus(); renderHero(); renderConnect(); renderProviders(); renderMonitor(); }
@@ -209,40 +432,85 @@ function pushStreamRow(r) {
   stats.total++;
   if (r.status >= 200 && r.status < 400) stats.ok++;
   stats.sumMs += r.ms || 0;
-  stats.last = new Date().toLocaleTimeString();
+  stats.last = fmtTime();
   renderMonitor();
-  $('streamHint').textContent = `已转发 ${stats.total} 次`;
+  $('streamHint').textContent = I18n.t('monitor.forwarded', { n: stats.total });
   const list = $('streamList');
   const empty = list.querySelector('.state-inline, .empty');
   if (empty) empty.remove();
   const okCls = r.status >= 200 && r.status < 400 ? 'ok' : 'err';
   const row = document.createElement('div');
-  row.className = 'stream-row';
-  if (r.id != null) { row.dataset.id = r.id; row.classList.add('clickable'); row.title = '点击查看完整请求 / 响应'; }
-  const agentTag = r.agentId ? '<span class="agent-tag sub" title="子代理请求">子</span>' : '';
+  row.className = 'stream-row flex items-center gap-2.5 py-2.25 px-3.5 border-b border-border-custom text-[11.5px] transition-colors duration-100 hover:bg-chip-bg last:border-b-0 [&.clickable]:cursor-pointer';
+  if (r.id != null) { row.dataset.id = r.id; row.classList.add('clickable'); row.title = I18n.t('monitor.rowTitle'); }
+  const agentTag = r.agentId ? `<span class="agent-tag sub text-[9px] font-bold px-1 py-0.25 rounded-[4px] leading-[1.2] shrink-0 text-muted bg-chip-bg border border-border-custom" title="${escapeHtml(I18n.t('monitor.subReq'))}">sub</span>` : '';
   row.innerHTML = `
-    <span class="sdot ${okCls}"></span>
-    <span class="method">${escapeHtml(r.method || '')}</span>
+    <span class="sdot w-1.5 h-1.5 rounded-full shrink-0 [&.ok]:bg-green [&.err]:bg-red ${okCls}"></span>
+    <span class="method font-mono text-[10px] text-caption w-10">${escapeHtml(r.method || '')}</span>
     ${agentTag}
-    <span class="models">
-      <span class="req" title="HTTP body.model">${escapeHtml(r.requestedModel || '-')}</span>
-      <span class="arrow">→</span>
-      <span class="out" title="上游实际模型">${escapeHtml(r.outgoingModel || '-')}</span>
-      ${r.rewritten ? '<span class="rewrite" title="响应 model 已改回客户端名称">✎</span>' : ''}
+    <span class="models flex-1 min-w-0 font-mono text-[11px] flex items-center gap-1.25 overflow-hidden">
+      <span class="req text-fg truncate" title="HTTP body.model">${escapeHtml(r.requestedModel || '-')}</span>
+      <span class="arrow text-brand opacity-55">→</span>
+      <span class="out text-muted truncate" title="${escapeHtml(I18n.t('monitor.upstreamModel'))}">${escapeHtml(r.outgoingModel || '-')}</span>
+      ${r.rewritten ? `<span class="rewrite text-brand text-[10px]" title="${escapeHtml(I18n.t('monitor.rewriteTitle'))}">✎</span>` : ''}
     </span>
-    <span class="prov">${escapeHtml(r.provider || '')}</span>
-    <span class="code ${okCls}">${r.status}</span>
-    <span class="ms">${r.ms}ms</span>
-    <span class="ts">${new Date().toLocaleTimeString()}</span>`;
+    <span class="prov text-caption text-[11px] max-w-[100px] truncate">${escapeHtml(r.provider || '')}</span>
+    <span class="code font-mono font-semibold w-8.5 text-right [&.ok]:text-green [&.err]:text-red ${okCls}">${r.status}</span>
+    <span class="ms font-mono text-caption w-12 text-right">${r.ms}ms</span>
+    <span class="ts font-mono text-caption text-[10px] w-14 text-right">${fmtTime()}</span>`;
   list.insertBefore(row, list.firstChild);
   while (list.children.length > 120) list.removeChild(list.lastChild);
+  scheduleHeroUsage();
 }
-function pushRawLog(l) {
+/* ---------- gateway log (lifecycle + error events; backfilled from main's ring buffer) ---------- */
+const gwLog = { seen: new Set(), items: [] };
+
+// Add an entry to the local model. Live/replayed entries carry a `seq` (deduped); local renderer
+// notices (provider test, save error, …) have none and are always appended.
+function addGatewayLog(l) {
+  if (!l) return false;
+  if (l.seq != null) {
+    if (gwLog.seen.has(l.seq)) return false;
+    gwLog.seen.add(l.seq);
+  }
+  if (l.ts == null) l.ts = Date.now();
+  gwLog.items.push(l);
+  while (gwLog.items.length > 100) gwLog.items.shift();
+  return true;
+}
+
+function renderGwLogStatus() {
+  const el = $('gwLogStatus');
+  if (!el) return;
+  const running = !!(status.connected || status.running);
+  const port = (status.running && status.port) || config.port;
+  el.className = 'raw-log-badge ml-auto ' + (running ? 'on' : 'off');
+  el.innerHTML = `<span class="rl-dot"></span>${escapeHtml(I18n.t(running ? 'monitor.gwRunning' : 'monitor.gwStopped'))} · localhost:${escapeHtml(String(port))}`;
+}
+
+function renderGatewayLog() {
   const el = $('rawLog');
-  const line = document.createElement('div');
-  line.textContent = `[${new Date().toLocaleTimeString()}] ${l.level || 'info'} — ${l.msg}`;
-  el.insertBefore(line, el.firstChild);
-  while (el.children.length > 120) el.removeChild(el.lastChild);
+  if (!el) return;
+  if (!gwLog.items.length) {
+    el.innerHTML = `<div class="raw-log-empty">${escapeHtml(I18n.t('monitor.logEmpty'))}</div>`;
+    return;
+  }
+  const rows = gwLog.items.slice().sort((a, b) => (a.ts || 0) - (b.ts || 0)).reverse();
+  el.innerHTML = rows.map((l) => {
+    const lv = String(l.level || 'info');
+    const t = fmtTime(l.ts);
+    return `<div class="raw-log-line lv-${escapeHtml(lv)}"><span class="rl-lv">${escapeHtml(lv)}</span><span class="rl-msg">${escapeHtml(l.msg || '')}</span><span class="rl-t">${escapeHtml(t)}</span></div>`;
+  }).join('');
+}
+
+function pushRawLog(l) { if (addGatewayLog(l)) renderGatewayLog(); }
+
+// Backfill from main's ring buffer (events fire once and aren't otherwise replayed) + refresh banner.
+async function refreshGatewayLog() {
+  if (api.logsGet) {
+    try { (await api.logsGet() || []).forEach(addGatewayLog); } catch (_) {}
+  }
+  renderGwLogStatus();
+  renderGatewayLog();
 }
 
 /* ---------- request inspector (full headers + body of one forwarded exchange) ---------- */
@@ -250,20 +518,68 @@ let reqDrawerTab = 'req';
 let reqDrawerData = null;
 
 function fmtBytes(n) { n = n || 0; if (n < 1024) return n + ' B'; if (n < 1048576) return (n / 1024).toFixed(1) + ' KB'; return (n / 1048576).toFixed(2) + ' MB'; }
-function prettyBody(cap) {
-  if (!cap || !cap.text) return '<div class="dr-empty">（空）</div>';
+function prettyText(cap) {
+  if (!cap || !cap.text) return { text: '', lang: 'plaintext' };
   let text = cap.text, lang = 'plaintext';
   const trimmed = text.trim();
   if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
     try { text = JSON.stringify(JSON.parse(trimmed), null, 2); lang = 'json'; } catch (_) {}
   }
-  const note = cap.truncated ? `<div class="dr-trunc">仅显示前 ${fmtBytes(cap.bytes - cap.truncated)} / 共 ${fmtBytes(cap.bytes)}（已截断）</div>` : '';
-  return note + `<pre class="dr-pre"><code class="language-${lang}">${escapeHtml(text)}</code></pre>`;
+  return { text, lang };
+}
+function prettyBody(cap) {
+  if (!cap || !cap.text) return `<div class="dr-empty p-2.5 text-caption text-[12.5px]">${escapeHtml(I18n.t('drawer.empty'))}</div>`;
+  const { text, lang } = prettyText(cap);
+  const note = cap.truncated ? `<div class="dr-trunc text-[11.5px] text-amber mb-1.5">${escapeHtml(I18n.t('drawer.truncated', { shown: fmtBytes(cap.bytes - cap.truncated), total: fmtBytes(cap.bytes) }))}</div>` : '';
+  return note + `<pre class="dr-pre bg-[#f6f8fa] dark:bg-[#0c0e12] text-[#24292e] dark:text-[#e8edf4] border border-border-custom dark:border-white/8 rounded-sm p-3 overflow-x-auto text-xs leading-[1.55] max-h-[62vh]"><code class="language-${lang}">${escapeHtml(text)}</code></pre>`;
+}
+// In-body find bar (request/response body can be 100KB+) — highlight + navigate matches.
+const DR_MARK_CAP = 800;
+let drBodyText = '', drBodyHTML = '', drMatches = [], drMatchIdx = -1;
+function drCodeEl() { const b = $('reqDrawerBody'); return b ? b.querySelector('.dr-pre code') : null; }
+function updateDrCount() {
+  const c = $('reqDrawerBody') && $('reqDrawerBody').querySelector('.dr-search-count');
+  if (!c) return;
+  const shown = Math.min(drMatches.length, DR_MARK_CAP);
+  c.textContent = drMatches.length ? `${drMatchIdx + 1}/${shown}${drMatches.length > DR_MARK_CAP ? '+' : ''}` : '0/0';
+}
+function applyDrSearch(q) {
+  const code = drCodeEl();
+  if (!code) return;
+  q = q || '';
+  if (!q) { code.innerHTML = drBodyHTML; drMatches = []; drMatchIdx = -1; updateDrCount(); return; }
+  const hay = drBodyText.toLowerCase(), needle = q.toLowerCase();
+  drMatches = [];
+  for (let i = hay.indexOf(needle); i !== -1; i = hay.indexOf(needle, i + needle.length)) drMatches.push(i);
+  if (!drMatches.length) { code.innerHTML = escapeHtml(drBodyText); drMatchIdx = -1; updateDrCount(); return; }
+  const n = Math.min(drMatches.length, DR_MARK_CAP);
+  let html = '', last = 0;
+  for (let k = 0; k < n; k++) {
+    const pos = drMatches[k];
+    html += escapeHtml(drBodyText.slice(last, pos)) + '<mark class="dr-mark">' + escapeHtml(drBodyText.slice(pos, pos + q.length)) + '</mark>';
+    last = pos + q.length;
+  }
+  html += escapeHtml(drBodyText.slice(last));
+  code.innerHTML = html;
+  drMatchIdx = 0; drHighlightCurrent(); updateDrCount();
+}
+function drHighlightCurrent() {
+  const code = drCodeEl();
+  if (!code) return;
+  const marks = code.querySelectorAll('.dr-mark');
+  marks.forEach((m, i) => m.classList.toggle('cur', i === drMatchIdx));
+  if (marks[drMatchIdx]) marks[drMatchIdx].scrollIntoView({ block: 'center' });
+}
+function drNavSearch(dir) {
+  const n = Math.min(drMatches.length, DR_MARK_CAP);
+  if (!n) return;
+  drMatchIdx = (drMatchIdx + dir + n) % n;
+  drHighlightCurrent(); updateDrCount();
 }
 function kvTable(h) {
   const keys = Object.keys(h || {});
-  if (!keys.length) return '<div class="dr-empty">（无）</div>';
-  return '<div class="dr-kv">' + keys.map((k) => `<div class="dr-kv-row"><span class="dr-k">${escapeHtml(k)}</span><span class="dr-v">${escapeHtml(Array.isArray(h[k]) ? h[k].join(', ') : h[k])}</span></div>`).join('') + '</div>';
+  if (!keys.length) return `<div class="dr-empty p-2.5 text-caption text-[12.5px]">${escapeHtml(I18n.t('drawer.none'))}</div>`;
+  return '<div class="dr-kv border border-border-custom rounded-sm overflow-hidden">' + keys.map((k) => `<div class="dr-kv-row flex gap-2.5 py-1.5 px-2.5 font-mono text-xs odd:bg-transparent even:bg-chip-bg"><span class="dr-k text-brand shrink-0 min-w-[150px] break-all">${escapeHtml(k)}</span><span class="dr-v text-fg break-all">${escapeHtml(Array.isArray(h[k]) ? h[k].join(', ') : h[k])}</span></div>`).join('') + '</div>';
 }
 function renderReqDrawerBody() {
   const d = reqDrawerData;
@@ -273,13 +589,24 @@ function renderReqDrawerBody() {
   const headers = isReq ? d.reqHeaders : d.resHeaders;
   const cap = isReq ? d.reqBody : d.resBody;
   const which = isReq ? 'req' : 'res';
-  const copyLabel = cap && cap.truncated ? '复制(部分)' : '复制';
+  const copyLabel = cap && cap.truncated ? I18n.t('drawer.copyPartial') : I18n.t('drawer.copy');
   const headTitle = isReq
-    ? `请求头 <span class="dr-sub">${escapeHtml(d.method || 'POST')} ${escapeHtml(d.url || d.path || '')}</span>`
-    : `响应头 <span class="dr-sub">HTTP ${escapeHtml(d.status || '')}</span>`;
-  body.innerHTML = `<div class="dr-section-title">${headTitle}</div>${kvTable(headers)}<div class="dr-section-title">${isReq ? '请求体' : '响应体'} <button class="btn btn-sm dr-copy" data-copy-body="${which}" title="复制已捕获内容">${copyLabel}</button></div>${prettyBody(cap)}`;
+    ? `${escapeHtml(I18n.t('drawer.reqHeaders'))} <span class="dr-sub font-medium font-mono text-caption normal-case tracking-normal truncate">${escapeHtml(d.method || 'POST')} ${escapeHtml(d.url || d.path || '')}</span>`
+    : `${escapeHtml(I18n.t('drawer.resHeaders'))} <span class="dr-sub font-medium font-mono text-caption normal-case tracking-normal truncate">HTTP ${escapeHtml(d.status || '')}</span>`;
+  drBodyText = prettyText(cap).text;
+  drMatches = []; drMatchIdx = -1;
+  const searchBar = drBodyText ? `<span class="flex-1"></span><div class="dr-search-wrap flex items-center gap-1 normal-case tracking-normal">
+    <input class="dr-search w-[140px] bg-bg-input border border-border-custom rounded-md px-2 py-1 text-[11px] font-normal text-fg outline-none focus:border-primary" type="text" placeholder="${escapeHtml(I18n.t('drawer.searchBody'))}" />
+    <span class="dr-search-count text-caption text-[10px] font-normal tabular-nums min-w-[36px] text-center">0/0</span>
+    <button class="dr-search-prev tool-btn w-[22px] h-[22px] border border-border-custom rounded-[5px] bg-bg-elev text-muted cursor-pointer inline-flex items-center justify-center text-[11px] hover:text-fg hover:bg-chip-bg hover:border-border-strong" title="${escapeHtml(I18n.t('drawer.searchPrev'))}">↑</button>
+    <button class="dr-search-next tool-btn w-[22px] h-[22px] border border-border-custom rounded-[5px] bg-bg-elev text-muted cursor-pointer inline-flex items-center justify-center text-[11px] hover:text-fg hover:bg-chip-bg hover:border-border-strong" title="${escapeHtml(I18n.t('drawer.searchNext'))}">↓</button>
+  </div>` : '';
+  const copyCls = drBodyText ? '' : 'ml-auto ';
+  body.innerHTML = `<div class="dr-section-title flex items-center gap-2 text-xs font-bold text-fg my-4 mt-4 mb-2 uppercase tracking-wide">${headTitle}</div>${kvTable(headers)}<div class="dr-section-title flex items-center gap-2 text-xs font-bold text-fg my-4 mt-4 mb-2 uppercase tracking-wide">${escapeHtml(isReq ? I18n.t('drawer.reqBody') : I18n.t('drawer.resBody'))}${searchBar}<button class="btn btn-sm dr-copy ${copyCls}bg-bg-elev text-fg border border-border-custom rounded-[6px] px-2.25 py-1 text-[11px] font-medium normal-case tracking-normal cursor-pointer transition-all duration-150 hover:bg-chip-bg hover:border-border-strong active:scale-[0.98]" data-copy-body="${which}" title="${escapeHtml(I18n.t('drawer.copy'))}">${escapeHtml(copyLabel)}</button></div>${prettyBody(cap)}`;
   // Skip syntax highlighting on very large bodies — hljs on multi-MB text freezes the UI.
   body.querySelectorAll('pre code').forEach((b) => { if (b.textContent.length > 100000) return; try { if (window.hljs) window.hljs.highlightElement(b); } catch (_) {} });
+  const codeEl = drCodeEl();
+  drBodyHTML = codeEl ? codeEl.innerHTML : '';
 }
 async function openReqDetail(id) {
   let d = null;
@@ -288,28 +615,36 @@ async function openReqDetail(id) {
     // Entry rolled out of the bounded capture buffer — give feedback instead of a stale drawer.
     reqDrawerData = null;
     $('drMethod').textContent = '—';
-    $('drStatus').textContent = ''; $('drStatus').className = 'dr-status';
+    const drStatus = $('drStatus');
+    if (drStatus) {
+      drStatus.textContent = '';
+      drStatus.classList.remove('ok', 'err');
+    }
     $('drModel').textContent = '';
     $('reqMeta').innerHTML = '';
-    $('reqDrawerBody').innerHTML = '<div class="dr-empty">该请求的详情已不可用（仅保留最近 30 条转发的完整报文）。</div>';
+    $('reqDrawerBody').innerHTML = `<div class="dr-empty p-2.5 text-caption text-[12.5px]">${escapeHtml(I18n.t('drawer.expired'))}</div>`;
     $('reqDrawer').classList.remove('hidden');
     return;
   }
   reqDrawerData = d; reqDrawerTab = 'req';
   const ok = d.status >= 200 && d.status < 400;
   $('drMethod').textContent = d.method || 'POST';
-  $('drStatus').textContent = d.status != null ? d.status : '—';
-  $('drStatus').className = 'dr-status ' + (ok ? 'ok' : 'err');
-  $('drModel').innerHTML = `${escapeHtml(d.requestedModel || '-')} <span class="arrow">→</span> ${escapeHtml(d.outgoingModel || '-')}${d.rewritten ? ' <span class="rewrite" title="响应已改回客户端名称">✎</span>' : ''}`;
+  const drStatus = $('drStatus');
+  if (drStatus) {
+    drStatus.textContent = d.status != null ? d.status : '—';
+    drStatus.classList.toggle('ok', ok);
+    drStatus.classList.toggle('err', !ok);
+  }
+  $('drModel').innerHTML = `${escapeHtml(d.requestedModel || '-')} <span class="arrow">→</span> ${escapeHtml(d.outgoingModel || '-')}${d.rewritten ? ` <span class="rewrite" title="${escapeHtml(I18n.t('drawer.rewritten'))}">✎</span>` : ''}`;
   const meta = [
-    ['服务', d.provider],
-    ['耗时', d.ms != null ? d.ms + ' ms' : ''],
-    ['会话', d.sessionId ? String(d.sessionId).slice(0, 8) : ''],
-    d.agentId ? ['代理', '子代理'] : null,
-    ['时间', d.ts ? new Date(d.ts).toLocaleTimeString() : ''],
-    d.error ? ['错误', d.error] : null,
+    [I18n.t('drawer.service'), d.provider],
+    [I18n.t('drawer.latency'), d.ms != null ? d.ms + ' ms' : ''],
+    [I18n.t('drawer.session'), d.sessionId ? String(d.sessionId).slice(0, 8) : ''],
+    d.agentId ? [I18n.t('drawer.agent'), I18n.t('drawer.subagent')] : null,
+    [I18n.t('drawer.time'), d.ts ? fmtTime(d.ts) : ''],
+    d.error ? [I18n.t('drawer.error'), d.error] : null,
   ].filter((r) => r && r[1]);
-  $('reqMeta').innerHTML = meta.map((r) => `<span class="dr-chip"><span class="muted">${escapeHtml(r[0])}</span> ${escapeHtml(r[1])}</span>`).join('');
+  $('reqMeta').innerHTML = meta.map((r) => `<span class="dr-chip text-[11.5px] px-2.25 py-[2.5px] rounded-full bg-chip-bg text-fg"><span class="muted text-muted">${escapeHtml(r[0])}</span> ${escapeHtml(r[1])}</span>`).join('');
   document.querySelectorAll('.dr-tab').forEach((t) => t.classList.toggle('active', t.dataset.tab === reqDrawerTab));
   renderReqDrawerBody();
   $('reqDrawer').classList.remove('hidden');
@@ -322,7 +657,7 @@ function renderPresetGrid() {
   grid.innerHTML = '';
   Object.keys(PRESET_LABELS).forEach((key) => {
     const b = document.createElement('button');
-    b.type = 'button'; b.className = 'preset-chip'; b.dataset.preset = key; b.textContent = PRESET_LABELS[key];
+    b.type = 'button'; b.className = 'preset-chip bg-bg-input border border-border-custom rounded-full px-3 py-[4.5px] text-[12px] font-medium text-fg cursor-pointer transition-all duration-140 hover:border-brand hover:text-brand active:scale-[0.97]'; b.dataset.preset = key; b.textContent = key === 'custom' ? I18n.t('preset.custom') : PRESET_LABELS[key];
     grid.appendChild(b);
   });
 }
@@ -330,24 +665,80 @@ function selectPreset(key) {
   document.querySelectorAll('.preset-chip').forEach((c) => c.classList.toggle('selected', c.dataset.preset === key));
   const p = PRESETS[key] || PRESETS.custom;
   $('fName').value = p.name; $('fBaseUrl').value = p.baseUrl; $('fDefaultModel').value = p.defaultModel; $('fSmallModel').value = p.smallFastModel;
+  modalIcon = null; // a preset uses its brand logo
   updateIconPreview();
   if (key !== 'custom') $('fToken').focus();
 }
 function updateIconPreview() {
-  const name = $('fName').value || '?';
   const el = $('fIconPreview');
-  const iconData = renderProviderIcon(name);
+  const iconData = renderProviderIcon($('fName').value || '?', modalIcon);
   el.setAttribute('style', iconData.style);
   el.innerHTML = iconData.html;
 }
+function resizeImage(file, size) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const img = new Image();
+      img.onload = () => {
+        try {
+          const c = document.createElement('canvas'); c.width = size; c.height = size;
+          const ctx = c.getContext('2d');
+          const s = Math.min(img.width, img.height);
+          ctx.drawImage(img, (img.width - s) / 2, (img.height - s) / 2, s, s, 0, 0, size, size);
+          resolve(c.toDataURL('image/png'));
+        } catch (e) { reject(e); }
+      };
+      img.onerror = reject;
+      img.src = reader.result;
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+function openIconPicker(anchor) {
+  const existing = document.querySelector('.icon-picker');
+  if (existing) { existing.remove(); return; }
+  const pop = document.createElement('div');
+  pop.className = 'icon-picker';
+  pop.innerHTML =
+    `<div class="ip-grid">${ICON_EMOJIS.map((e) => `<button type="button" class="ip-emoji" data-emoji="${escapeHtml(e)}">${escapeHtml(e)}</button>`).join('')}</div>` +
+    `<div class="ip-actions"><button type="button" class="ip-act" data-act="upload">${escapeHtml(I18n.t('modal.iconUpload'))}</button><button type="button" class="ip-act" data-act="random">${escapeHtml(I18n.t('modal.iconRandom'))}</button><button type="button" class="ip-act" data-act="reset">${escapeHtml(I18n.t('modal.iconReset'))}</button></div>` +
+    `<input type="file" accept="image/*" class="ip-file" hidden />`;
+  document.body.appendChild(pop);
+  const r = anchor.getBoundingClientRect();
+  let x = Math.max(10, Math.min(Math.round(r.left + r.width / 2 - pop.offsetWidth / 2), window.innerWidth - pop.offsetWidth - 10));
+  let y = Math.round(r.bottom + 8);
+  if (y + pop.offsetHeight > window.innerHeight - 10) y = Math.max(10, Math.round(r.top - pop.offsetHeight - 8));
+  pop.style.left = x + 'px'; pop.style.top = y + 'px';
+  const close = () => { pop.remove(); document.removeEventListener('mousedown', onDoc); document.removeEventListener('keydown', onKey); };
+  const onDoc = (e) => { if (!pop.contains(e.target) && !anchor.contains(e.target)) close(); };
+  const onKey = (e) => { if (e.key === 'Escape') { e.stopPropagation(); close(); } };
+  setTimeout(() => { document.addEventListener('mousedown', onDoc); document.addEventListener('keydown', onKey); }, 0);
+  pop.addEventListener('click', (e) => {
+    const em = e.target.closest('.ip-emoji');
+    if (em) { modalIcon = em.dataset.emoji; updateIconPreview(); close(); return; }
+    const act = e.target.closest('.ip-act');
+    if (!act) return;
+    if (act.dataset.act === 'random') { modalIcon = ICON_EMOJIS[Math.floor(Math.random() * ICON_EMOJIS.length)]; updateIconPreview(); close(); }
+    else if (act.dataset.act === 'reset') { modalIcon = null; updateIconPreview(); close(); }
+    else if (act.dataset.act === 'upload') { pop.querySelector('.ip-file').click(); }
+  });
+  pop.querySelector('.ip-file').addEventListener('change', (e) => {
+    const f = e.target.files && e.target.files[0];
+    if (!f) return;
+    resizeImage(f, 72).then((d) => { modalIcon = d; updateIconPreview(); close(); }).catch(() => close());
+  });
+}
 function addMapRow(alias = '', upstream = '') {
   const row = document.createElement('div');
-  row.className = 'map-row';
+  row.className = 'map-row flex items-center gap-1.75';
+  const mapInputCls = 'flex-1 min-w-0 bg-bg-input border border-border-custom rounded-md px-2 py-1.5 text-fg font-mono text-[12px] outline-none transition-colors duration-120 focus:border-primary';
   row.innerHTML = `
-    <input class="m-alias" placeholder="别名 例如 claude-opus-4.8[1m]" />
-    <span class="map-arrow">→</span>
-    <input class="m-upstream" placeholder="上游模型 例如 glm-5.2[1m]" />
-    <button class="icon-btn m-del" type="button">✕</button>`;
+    <input class="m-alias ${mapInputCls}" placeholder="${escapeHtml(I18n.t('modal.aliasPlaceholder'))}" />
+    <span class="map-arrow text-caption shrink-0">→</span>
+    <input class="m-upstream ${mapInputCls}" placeholder="${escapeHtml(I18n.t('modal.upstreamPlaceholder'))}" />
+    <button class="icon-btn m-del w-6 h-6 p-0 shrink-0 flex items-center justify-center border-0 rounded-md bg-transparent text-muted cursor-pointer transition-colors duration-140 hover:bg-red-soft hover:text-red" type="button">✕</button>`;
   row.querySelector('.m-alias').value = alias;
   row.querySelector('.m-upstream').value = upstream;
   row.querySelector('.m-del').addEventListener('click', () => row.remove());
@@ -355,12 +746,13 @@ function addMapRow(alias = '', upstream = '') {
 }
 function openModal(provider) {
   editingId = provider ? provider.id : null;
-  $('modalTitle').textContent = provider ? '编辑服务' : '添加服务';
+  modalIcon = provider ? (provider.icon || null) : null;
+  $('modalTitle').textContent = provider ? I18n.t('modal.editTitle') : I18n.t('modal.addTitle');
   document.querySelectorAll('.preset-chip').forEach((c) => c.classList.remove('selected'));
   $('fName').value = provider ? provider.name : '';
   $('fBaseUrl').value = provider ? provider.baseUrl : '';
   $('fToken').value = provider ? provider.authToken : '';
-  $('fToken').type = 'password'; $('fTokenToggle').textContent = '显示';
+  $('fToken').type = 'password'; $('fTokenToggle').textContent = I18n.t('modal.show');
   $('fDefaultModel').value = provider ? provider.defaultModel : '';
   $('fSmallModel').value = provider ? provider.smallFastModel : '';
   $('fMapDefault').checked = provider ? provider.mapDefaultModels !== false : true;
@@ -370,7 +762,11 @@ function openModal(provider) {
   const mapDetails = $('mapRows').closest('details');
   if (mapDetails) mapDetails.open = true;
   updateIconPreview();
-  $('testResult').className = 'alert hidden';
+  const tr = $('testResult');
+  if (tr) {
+    tr.classList.add('hidden');
+    tr.classList.remove('ok', 'err', 'pending');
+  }
   $('modal').classList.remove('hidden');
   $('fName').focus();
 }
@@ -383,7 +779,7 @@ function collectProvider() {
     if (alias || upstream) models.push({ alias, upstream });
   });
   const p = {
-    name: $('fName').value.trim() || '未命名',
+    name: $('fName').value.trim() || I18n.t('providers.unnamed'),
     baseUrl: $('fBaseUrl').value.trim(),
     authToken: $('fToken').value.trim(),
     defaultModel: $('fDefaultModel').value.trim(),
@@ -391,6 +787,7 @@ function collectProvider() {
     mapDefaultModels: $('fMapDefault').checked,
     models,
   };
+  if (modalIcon) p.icon = modalIcon;
   if (editingId) p.id = editingId;
   return p;
 }
@@ -399,11 +796,17 @@ function collectProvider() {
 async function refresh() {
   config = await api.getConfig();
   status = await api.serverStatus();
+  // Reconcile the boot language (from localStorage) with the persisted config truth.
+  try {
+    if (config.language && config.language !== I18n.lang) { I18n.setLang(config.language); I18n.apply(document); }
+    else localStorage.setItem('clawdy-lang', I18n.lang);
+  } catch (_) {}
   renderAll();
+  refreshGatewayLog();
 }
 async function persist(patch) {
   try { config = await api.saveConfig(Object.assign({}, config, patch)); }
-  catch (e) { pushRawLog({ level: 'error', msg: '保存失败：' + (e && e.message ? e.message : e) }); }
+  catch (e) { pushRawLog({ level: 'error', msg: I18n.t('err.saveFailed', { msg: (e && e.message ? e.message : e) }) }); }
   status = await api.serverStatus();
   renderAll();
 }
@@ -411,19 +814,42 @@ async function toggleConnect() {
   const btn = $('btnConnect');
   const wasConnected = status.connected;
   btn.disabled = true;
-  btn.textContent = wasConnected ? '断开中…' : '接入中…';
+  btn.textContent = wasConnected ? I18n.t('hero.disconnecting') : I18n.t('hero.connecting');
   const res = wasConnected ? await api.disconnect() : await api.connect();
   btn.disabled = false;
   status = await api.serverStatus();
   renderAll();
-    if (!res.ok) showHeroNote(res.message || '操作失败', true);
+    if (!res.ok) showHeroNote(res.message || I18n.t('err.opFailed'), true);
 }
 function copyFeedback(btn, text) {
   const orig = btn.dataset.copyOrig || (btn.dataset.copyOrig = btn.textContent);
   api.copy(text);
-  btn.textContent = '已复制 ✓';
+  btn.textContent = I18n.t('copy.copiedCheck');
   clearTimeout(btn._t);
   btn._t = setTimeout(() => (btn.textContent = orig), 1500);
+}
+// Lightweight styled confirm dialog → Promise<boolean>. For actions that are easy to mis-trigger.
+function confirmDialog({ title, message, confirmText, cancelText, danger }) {
+  return new Promise((resolve) => {
+    const ov = document.createElement('div');
+    ov.className = 'overlay fixed inset-0 bg-black/35 flex items-center justify-center z-[200] backdrop-blur-md';
+    ov.innerHTML = `<div class="bg-bg-elev border border-border-custom rounded-[14px] shadow-card-hover w-[348px] max-w-[88vw] p-5 flex flex-col gap-2.5" style="animation:panelIn 0.18s cubic-bezier(0.23,1,0.32,1)">
+      <h3 class="text-[14px] font-semibold text-fg tracking-tight">${escapeHtml(title || '')}</h3>
+      <p class="text-[12.5px] text-caption leading-[1.55]">${escapeHtml(message || '')}</p>
+      <div class="flex justify-end gap-2 mt-2">
+        <button class="cd-cancel bg-bg-elev text-fg border border-border-custom rounded-md px-3.5 py-1.5 text-[12px] font-medium cursor-pointer transition-all duration-140 hover:bg-chip-bg hover:border-border-strong active:scale-[0.97]">${escapeHtml(cancelText || I18n.t('modal.cancel'))}</button>
+        <button class="cd-ok border-none rounded-md px-3.5 py-1.5 text-[12px] font-semibold text-white cursor-pointer transition-all duration-140 active:scale-[0.97] ${danger ? 'bg-red' : 'bg-primary hover:bg-primary-hover'}">${escapeHtml(confirmText || I18n.t('modal.cancel'))}</button>
+      </div>
+    </div>`;
+    document.body.appendChild(ov);
+    const done = (v) => { document.removeEventListener('keydown', onKey); ov.remove(); resolve(v); };
+    const onKey = (e) => { if (e.key === 'Escape') { e.preventDefault(); done(false); } else if (e.key === 'Enter') { e.preventDefault(); done(true); } };
+    ov.querySelector('.cd-ok').addEventListener('click', () => done(true));
+    ov.querySelector('.cd-cancel').addEventListener('click', () => done(false));
+    ov.addEventListener('mousedown', (e) => { if (e.target === ov) done(false); });
+    document.addEventListener('keydown', onKey);
+    setTimeout(() => { const b = ov.querySelector('.cd-ok'); if (b) b.focus(); }, 0);
+  });
 }
 function genToken() {
   const a = new Uint8Array(18);
@@ -472,6 +898,10 @@ function switchView(view) {
     }
 
     if (view === 'conversations' && window.ClawdyConversations) window.ClawdyConversations.onShow();
+    if (view === 'monitor') refreshGatewayLog();
+    if (view === 'settings') startDesktopPoll(); else stopDesktopPoll();
+    // Lock the window to a fixed, non-resizable size on Settings; restore it elsewhere.
+    if (api.setSettingsMode) api.setSettingsMode(view === 'settings');
   };
 
   if (current && current !== target) {
@@ -528,6 +958,17 @@ function wireDrag() {
 }
 
 /* ---------- wire up ---------- */
+// Settings sub-nav: keep the main panel focused on one section at a time.
+function switchSettings(pane) {
+  const nav = $('settingsNav');
+  if (nav) nav.querySelectorAll('.settings-subnav-item').forEach((b) => b.classList.toggle('active', b.dataset.settings === pane));
+  const panes = $('settingsPanes');
+  if (panes) panes.querySelectorAll('[data-pane]').forEach((p) => p.classList.toggle('hidden', p.dataset.pane !== pane));
+  // Refresh the live cards the moment their section is revealed.
+  if (pane === 'desktop') renderDesktopCard();
+  if (pane === 'privacy') { renderPresidioCard(); renderPresidioLog(); refreshFindCount(); if (presidioTab === 'findings') renderPresidioFindings(); }
+}
+
 function bind() {
   if ($('appLogo') && I.logo) $('appLogo').innerHTML = I.logo(30);
   injectIcons();
@@ -536,6 +977,29 @@ function bind() {
     const btn = e.target.closest('.nav-item, .seg-btn');
     if (btn && btn.dataset.view) switchView(btn.dataset.view);
   });
+  const settingsNav = $('settingsNav');
+  if (settingsNav) settingsNav.addEventListener('click', (e) => {
+    const b = e.target.closest('.settings-subnav-item');
+    if (b && b.dataset.settings) switchSettings(b.dataset.settings);
+  });
+  // Settings sub-nav collapse (icons-only, auto-shrinks width) — persisted like the main sidebar.
+  const subnavBtn = $('btnSubnavCollapse');
+  if (settingsNav && subnavBtn) {
+    try {
+      if (localStorage.getItem('clawdy-subnav-collapsed') === '1') {
+        settingsNav.classList.add('collapsed');
+        const ic = subnavBtn.querySelector('[data-icon]');
+        if (ic && I.chevronRight) ic.innerHTML = I.chevronRight;
+      }
+    } catch (_) {}
+    subnavBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const collapsed = settingsNav.classList.toggle('collapsed');
+      const ic = subnavBtn.querySelector('[data-icon]');
+      if (ic) ic.innerHTML = collapsed ? (I.chevronRight || '›') : (I.chevronLeft || '‹');
+      try { localStorage.setItem('clawdy-subnav-collapsed', collapsed ? '1' : '0'); } catch (_) {}
+    });
+  }
   $('btnTheme').addEventListener('click', () => {
     const cur = document.documentElement.getAttribute('data-theme') || 'light';
     applyTheme(cur === 'light' ? 'dark' : 'light');
@@ -561,12 +1025,27 @@ function bind() {
     });
   }
   $('btnConnect').addEventListener('click', toggleConnect);
+  const heroRanges = $('heroRanges');
+  if (heroRanges) heroRanges.addEventListener('click', (e) => {
+    const b = e.target.closest('[data-hrange]');
+    if (!b) return;
+    heroRange = b.dataset.hrange;
+    heroRanges.querySelectorAll('.seg-btn').forEach((x) => x.classList.toggle('active', x === b));
+    renderHeroUsage();
+  });
+  const heroEndpoint = $('heroEndpoint');
+  if (heroEndpoint) heroEndpoint.addEventListener('click', () => {
+    const port = (status.running && status.port) || config.port;
+    if (api.copy) api.copy(`http://localhost:${port}`);
+    const t = $('heroEndpointText');
+    if (t) { const restore = `localhost:${port}`; t.textContent = I18n.t('copy.copiedCheck'); clearTimeout(t._t); t._t = setTimeout(() => { t.textContent = restore; }, 1400); }
+  });
 
   $('portInput').addEventListener('change', async (e) => {
     const port = Number(e.target.value);
     if (!Number.isInteger(port) || port < 1 || port > 65535) {
       e.target.value = config.port;
-      pushRawLog({ level: 'error', msg: '端口无效：请输入 1–65535 的整数' });
+      pushRawLog({ level: 'error', msg: I18n.t('err.portInvalid') });
       return;
     }
     await persist({ port });
@@ -585,6 +1064,123 @@ function bind() {
   $('btnGenToken').addEventListener('click', () => persist({ gatewayToken: genToken(), requireToken: true }));
   $('fTrayUsage').addEventListener('change', (e) => persist({ trayUsage: { enabled: e.target.checked, range: $('fTrayRange').value } }));
   $('fTrayRange').addEventListener('change', (e) => persist({ trayUsage: { enabled: $('fTrayUsage').checked, range: e.target.value } }));
+  if ($('fLang')) $('fLang').addEventListener('change', async (e) => {
+    const language = e.target.value;
+    I18n.setLang(language);            // updates <html lang> + localStorage['clawdy-lang']
+    I18n.apply(document);              // static data-i18n nodes
+    renderAll();                       // dynamic strings (hero/status/monitor/providers/settings)
+    if (window.ClawdyConversations && window.ClawdyConversations.setLang) window.ClawdyConversations.setLang();
+    await persist({ language });       // → config:save → main rebuilds tray on next open
+  });
+
+  // History directories — primary action opens a native picker (hidden dirs shown)
+  const btnPickHistDir = $('btnPickHistDir');
+  if (btnPickHistDir) btnPickHistDir.addEventListener('click', pickHistDir);
+  // (Manual text input removed in favor of native dialog picker)
+  const histDirList = $('histDirList');
+  if (histDirList) histDirList.addEventListener('click', async (e) => {
+    const btn = e.target.closest('[data-del-dir]');
+    if (!btn || btn.disabled) return;
+    const id = btn.dataset.delDir;
+    if (id === '~/.claude') return;
+    const dirs = (config.historyDirs || []).filter((d) => d !== id);
+    await persist({ historyDirs: dirs.length ? dirs : ['~/.claude'] });
+  });
+
+  const btnDesktop = $('btnDesktopConnect');
+  if (btnDesktop) btnDesktop.addEventListener('click', async () => {
+    const note = $('desktopNote');
+    const wasConnected = btnDesktop.dataset.connected === '1';
+    btnDesktop.disabled = true;
+    btnDesktop.textContent = I18n.t(wasConnected ? 'settings.desktopRestoring' : 'settings.desktopConnecting');
+    let res;
+    try { res = wasConnected ? await api.desktopDisconnect() : await api.desktopConnect(); }
+    catch (e) { res = { ok: false, message: (e && e.message) || '' }; }
+    if (note) {
+      note.dataset.transient = '1';
+      if (wasConnected) {
+        if (res && res.cancelled) { delete note.dataset.transient; }
+        else note.textContent = I18n.t(res && res.removed ? 'settings.desktopRestored' : 'settings.desktopRestoreSteps');
+      } else if (res && res.ok) {
+        note.textContent = I18n.t('settings.desktopSteps');
+      } else {
+        const reason = res && res.reason;
+        note.textContent = reason === 'noProvider' ? I18n.t('settings.desktopNoProvider')
+          : reason === 'notInstalled' ? I18n.t('settings.desktopNotInstalled')
+          : (res && res.message) || I18n.t('err.opFailed');
+        delete note.dataset.transient;
+      }
+    }
+    btnDesktop.disabled = false;
+    setTimeout(renderDesktopCard, 1800);
+  });
+  const btnDesktopRefresh = $('btnDesktopRefresh');
+  if (btnDesktopRefresh) btnDesktopRefresh.addEventListener('click', () => {
+    const n = $('desktopNote');
+    if (n) delete n.dataset.transient; // show the true current state, not a lingering action note
+    renderDesktopCard();
+  });
+  // Re-check the moment the window regains focus (e.g. right after approving in System Settings),
+  // in case the background poll was throttled while Clawdy was in the background.
+  window.addEventListener('focus', () => { if (desktopPollTimer) { renderDesktopCard(); renderPresidioCard(); } });
+
+  const fPresidio = $('fPresidio');
+  if (fPresidio) fPresidio.addEventListener('change', async (e) => {
+    const on = e.target.checked;
+    const note = $('presidioNote');
+    config.presidio = Object.assign({}, config.presidio, { enabled: on });
+    if (note) {
+      if (on) { note.dataset.transient = '1'; note.textContent = I18n.t('settings.presidioInstallingNote'); }
+      else delete note.dataset.transient;
+    }
+    let res;
+    try { res = await api.presidioEnable(on); } catch (_) { res = null; }
+    if (note && on) {
+      if (res && res.reason === 'installing') note.textContent = I18n.t('settings.presidioInstallingNote');
+      else if (res && res.ok) note.textContent = I18n.t('settings.presidioRunningNote');
+      else if (res && res.reason === 'missing-source') note.textContent = I18n.t('settings.presidioNoSource');
+      else note.textContent = I18n.t('settings.presidioStartFail');
+    }
+    renderPresidioCard();
+  });
+  // Tier sub-options are config-only (no service restart) — persist and let the proxy read them.
+  const persistPresidio = (patch) => persist({ presidio: Object.assign({}, config.presidio, patch) });
+  const fPresidioNer = $('fPresidioNer');
+  if (fPresidioNer) fPresidioNer.addEventListener('change', (e) => persistPresidio({ ner: e.target.checked }));
+  const fPresidioLlm = $('fPresidioLlm');
+  if (fPresidioLlm) fPresidioLlm.addEventListener('change', (e) => {
+    const on = e.target.checked;
+    const ollama = $('fOllamaUrl');
+    if (ollama) { ollama.classList.toggle('hidden', !on); if (on && !ollama.value) ollama.value = 'http://localhost:11434'; }
+    persistPresidio({ llm: on, ollamaUrl: (ollama && ollama.value) || 'http://localhost:11434' });
+  });
+  const fOllamaUrl = $('fOllamaUrl');
+  if (fOllamaUrl) fOllamaUrl.addEventListener('change', (e) => persistPresidio({ ollamaUrl: e.target.value.trim() }));
+  const fPresidioDeid = $('fPresidioDeid');
+  if (fPresidioDeid) fPresidioDeid.addEventListener('change', (e) => persistPresidio({ deidentify: e.target.value }));
+  const fPresidioThreshold = $('fPresidioThreshold');
+  if (fPresidioThreshold) {
+    fPresidioThreshold.addEventListener('input', (e) => { const el = $('fPresidioThresholdVal'); if (el) el.textContent = parseFloat(e.target.value).toFixed(2); });
+    fPresidioThreshold.addEventListener('change', (e) => persistPresidio({ threshold: parseFloat(e.target.value) }));
+  }
+  const fPresidioNerModel = $('fPresidioNerModel');
+  if (fPresidioNerModel) fPresidioNerModel.addEventListener('change', (e) => persistPresidio({ nerModel: e.target.value }));
+  // Presidio console tabs + live append/findings + clear.
+  const pTabs = $('presidioConsoleTabs');
+  if (pTabs) pTabs.addEventListener('click', (e) => { const b = e.target.closest('.ptab'); if (b) setPresidioTab(b.dataset.ptab); });
+  if (api.onPresidioLog) api.onPresidioLog(appendPresidioLog);
+  if (api.onPresidioFinding) api.onPresidioFinding(appendFinding);
+  const btnPresidioLogClear = $('btnPresidioLogClear');
+  if (btnPresidioLogClear) btnPresidioLogClear.addEventListener('click', () => {
+    if (presidioTab === 'findings') {
+      if (api.presidioFindingsClear) api.presidioFindingsClear().catch(() => {});
+      const h = $('presidioFindings'); if (h) h.innerHTML = findingsTableHTML([]);
+      updateFindCount(0);
+    } else {
+      if (api.presidioLogsClear) api.presidioLogsClear().catch(() => {});
+      const pre = $('presidioLog'); if (pre) pre.textContent = '';
+    }
+  });
 
   $('btnAdd').addEventListener('click', () => openModal(null));
   const btnAddEmpty = $('btnAddEmpty');
@@ -594,21 +1190,35 @@ function bind() {
     // Resolve the actual button (the click may land on the inner SVG icon).
     const btn = e.target.closest('button');
     if (btn && btn.dataset.edit) { openModal(config.providers.find((p) => p.id === btn.dataset.edit)); return; }
-    if (btn && btn.dataset.del) { if (confirm('确定删除这个服务？')) { config = await api.deleteProvider(btn.dataset.del); renderAll(); } return; }
+    if (btn && btn.dataset.del) { if (confirm(I18n.t('providers.confirmDelete'))) { config = await api.deleteProvider(btn.dataset.del); renderAll(); } return; }
     if (btn && btn.dataset.test) {
       const p = config.providers.find((pp) => pp.id === btn.dataset.test);
       const orig = btn.innerHTML; // preserve the SVG icon, restore it after
       btn.innerHTML = '…'; btn.disabled = true;
       const res = await api.testProvider(p);
       btn.disabled = false; btn.innerHTML = res.ok ? '✓' : '✗';
-      pushRawLog({ level: res.ok ? 'info' : 'error', msg: `测试「${p.name}」: ${res.message}` });
+      pushRawLog({ level: res.ok ? 'info' : 'error', msg: I18n.t('modal.testLog', { name: p.name, msg: res.message }) });
       setTimeout(() => { btn.innerHTML = orig; }, 1800);
       return;
     }
     if (btn) return; // some other button — ignore
     // click anywhere else on the card → set it as the active service
     const card = e.target.closest('.provider');
-    if (card && card.dataset.id) { config = await api.setActive(card.dataset.id); renderAll(); }
+    if (!card || !card.dataset.id) return;
+    if (card.dataset.id === config.activeProviderId) return; // already active — nothing to switch
+    // While the gateway is running, switching is easy to mis-trigger and would re-point every new
+    // Claude Code session — so confirm first.
+    if (status.connected) {
+      const p = config.providers.find((pp) => pp.id === card.dataset.id);
+      const ok = await confirmDialog({
+        title: I18n.t('switch.confirmTitle', { name: p ? p.name : '' }),
+        message: I18n.t('switch.confirmMsg'),
+        confirmText: I18n.t('switch.confirmOk'),
+      });
+      if (!ok) return;
+    }
+    config = await api.setActive(card.dataset.id);
+    renderAll();
   });
   wireDrag();
 
@@ -617,30 +1227,49 @@ function bind() {
   $('modal').addEventListener('click', (e) => { if (e.target.id === 'modal') closeModal(); });
   $('presetGrid').addEventListener('click', (e) => { if (e.target.dataset.preset) selectPreset(e.target.dataset.preset); });
   $('fName').addEventListener('input', updateIconPreview);
+  const fIconPreview = $('fIconPreview');
+  if (fIconPreview && fIconPreview.parentElement) fIconPreview.parentElement.addEventListener('click', () => openIconPicker(fIconPreview));
   $('btnAddMap').addEventListener('click', () => addMapRow());
   $('fTokenToggle').addEventListener('click', () => {
     const f = $('fToken'); const show = f.type === 'password';
-    f.type = show ? 'text' : 'password'; $('fTokenToggle').textContent = show ? '隐藏' : '显示';
+    f.type = show ? 'text' : 'password'; $('fTokenToggle').textContent = show ? I18n.t('modal.hide') : I18n.t('modal.show');
   });
   $('btnSave').addEventListener('click', async () => {
     const p = collectProvider();
-    if (!p.baseUrl) { const tr = $('testResult'); tr.className = 'alert err'; tr.textContent = '请填写 API 地址'; return; }
+    if (!p.baseUrl) {
+      const tr = $('testResult');
+      if (tr) {
+        tr.textContent = I18n.t('modal.fillUrl');
+        tr.classList.remove('hidden', 'ok', 'pending');
+        tr.classList.add('err');
+      }
+      return;
+    }
     config = await api.upsertProvider(p);
     closeModal(); renderAll();
   });
   $('btnTest').addEventListener('click', async () => {
-    const tr = $('testResult'); tr.className = 'alert pending'; tr.textContent = '测试中…';
-    const res = await api.testProvider(collectProvider());
-    tr.className = 'alert ' + (res.ok ? 'ok' : 'err'); tr.textContent = (res.ok ? '✓ ' : '✗ ') + res.message;
+    const tr = $('testResult');
+    if (tr) {
+      tr.textContent = I18n.t('modal.testing');
+      tr.classList.remove('hidden', 'ok', 'err');
+      tr.classList.add('pending');
+      const res = await api.testProvider(collectProvider());
+      tr.textContent = (res.ok ? '✓ ' : '✗ ') + res.message;
+      tr.classList.remove('pending', 'ok', 'err');
+      tr.classList.add(res.ok ? 'ok' : 'err');
+    }
   });
 
   $('btnClearLog').addEventListener('click', () => {
-    $('streamList').innerHTML = '<div class="state-inline">接入网关后，转发记录将实时显示</div>';
-    $('rawLog').innerHTML = '';
+    $('streamList').innerHTML = `<div class="state-inline p-4 text-center text-[11.5px] text-caption">${escapeHtml(I18n.t('monitor.streamEmpty'))}</div>`;
+    gwLog.items.length = 0; gwLog.seen.clear();
+    renderGatewayLog();
     stats.total = stats.ok = stats.sumMs = 0; stats.last = null;
-    $('streamHint').textContent = '等待请求…';
+    $('streamHint').textContent = I18n.t('monitor.waitingDots');
     renderMonitor();
     if (api.monitorClear) api.monitorClear();
+    if (api.logsClear) api.logsClear();
     closeReqDrawer();
   });
 
@@ -660,14 +1289,33 @@ function bind() {
     renderReqDrawerBody();
   }));
   const reqDrawerBody = $('reqDrawerBody');
-  if (reqDrawerBody) reqDrawerBody.addEventListener('click', (e) => {
-    const cb = e.target.closest('[data-copy-body]');
-    if (cb && reqDrawerData) {
-      const cap = cb.dataset.copyBody === 'req' ? reqDrawerData.reqBody : reqDrawerData.resBody;
-      api.copy((cap && cap.text) || '');
-      cb.textContent = '已复制'; setTimeout(() => { cb.textContent = '复制'; }, 1200);
-    }
-  });
+  if (reqDrawerBody) {
+    reqDrawerBody.addEventListener('click', (e) => {
+      if (e.target.closest('.dr-search-prev')) { drNavSearch(-1); return; }
+      if (e.target.closest('.dr-search-next')) { drNavSearch(1); return; }
+      const cb = e.target.closest('[data-copy-body]');
+      if (cb && reqDrawerData) {
+        const cap = cb.dataset.copyBody === 'req' ? reqDrawerData.reqBody : reqDrawerData.resBody;
+        api.copy((cap && cap.text) || '');
+        cb.textContent = I18n.t('copy.copied'); setTimeout(() => { cb.textContent = I18n.t('drawer.copy'); }, 1200);
+      }
+    });
+    let _drSearchT = null;
+    reqDrawerBody.addEventListener('input', (e) => {
+      if (!e.target.classList || !e.target.classList.contains('dr-search')) return;
+      const v = e.target.value;
+      clearTimeout(_drSearchT);
+      _drSearchT = setTimeout(() => applyDrSearch(v), 110);
+    });
+    reqDrawerBody.addEventListener('keydown', (e) => {
+      if (!e.target.classList || !e.target.classList.contains('dr-search')) return;
+      if (e.key === 'Enter') { e.preventDefault(); drNavSearch(e.shiftKey ? -1 : 1); }
+      else if (e.key === 'Escape') {
+        if (e.target.value) { e.preventDefault(); e.stopPropagation(); e.target.value = ''; applyDrSearch(''); }
+        else e.target.blur();
+      }
+    });
+  }
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && reqDrawer && !reqDrawer.classList.contains('hidden')) closeReqDrawer(); });
 
   api.onRequest((r) => pushStreamRow(r));
@@ -676,6 +1324,19 @@ function bind() {
 }
 
 try { applyTheme(localStorage.getItem('clawdy-theme') || 'light'); } catch (_) { applyTheme('light'); }
+// Apply the UI language synchronously before first paint (mirrors theme; no flash). Boot from
+// localStorage; the async refresh() then reconciles with config.language (the source of truth).
+function bootLang() {
+  let l = '';
+  try { l = localStorage.getItem('clawdy-lang') || ''; } catch (_) {}
+  if (!l) {
+    const nav = (navigator.language || 'en').toLowerCase();
+    l = nav.startsWith('zh') ? ((/-(tw|hk|mo)\b/.test(nav) || nav.includes('hant')) ? 'zh-TW' : 'zh')
+      : nav.startsWith('ja') ? 'ja' : nav.startsWith('ko') ? 'ko' : 'en';
+  }
+  try { I18n.setLang(l); I18n.apply(document); } catch (_) {}
+}
+bootLang();
 renderPresetGrid();
 bind();
 refresh();

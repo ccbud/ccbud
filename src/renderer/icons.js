@@ -47,4 +47,15 @@ window.ClawdyIcons = {
   search: '<svg width="14" height="14" viewBox="0 0 14 14" fill="none"><circle cx="6.2" cy="6.2" r="3.5" stroke="currentColor" stroke-width="1.3"/><path d="M9 9l2.5 2.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>',
 
   empty: '<svg width="40" height="40" viewBox="0 0 40 40" fill="none"><rect x="6" y="10" width="28" height="20" rx="3" stroke="currentColor" stroke-width="1.5" opacity="0.35"/><path d="M14 18h12M14 23h8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" opacity="0.25"/></svg>',
+
+  /* settings sub-nav */
+  gateway: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><rect x="2.5" y="2.5" width="11" height="4.2" rx="1.2" stroke="currentColor" stroke-width="1.3"/><rect x="2.5" y="9.3" width="11" height="4.2" rx="1.2" stroke="currentColor" stroke-width="1.3"/><path d="M5 4.6h.01M5 11.4h.01" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>',
+
+  desktop: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><rect x="2" y="3" width="12" height="8" rx="1.3" stroke="currentColor" stroke-width="1.3"/><path d="M6 13.5h4M8 11v2.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>',
+
+  shield: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M8 2l4.5 1.8v3.1c0 3-2 5.3-4.5 6.3-2.5-1-4.5-3.3-4.5-6.3V3.8L8 2z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M6 8l1.4 1.4L10.4 6.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+
+  sliders: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M3 5h5M11.6 5H13M3 11h1.4M8 11h5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/><circle cx="9.6" cy="5" r="1.7" stroke="currentColor" stroke-width="1.3"/><circle cx="6" cy="11" r="1.7" stroke="currentColor" stroke-width="1.3"/></svg>',
+
+  folder: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M2.5 4.6a1 1 0 011-1h2.4l1.2 1.4h5.4a1 1 0 011 1v5.4a1 1 0 01-1 1h-9a1 1 0 01-1-1V4.6z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>',
 };
