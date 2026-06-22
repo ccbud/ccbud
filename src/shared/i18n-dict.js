@@ -1,8 +1,8 @@
 'use strict';
 
 /*
- * Clawdy i18n dictionary — 5 locales. Dual-export so the SAME file is used by:
- *   - the renderer + popover windows via <script src> (attaches window.ClawdyI18nDict)
+ * ccbud i18n dictionary — 5 locales. Dual-export so the SAME file is used by:
+ *   - the renderer + popover windows via <script src> (attaches window.ccbudI18nDict)
  *   - the main process via require() (module.exports)
  * `en` is the canonical key set (test/i18n.test.js enforces every locale matches it).
  * Interpolation tokens look like {name} / {n}. Do NOT translate brand names, model ids,
@@ -13,7 +13,7 @@
   var LOCALE_TAG = { en: 'en-US', zh: 'zh-CN', 'zh-TW': 'zh-TW', ja: 'ja-JP', ko: 'ko-KR' };
 
   var en = {
-    'brand.sub': 'Claude Code Gateway',
+    'brand.sub': 'Claude Code Buddy',
     'nav.providers': 'Services',
     'nav.conversations': 'Conversations',
     'nav.monitor': 'Monitor',
@@ -74,7 +74,7 @@
     'settings.desktopUnsupported': 'macOS only',
     'settings.desktopSteps': 'Profile generated and System Settings opened. ① Install the profile → ② enter your admin password → ③ relaunch the Claude Desktop app. Status auto-detects within a few seconds — or tap ↻ to check now. Not dangerous — it just points inference at your local gateway.',
     'settings.desktopRestored': 'Restored — the Claude Desktop app uses official inference again. Relaunch it to take effect.',
-    'settings.desktopRestoreSteps': 'Opened System Settings › Profiles. Remove the “Clawdy · Claude Desktop” profile, then tap ↻ to refresh.',
+    'settings.desktopRestoreSteps': 'Opened System Settings › Profiles. Remove the “ccbud · Claude Desktop” profile, then tap ↻ to refresh.',
     'settings.desktopNoProvider': 'Add and select a service first.',
     'settings.desktopRefresh': 'Refresh status',
     'settings.desktopStatusHint': 'Status is read from the system profile, not live — tap ↻ after installing/removing it.',
@@ -95,7 +95,7 @@
     'settings.presidioNoSource': 'Source missing',
     'settings.presidioInstallingNote': 'First run: installing the in-app Python env (uv + Presidio) — a few minutes. It starts filtering automatically when ready.',
     'settings.presidioRunningNote': 'On — outbound request text is auto-redacted locally before it leaves your machine.',
-    'settings.presidioStartFail': "Couldn't start the filter. Check the setup log under Application Support/clawdy/presidio-env.",
+    'settings.presidioStartFail': "Couldn't start the filter. Check the setup log under Application Support/ccbud/presidio-env.",
     'settings.presidioConsole': 'Console output',
     'settings.presidioConsoleClear': 'Clear',
     'settings.presidioFindings': 'Findings',
@@ -274,7 +274,7 @@
     'time.daysAgo': '{n} d ago',
     'time.unitDay': 'd',
 
-    'pop.title': 'Clawdy Usage',
+    'pop.title': 'ccbud Usage',
     'pop.tabOverview': 'Overview',
     'pop.tabModels': 'Models',
     'pop.usage': 'Usage',
@@ -297,7 +297,7 @@
     'tray.openMain': 'Open main window',
     'tray.disconnect': 'Disconnect',
     'tray.connect': 'Connect',
-    'tray.quit': 'Quit Clawdy',
+    'tray.quit': 'Quit ccbud',
 
     'dialog.pickTitle': 'Choose the Claude config directory (with projects/)',
     'dialog.pickMessage': 'Choose the Claude Code config directory; default ~/.claude (hidden directories shown)',
@@ -336,7 +336,7 @@
   };
 
   var zh = {
-    'brand.sub': 'Claude Code 网关',
+    'brand.sub': 'Claude Code Buddy',
     'nav.providers': '服务',
     'nav.conversations': '对话',
     'nav.monitor': '监控',
@@ -397,7 +397,7 @@
     'settings.desktopUnsupported': '仅 macOS',
     'settings.desktopSteps': '已生成配置描述文件并打开「系统设置」。① 点「安装」描述文件 → ② 输入管理员密码 → ③ 重启 Claude 桌面版即可生效。状态会在几秒内自动检测,也可点 ↻ 立即刷新。不是高危操作,只是把推理指向你的本地网关。',
     'settings.desktopRestored': '已还原 —— Claude 桌面版恢复官方推理。重启桌面版即可生效。',
-    'settings.desktopRestoreSteps': '已打开「系统设置 › 描述文件」。移除「Clawdy · Claude Desktop」描述文件后,点 ↻ 刷新状态。',
+    'settings.desktopRestoreSteps': '已打开「系统设置 › 描述文件」。移除「ccbud · Claude Desktop」描述文件后,点 ↻ 刷新状态。',
     'settings.desktopNoProvider': '请先添加并选择一个服务。',
     'settings.desktopRefresh': '刷新状态',
     'settings.desktopStatusHint': '状态来自系统描述文件,非实时;安装/移除后点 ↻ 刷新。',
@@ -418,7 +418,7 @@
     'settings.presidioNoSource': '缺少源码',
     'settings.presidioInstallingNote': '首次开启：正在应用内安装 Python 环境（uv + Presidio），约几分钟，装好会自动开始过滤。',
     'settings.presidioRunningNote': '已启用 —— 出站请求文本在离开你机器前已本地自动脱敏。',
-    'settings.presidioStartFail': '过滤未能启动。请查看 Application Support/clawdy/presidio-env 下的安装日志。',
+    'settings.presidioStartFail': '过滤未能启动。请查看 Application Support/ccbud/presidio-env 下的安装日志。',
     'settings.presidioConsole': '控制台输出',
     'settings.presidioConsoleClear': '清空',
     'settings.presidioFindings': '检测结果',
@@ -597,7 +597,7 @@
     'time.daysAgo': '{n} 天前',
     'time.unitDay': '天',
 
-    'pop.title': 'Clawdy 用量',
+    'pop.title': 'ccbud 用量',
     'pop.tabOverview': '总览',
     'pop.tabModels': '模型',
     'pop.usage': '用量',
@@ -620,7 +620,7 @@
     'tray.openMain': '打开主界面',
     'tray.disconnect': '断开接入',
     'tray.connect': '一键接入',
-    'tray.quit': '退出 Clawdy',
+    'tray.quit': '退出 ccbud',
 
     'dialog.pickTitle': '选择 Claude 配置目录（含 projects/）',
     'dialog.pickMessage': '选择 Claude Code 的配置目录，默认 ~/.claude（已显示隐藏目录）',
@@ -659,7 +659,7 @@
   };
 
   var zhTW = {
-    'brand.sub': 'Claude Code 閘道',
+    'brand.sub': 'Claude Code Buddy',
     'nav.providers': '服務',
     'nav.conversations': '對話',
     'nav.monitor': '監控',
@@ -866,7 +866,7 @@
     'time.daysAgo': '{n} 天前',
     'time.unitDay': '天',
 
-    'pop.title': 'Clawdy 用量',
+    'pop.title': 'ccbud 用量',
     'pop.tabOverview': '總覽',
     'pop.tabModels': '模型',
     'pop.usage': '用量',
@@ -889,7 +889,7 @@
     'tray.openMain': '開啟主視窗',
     'tray.disconnect': '中斷接入',
     'tray.connect': '一鍵接入',
-    'tray.quit': '結束 Clawdy',
+    'tray.quit': '結束 ccbud',
 
     'dialog.pickTitle': '選擇 Claude 設定目錄（含 projects/）',
     'dialog.pickMessage': '選擇 Claude Code 的設定目錄，預設 ~/.claude（已顯示隱藏目錄）',
@@ -940,7 +940,7 @@
     'settings.desktopUnsupported': '僅限 macOS',
     'settings.desktopSteps': '已產生描述檔並開啟系統設定。① 安裝描述檔 →② 輸入管理員密碼 →③ 重新啟動 Claude 桌面版。狀態會在幾秒內自動偵測 — 或點 ↻ 立即檢查。並無風險 — 只是把推理指向你的本機閘道。',
     'settings.desktopRestored': '已還原 — Claude 桌面版重新使用官方推理。重新啟動後生效。',
-    'settings.desktopRestoreSteps': '已開啟系統設定 ›「描述檔」。移除「Clawdy · Claude Desktop」描述檔後，點 ↻ 重新整理。',
+    'settings.desktopRestoreSteps': '已開啟系統設定 ›「描述檔」。移除「ccbud · Claude Desktop」描述檔後，點 ↻ 重新整理。',
     'settings.desktopNoProvider': '請先新增並選擇一個服務。',
     'settings.desktopRefresh': '重新整理狀態',
     'settings.desktopStatusHint': '狀態讀取自系統描述檔，並非即時 — 安裝／移除後請點 ↻。',
@@ -961,7 +961,7 @@
     'settings.presidioNoSource': '缺少來源',
     'settings.presidioInstallingNote': '首次執行：正在應用內安裝 Python 環境（uv + Presidio）— 約數分鐘。就緒後自動開始過濾。',
     'settings.presidioRunningNote': '執行中 — 出站請求文字在離開你的機器前已於本機自動去敏感化。',
-    'settings.presidioStartFail': '過濾未能啟動。請查看 Application Support/clawdy/presidio-env 下的安裝記錄。',
+    'settings.presidioStartFail': '過濾未能啟動。請查看 Application Support/ccbud/presidio-env 下的安裝記錄。',
     'settings.presidioConsole': '主控台輸出',
     'settings.presidioConsoleClear': '清空',
     'settings.presidioFindings': '偵測結果',
@@ -982,7 +982,7 @@
   };
 
   var ja = {
-    'brand.sub': 'Claude Code ゲートウェイ',
+    'brand.sub': 'Claude Code Buddy',
     'nav.providers': 'サービス',
     'nav.conversations': '会話',
     'nav.monitor': 'モニター',
@@ -1189,7 +1189,7 @@
     'time.daysAgo': '{n} 日前',
     'time.unitDay': '日',
 
-    'pop.title': 'Clawdy 使用量',
+    'pop.title': 'ccbud 使用量',
     'pop.tabOverview': '概要',
     'pop.tabModels': 'モデル',
     'pop.usage': '使用量',
@@ -1212,7 +1212,7 @@
     'tray.openMain': 'メインウィンドウを開く',
     'tray.disconnect': '切断',
     'tray.connect': '接続',
-    'tray.quit': 'Clawdy を終了',
+    'tray.quit': 'ccbud を終了',
 
     'dialog.pickTitle': 'Claude 設定ディレクトリを選択（projects/ を含む）',
     'dialog.pickMessage': 'Claude Code の設定ディレクトリを選択。既定 ~/.claude（隠しディレクトリ表示済み）',
@@ -1263,7 +1263,7 @@
     'settings.desktopUnsupported': 'macOS のみ',
     'settings.desktopSteps': 'プロファイルを生成し、システム設定を開きました。① プロファイルをインストール →② 管理者パスワードを入力 →③ Claude デスクトップ版を再起動。数秒で自動検出します — または ↻ で今すぐ確認。危険はありません — 推論をローカルゲートウェイに向けるだけです。',
     'settings.desktopRestored': '復元しました — Claude デスクトップ版は再び公式の推論を使用します。再起動で反映されます。',
-    'settings.desktopRestoreSteps': 'システム設定 ›「プロファイル」を開きました。「Clawdy · Claude Desktop」プロファイルを削除し、↻ で更新してください。',
+    'settings.desktopRestoreSteps': 'システム設定 ›「プロファイル」を開きました。「ccbud · Claude Desktop」プロファイルを削除し、↻ で更新してください。',
     'settings.desktopNoProvider': '先にサービスを追加して選択してください。',
     'settings.desktopRefresh': '状態を更新',
     'settings.desktopStatusHint': '状態はシステムプロファイルから読み取ります（リアルタイムではありません）— インストール／削除後に ↻ を押してください。',
@@ -1284,7 +1284,7 @@
     'settings.presidioNoSource': 'ソースなし',
     'settings.presidioInstallingNote': '初回実行：アプリ内に Python 環境（uv + Presidio）をインストール中 — 数分かかります。準備が整うと自動的にフィルタリングを開始します。',
     'settings.presidioRunningNote': 'オン — 送信リクエストのテキストは、マシンを離れる前にローカルで自動マスクされます。',
-    'settings.presidioStartFail': 'フィルタを開始できませんでした。Application Support/clawdy/presidio-env のセットアップログを確認してください。',
+    'settings.presidioStartFail': 'フィルタを開始できませんでした。Application Support/ccbud/presidio-env のセットアップログを確認してください。',
     'settings.presidioConsole': 'コンソール出力',
     'settings.presidioConsoleClear': 'クリア',
     'settings.presidioFindings': '検出結果',
@@ -1305,7 +1305,7 @@
   };
 
   var ko = {
-    'brand.sub': 'Claude Code 게이트웨이',
+    'brand.sub': 'Claude Code Buddy',
     'nav.providers': '서비스',
     'nav.conversations': '대화',
     'nav.monitor': '모니터',
@@ -1512,7 +1512,7 @@
     'time.daysAgo': '{n}일 전',
     'time.unitDay': '일',
 
-    'pop.title': 'Clawdy 사용량',
+    'pop.title': 'ccbud 사용량',
     'pop.tabOverview': '개요',
     'pop.tabModels': '모델',
     'pop.usage': '사용량',
@@ -1535,7 +1535,7 @@
     'tray.openMain': '메인 창 열기',
     'tray.disconnect': '연결 해제',
     'tray.connect': '연결',
-    'tray.quit': 'Clawdy 종료',
+    'tray.quit': 'ccbud 종료',
 
     'dialog.pickTitle': 'Claude 설정 디렉터리 선택 (projects/ 포함)',
     'dialog.pickMessage': 'Claude Code 설정 디렉터리를 선택하세요. 기본값 ~/.claude (숨김 디렉터리 표시됨)',
@@ -1586,7 +1586,7 @@
     'settings.desktopUnsupported': 'macOS 전용',
     'settings.desktopSteps': '프로파일을 생성하고 시스템 설정을 열었습니다. ① 프로파일 설치 →② 관리자 비밀번호 입력 →③ Claude 데스크톱 앱 재시작. 상태는 몇 초 내 자동 감지됩니다 — 또는 ↻ 를 눌러 지금 확인하세요. 위험하지 않습니다 — 추론을 로컬 게이트웨이로 향하게 할 뿐입니다.',
     'settings.desktopRestored': '복원됨 — Claude 데스크톱 앱이 다시 공식 추론을 사용합니다. 재시작하면 적용됩니다.',
-    'settings.desktopRestoreSteps': '시스템 설정 › «프로파일»을 열었습니다. «Clawdy · Claude Desktop» 프로파일을 제거한 뒤 ↻ 로 새로고침하세요.',
+    'settings.desktopRestoreSteps': '시스템 설정 › «프로파일»을 열었습니다. «ccbud · Claude Desktop» 프로파일을 제거한 뒤 ↻ 로 새로고침하세요.',
     'settings.desktopNoProvider': '먼저 서비스를 추가하고 선택하세요.',
     'settings.desktopRefresh': '상태 새로고침',
     'settings.desktopStatusHint': '상태는 실시간이 아니라 시스템 프로파일에서 읽어옵니다 — 설치/제거 후 ↻ 를 누르세요.',
@@ -1607,7 +1607,7 @@
     'settings.presidioNoSource': '소스 없음',
     'settings.presidioInstallingNote': '첫 실행: 앱 내에 Python 환경(uv + Presidio)을 설치하는 중 — 몇 분 걸립니다. 준비되면 자동으로 필터링을 시작합니다.',
     'settings.presidioRunningNote': '켜짐 — 발신 요청 텍스트는 기기를 떠나기 전에 로컬에서 자동 마스킹됩니다.',
-    'settings.presidioStartFail': '필터를 시작할 수 없습니다. Application Support/clawdy/presidio-env의 설치 로그를 확인하세요.',
+    'settings.presidioStartFail': '필터를 시작할 수 없습니다. Application Support/ccbud/presidio-env의 설치 로그를 확인하세요.',
     'settings.presidioConsole': '콘솔 출력',
     'settings.presidioConsoleClear': '지우기',
     'settings.presidioFindings': '탐지 결과',
@@ -1631,5 +1631,5 @@
   var api = { DICT: DICT, LANGS: LANGS, LOCALE_TAG: LOCALE_TAG };
 
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
-  if (root) root.ClawdyI18nDict = api;
+  if (root) root.ccbudI18nDict = api;
 })(typeof window !== 'undefined' ? window : null);

@@ -5,7 +5,7 @@
    timeline (text / thinking / per-tool cards + results / diffs / code / images), live-follow
    for active sessions, per-session stats, and in-conversation search. */
 (function () {
-  const api = window.clawdy;
+  const api = window.ccbud;
   if (!api) return;
   const $ = (id) => document.getElementById(id);
   const L = (k, p) => (window.I18n ? window.I18n.t(k, p) : k); // translate (t/$ already taken)
@@ -32,8 +32,8 @@
   let vStart = 0, vEnd = 0;      // rendered window into currentDetail.messages
   let detailTexts = null;        // per-message plain text, for data-driven search (built on open)
 
-  try { collapsed = new Set(JSON.parse(localStorage.getItem('clawdy-collapsed-projects') || '[]')); } catch (_) {}
-  function persistCollapsed() { try { localStorage.setItem('clawdy-collapsed-projects', JSON.stringify([...collapsed])); } catch (_) {} }
+  try { collapsed = new Set(JSON.parse(localStorage.getItem('ccbud-collapsed-projects') || '[]')); } catch (_) {}
+  function persistCollapsed() { try { localStorage.setItem('ccbud-collapsed-projects', JSON.stringify([...collapsed])); } catch (_) {} }
 
   // Detail search state (data-driven). searchOcc = every match occurrence across the whole thread,
   // found in the parsed message text (not the DOM): [{ mi: messageIndex, k: kth-match-in-that-message }].
@@ -594,7 +594,7 @@
 
     // Collapse the conversation list sidebar / nav panel
     const convSidebar = document.querySelector('.conv-sidebar');
-    const I = window.ClawdyIcons || {};
+    const I = window.ccbudIcons || {};
     const setChevron = (btn, isCol) => {
       const icon = btn && btn.querySelector('[data-icon]');
       if (icon) icon.innerHTML = isCol ? (I.chevronRight || '›') : (I.chevronLeft || '‹');
@@ -602,24 +602,24 @@
 
     const collapseListBtn = $('btnCollapseConvList');
     if (collapseListBtn && convSidebar) {
-      try { if (localStorage.getItem('clawdy-convlist-collapsed') === '1') { convSidebar.classList.add('collapsed'); setChevron(collapseListBtn, true); } } catch (_) {}
+      try { if (localStorage.getItem('ccbud-convlist-collapsed') === '1') { convSidebar.classList.add('collapsed'); setChevron(collapseListBtn, true); } } catch (_) {}
       collapseListBtn.addEventListener('click', (e) => {
         e.stopPropagation();
         const isCol = convSidebar.classList.toggle('collapsed');
         setChevron(collapseListBtn, isCol);
-        try { localStorage.setItem('clawdy-convlist-collapsed', isCol ? '1' : '0'); } catch (_) {}
+        try { localStorage.setItem('ccbud-convlist-collapsed', isCol ? '1' : '0'); } catch (_) {}
       });
     }
 
     const convNav = document.querySelector('.conv-nav');
     const collapseNavBtn = $('btnCollapseConvNav');
     if (collapseNavBtn && convNav) {
-      try { if (localStorage.getItem('clawdy-convnav-collapsed') === '1') { convNav.classList.add('collapsed'); setChevron(collapseNavBtn, true); } } catch (_) {}
+      try { if (localStorage.getItem('ccbud-convnav-collapsed') === '1') { convNav.classList.add('collapsed'); setChevron(collapseNavBtn, true); } } catch (_) {}
       collapseNavBtn.addEventListener('click', (e) => {
         e.stopPropagation();
         const isCol = convNav.classList.toggle('collapsed');
         setChevron(collapseNavBtn, isCol);
-        try { localStorage.setItem('clawdy-convnav-collapsed', isCol ? '1' : '0'); } catch (_) {}
+        try { localStorage.setItem('ccbud-convnav-collapsed', isCol ? '1' : '0'); } catch (_) {}
       });
     }
 
@@ -669,7 +669,7 @@
     });
   }
 
-  window.ClawdyConversations = {
+  window.ccbudConversations = {
     onShow() { refresh(); if (openFile) rerenderDetail(false); },
     // Re-render everything this view owns when the UI language changes.
     setLang() { renderDirSwitch(); renderList(); if (openFile) rerenderDetail(true); },

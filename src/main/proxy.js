@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * Clawdy Gateway — pure Node proxy core (no Electron dependency, fully testable).
+ * ccbud Gateway — pure Node proxy core (no Electron dependency, fully testable).
  *
  * Responsibilities:
  *  - Listen on 127.0.0.1:<port>
@@ -286,7 +286,7 @@ function createGateway({ getConfig }) {
       const auth = req.headers['authorization'] || '';
       const presented = auth.replace(/^Bearer\s+/i, '') || req.headers['x-api-key'] || '';
       if (presented !== config.gatewayToken) {
-        respondJson(res, 401, JSON.parse(errorBody('Clawdy: invalid gateway token', 'authentication_error')));
+        respondJson(res, 401, JSON.parse(errorBody('ccbud: invalid gateway token', 'authentication_error')));
         return;
       }
     }
@@ -305,7 +305,7 @@ function createGateway({ getConfig }) {
 
     const routing = resolveRouting(requestedModel, config);
     if (!routing || !routing.provider) {
-      respondJson(res, 502, JSON.parse(errorBody('Clawdy: no provider configured. Add one in the app.', 'api_error')));
+      respondJson(res, 502, JSON.parse(errorBody('ccbud: no provider configured. Add one in the app.', 'api_error')));
       log('warn', 'request rejected: no provider configured');
       return;
     }
@@ -320,7 +320,7 @@ function createGateway({ getConfig }) {
         redactedBody = true;
       } catch (e) {
         if (!px.failOpen) {
-          respondJson(res, 503, JSON.parse(errorBody('Clawdy: Presidio content filter not ready — request blocked to prevent leaks. Check Presidio in Settings or turn it off.', 'api_error')));
+          respondJson(res, 503, JSON.parse(errorBody('ccbud: Presidio content filter not ready — request blocked to prevent leaks. Check Presidio in Settings or turn it off.', 'api_error')));
           log('warn', 'presidio redact failed (fail-closed): ' + (e && e.message));
           return;
         }
@@ -361,7 +361,7 @@ function createGateway({ getConfig }) {
       const basePath = base.pathname.replace(/\/+$/, '');
       target = new URL(base.protocol + '//' + base.host + basePath + req.url);
     } catch (e) {
-      respondJson(res, 502, JSON.parse(errorBody('Clawdy: invalid provider baseUrl: ' + provider.baseUrl, 'api_error')));
+      respondJson(res, 502, JSON.parse(errorBody('ccbud: invalid provider baseUrl: ' + provider.baseUrl, 'api_error')));
       return;
     }
 
@@ -481,8 +481,8 @@ function createGateway({ getConfig }) {
           upRes.resume(); // drain the upstream so its socket can be freed/reused
           const fbHeaders = Object.assign({}, outHeaders);
           fbHeaders['content-length'] = '0';
-          fbHeaders['x-clawdy-fallback'] = 'head-root-404-to-200';
-          fbHeaders['x-clawdy-upstream-status'] = '404';
+          fbHeaders['x-ccbud-fallback'] = 'head-root-404-to-200';
+          fbHeaders['x-ccbud-upstream-status'] = '404';
           res.writeHead(200, fbHeaders);
           res.end();
           log('info', 'HEAD / fallback: upstream 404 → gateway 200 (' + (provider.name || provider.id) + ')');
@@ -538,7 +538,7 @@ function createGateway({ getConfig }) {
               finishLog();
               return;
             }
-            if (!res.headersSent) respondJson(res, 502, JSON.parse(errorBody('Clawdy upstream stream error: ' + err.message, 'api_error')));
+            if (!res.headersSent) respondJson(res, 502, JSON.parse(errorBody('ccbud upstream stream error: ' + err.message, 'api_error')));
             else { try { res.destroy(); } catch (_) {} }
             emitExchange(upRes.statusCode, outHeaders, capText(Buffer.concat(cs), RES_CAP), err.message);
             finishLog(err.message);
@@ -554,7 +554,7 @@ function createGateway({ getConfig }) {
               try { const o = JSON.parse(buf.toString('utf8')); if (o && typeof o.input_tokens === 'number') upstreamOk = o; } catch (_) {}
             }
             if (upstreamOk) {
-              outHeaders['x-clawdy-tokens'] = 'upstream';
+              outHeaders['x-ccbud-tokens'] = 'upstream';
               outHeaders['content-length'] = Buffer.byteLength(buf);
               res.writeHead(200, outHeaders);
               res.end(buf);
@@ -567,8 +567,8 @@ function createGateway({ getConfig }) {
             const eh = Object.assign({}, outHeaders);
             eh['content-type'] = 'application/json';
             eh['content-length'] = Buffer.byteLength(ebuf);
-            eh['x-clawdy-tokens'] = 'estimated';
-            eh['x-clawdy-upstream-status'] = String(upRes.statusCode);
+            eh['x-ccbud-tokens'] = 'estimated';
+            eh['x-ccbud-upstream-status'] = String(upRes.statusCode);
             res.writeHead(200, eh);
             res.end(ebuf);
             log('info', `count_tokens estimated locally (upstream ${upRes.statusCode}): ${est}`);
@@ -635,7 +635,7 @@ function createGateway({ getConfig }) {
       if (isCountTokens && !res.headersSent) {
         const est = estimateInputTokens(parsed || {});
         const ebuf = Buffer.from(JSON.stringify({ input_tokens: est }), 'utf8');
-        const eh = { 'content-type': 'application/json', 'content-length': Buffer.byteLength(ebuf), 'x-clawdy-tokens': 'estimated', 'x-clawdy-upstream-status': 'error' };
+        const eh = { 'content-type': 'application/json', 'content-length': Buffer.byteLength(ebuf), 'x-ccbud-tokens': 'estimated', 'x-ccbud-upstream-status': 'error' };
         try { res.writeHead(200, eh); res.end(ebuf); } catch (_) {}
         log('info', 'count_tokens estimated locally (upstream unreachable: ' + err.message + '): ' + est);
         emitExchange(200, eh, capText(ebuf, RES_CAP));
@@ -647,7 +647,7 @@ function createGateway({ getConfig }) {
         return;
       }
       if (!res.headersSent) {
-        respondJson(res, 502, JSON.parse(errorBody('Clawdy upstream error: ' + err.message, 'api_error')));
+        respondJson(res, 502, JSON.parse(errorBody('ccbud upstream error: ' + err.message, 'api_error')));
       } else {
         try {
           res.destroy();
@@ -686,7 +686,7 @@ function createGateway({ getConfig }) {
         .then(() => handle(req, res, startedAt))
         .catch((e) => {
           try {
-            if (!res.headersSent) respondJson(res, 500, JSON.parse(errorBody('Clawdy internal error: ' + (e && e.message ? e.message : e), 'api_error')));
+            if (!res.headersSent) respondJson(res, 500, JSON.parse(errorBody('ccbud internal error: ' + (e && e.message ? e.message : e), 'api_error')));
             else res.destroy();
           } catch (_) {}
         });

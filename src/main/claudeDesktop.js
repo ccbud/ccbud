@@ -7,7 +7,7 @@
  * (bundle `com.anthropic.claudefordesktop`) reads its third-party-inference settings from macOS
  * *Managed Preferences*, delivered as a Configuration Profile (.mobileconfig). So:
  *
- *   connect():  generate a profile pre-filled with the local Clawdy gateway, then hand it to macOS.
+ *   connect():  generate a profile pre-filled with the local ccbud gateway, then hand it to macOS.
  *               `profiles` CLI "no longer supports installs", so the user approves it once in
  *               System Settings › Profiles (admin password). This is NOT a risky operation — it
  *               only changes where inference is sent; macOS just requires you to confirm it.
@@ -27,13 +27,13 @@ const crypto = require('crypto');
 const { exec, execFile, execFileSync } = require('child_process');
 
 const BUNDLE_ID = 'com.anthropic.claudefordesktop';
-const PROFILE_IDENTIFIER = 'dev.clawdy.gateway.claude-desktop-inference';
+const PROFILE_IDENTIFIER = 'dev.ccbud.gateway.claude-desktop-inference';
 const PROFILES_PANE = 'x-apple.systempreferences:com.apple.preferences.configurationprofiles';
 
 const isMac = () => process.platform === 'darwin';
 const endpoint = (port) => `http://localhost:${port || 8788}`;
 const profilePath = () =>
-  path.join(os.homedir(), 'Library', 'Application Support', 'clawdy', 'claude-desktop-inference.mobileconfig');
+  path.join(os.homedir(), 'Library', 'Application Support', 'ccbud', 'claude-desktop-inference.mobileconfig');
 
 function appInstalled() {
   if (!isMac()) return false;
@@ -57,7 +57,7 @@ function buildProfile(port, token) {
     inferenceProvider: 'gateway',
     inferenceCredentialKind: 'static',
     inferenceGatewayBaseUrl: endpoint(port),
-    inferenceGatewayApiKey: token || 'clawdy-local',
+    inferenceGatewayApiKey: token || 'ccbud-local',
     inferenceGatewayAuthScheme: 'bearer',
   };
   const body = Object.entries(settings)
@@ -78,18 +78,18 @@ function buildProfile(port, token) {
       <key>PayloadVersion</key>
       <integer>1</integer>
       <key>PayloadDisplayName</key>
-      <string>Claude Desktop Third-Party Inference (Clawdy)</string>
+      <string>Claude Desktop Third-Party Inference (ccbud)</string>
 ${body}
     </dict>
   </array>
   <key>PayloadDisplayName</key>
-  <string>Clawdy · Claude Desktop 第三方推理</string>
+  <string>ccbud · Claude Desktop 第三方推理</string>
   <key>PayloadDescription</key>
-  <string>将 Claude 桌面版的模型推理指向本地 Clawdy 网关（${endpoint(port)}）。可随时移除以还原为官方推理。</string>
+  <string>将 Claude 桌面版的模型推理指向本地 ccbud 网关（${endpoint(port)}）。可随时移除以还原为官方推理。</string>
   <key>PayloadIdentifier</key>
   <string>${PROFILE_IDENTIFIER}</string>
   <key>PayloadOrganization</key>
-  <string>Clawdy</string>
+  <string>ccbud</string>
   <key>PayloadRemovalDisallowed</key>
   <false/>
   <key>PayloadScope</key>

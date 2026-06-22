@@ -1,6 +1,6 @@
 'use strict';
 
-const api = window.clawdy;
+const api = window.ccbud;
 let range = '7d';
 let tab = 'overview';
 let heatmapReady = false;
@@ -163,13 +163,13 @@ function bind() {
 }
 
 function applyTheme() {
-  try { document.documentElement.setAttribute('data-theme', localStorage.getItem('clawdy-theme') || 'light'); } catch (_) {}
+  try { document.documentElement.setAttribute('data-theme', localStorage.getItem('ccbud-theme') || 'light'); } catch (_) {}
 }
 // The popover is a separate window; it reads the language from shared localStorage (set by the
 // main window) on load and on every show, so a language change propagates the next time it opens.
 function applyLang() {
   try {
-    let l = localStorage.getItem('clawdy-lang') || '';
+    let l = localStorage.getItem('ccbud-lang') || '';
     if (!l) {
       const nav = (navigator.language || 'en').toLowerCase();
       l = nav.startsWith('zh') ? ((/-(tw|hk|mo)\b/.test(nav) || nav.includes('hant')) ? 'zh-TW' : 'zh')

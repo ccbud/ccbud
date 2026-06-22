@@ -1,20 +1,15 @@
 'use strict';
 
-/* Clawdy icon system — SF Symbols–style SVG primitives */
-window.ClawdyIcons = {
+/* ccbud icon system — SF Symbols–style SVG primitives */
+window.ccbudIcons = {
   logo(size = 28) {
     return `<svg width="${size}" height="${size}" viewBox="0 0 28 28" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-      <rect x="1" y="1" width="26" height="26" rx="7.5" fill="url(#clawdy-grad)"/>
-      <circle cx="14" cy="14" r="3.2" fill="white" opacity="0.95"/>
-      <path d="M14 10.8V7.5M14 20.5V17.2M10.8 14H7.5M20.5 14H17.2" stroke="white" stroke-width="1.6" stroke-linecap="round" opacity="0.9"/>
-      <path d="M10.2 10.2L8.2 8.2M19.8 19.8L17.8 17.8M19.8 10.2L17.8 8.2M10.2 19.8L8.2 17.8" stroke="white" stroke-width="1.4" stroke-linecap="round" opacity="0.55"/>
-      <defs>
-        <linearGradient id="clawdy-grad" x1="4" y1="3" x2="24" y2="25" gradientUnits="userSpaceOnUse">
-          <stop stop-color="#5856D6"/>
-          <stop offset="0.55" stop-color="#4B6BFF"/>
-          <stop offset="1" stop-color="#007AFF"/>
-        </linearGradient>
-      </defs>
+      <rect x="1" y="1" width="26" height="26" rx="7.5" fill="#1E1E1E" stroke="#2E2E2E" stroke-width="0.8"/>
+      <path d="M 10.2 13.5 A 2.5 2.5 0 1 0 10.2 18.5" stroke="#F5F5F0" stroke-width="1.8" fill="none" stroke-linecap="round"/>
+      <path d="M 17.8 13.5 A 2.5 2.5 0 1 0 17.8 18.5" stroke="#F5F5F0" stroke-width="1.8" fill="none" stroke-linecap="round"/>
+      <path d="M 14 18.5 V 12.0" stroke="#C28A6B" stroke-width="1.2" stroke-linecap="round"/>
+      <path d="M 14 12.0 Q 11.5 12.0 10.5 9.5 Q 12.8 8.5 14 12.0 Z" fill="#C28A6B"/>
+      <path d="M 14 12.0 Q 16.5 12.0 17.5 9.5 Q 15.2 8.5 14 12.0 Z" fill="#C28A6B"/>
     </svg>`;
   },
 

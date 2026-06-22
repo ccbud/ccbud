@@ -6,7 +6,7 @@
  * Claude Code calls POST /v1/messages/count_tokens before sending. When the provider
  * implements it, the gateway forwards the real number; when it doesn't (404 / non-JSON /
  * unreachable), the gateway estimates locally (o200k + structural overhead, rounded up)
- * so context sizing keeps working — flagged via x-clawdy-tokens, never under-counted.
+ * so context sizing keeps working — flagged via x-ccbud-tokens, never under-counted.
  */
 
 const http = require('http');
@@ -65,7 +65,7 @@ function ct(base, content) {
     method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ model: 'claude-opus-4-8', messages: [{ role: 'user', content }] }),
   }).then((r) => r.text().then((t) => ({
-    status: r.status, tok: r.headers.get('x-clawdy-tokens'), up: r.headers.get('x-clawdy-upstream-status'),
+    status: r.status, tok: r.headers.get('x-ccbud-tokens'), up: r.headers.get('x-ccbud-upstream-status'),
     body: (() => { try { return JSON.parse(t); } catch (_) { return t; } })(),
   })));
 }
@@ -81,14 +81,14 @@ function ct(base, content) {
   // 1) upstream 404 → estimate
   const a = await ct(base, 'please estimate the tokens for this sentence locally');
   check('404 → 200', a.status === 200, `status=${a.status}`);
-  check('404 → x-clawdy-tokens: estimated', a.tok === 'estimated', `tok=${a.tok}`);
-  check('404 → x-clawdy-upstream-status: 404', a.up === '404', `up=${a.up}`);
+  check('404 → x-ccbud-tokens: estimated', a.tok === 'estimated', `tok=${a.tok}`);
+  check('404 → x-ccbud-upstream-status: 404', a.up === '404', `up=${a.up}`);
   check('404 → positive input_tokens', a.body && a.body.input_tokens > 0, JSON.stringify(a.body));
 
   // 2) upstream supports it → pass real value through
   const b = await ct(base, 'REAL — provider implements count_tokens');
   check('real → 200', b.status === 200);
-  check('real → x-clawdy-tokens: upstream', b.tok === 'upstream', `tok=${b.tok}`);
+  check('real → x-ccbud-tokens: upstream', b.tok === 'upstream', `tok=${b.tok}`);
   check('real → input_tokens passed through (42)', b.body && b.body.input_tokens === 42, JSON.stringify(b.body));
 
   // 3) upstream 200 but not valid count_tokens JSON → estimate
@@ -99,7 +99,7 @@ function ct(base, content) {
   config.providers[0].baseUrl = 'http://127.0.0.1:1'; // nothing listening
   const d = await ct(base, 'estimate me even though the provider is down');
   check('unreachable → 200 estimated', d.status === 200 && d.tok === 'estimated', `status=${d.status} tok=${d.tok}`);
-  check('unreachable → x-clawdy-upstream-status: error', d.up === 'error', `up=${d.up}`);
+  check('unreachable → x-ccbud-upstream-status: error', d.up === 'error', `up=${d.up}`);
   check('unreachable → positive input_tokens', d.body && d.body.input_tokens > 0, JSON.stringify(d.body));
 
   await gateway.stop();

@@ -1,13 +1,13 @@
 {
-  "name": "clawdy",
+  "name": "ccbud",
   "version": "1.0.2",
-  "description": "Clawdy — Claude Code Gateway. A cross-platform desktop app that proxies Claude Code to any Anthropic-compatible provider, with one-click switching and model name mapping.",
+  "description": "ccbud — Claude Code Gateway. A cross-platform desktop app that proxies Claude Code to any Anthropic-compatible provider, with one-click switching and model name mapping.",
   "main": "src/main/main.js",
   "author": {
     "name": "loadchange",
     "email": "soocto@gmail.com"
   },
-  "license": "MIT",
+  "license": "GPL-3.0-only",
   "scripts": {
     "build:css": "tailwindcss -i src/renderer/input.css -o src/renderer/styles.css",
     "start": "npm run build:css && electron .",
@@ -28,8 +28,8 @@
     "tailwindcss": "^4.3.1"
   },
   "build": {
-    "appId": "dev.clawdy.gateway",
-    "productName": "Clawdy",
+    "appId": "dev.ccbud.gateway",
+    "productName": "ccbud",
     "directories": {
       "output": "dist",
       "buildResources": "build"

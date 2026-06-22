@@ -1,4 +1,4 @@
-/* Clawdy export viewer runtime. Renders window.__CONV__ into a Claude-styled, themeable,
+/* ccbud export viewer runtime. Renders window.__CONV__ into a Claude-styled, themeable,
    searchable single-file app with a sidebar outline and expandable tools/subagents. */
 (function () {
   var D = window.__CONV__ || { meta: {}, messages: [], subagents: {} };
@@ -145,7 +145,7 @@
         '</div><nav class="toc" id="toc"></nav>' +
       '</aside>' +
       '<main class="content"><div class="thread" id="thread">' + threadHtml + orphanHtml + '</div>' +
-      '<div class="footer">由 Clawdy 导出 · ' + (meta.count || 0) + ' 条消息' + (meta.subagentCount ? ' · ' + meta.subagentCount + ' 个子代理' : '') + '</div></main>' +
+      '<div class="footer">由 ccbud 导出 · ' + (meta.count || 0) + ' 条消息' + (meta.subagentCount ? ' · ' + meta.subagentCount + ' 个子代理' : '') + '</div></main>' +
     '</div>';
 
   var content = app.querySelector('.content');
@@ -176,7 +176,7 @@
   });
 
   // ---- theme ----
-  var THEME_KEY = 'clawdy-export-theme';
+  var THEME_KEY = 'ccbud-export-theme';
   function setTheme(t) { document.documentElement.setAttribute('data-theme', t); document.getElementById('tgTheme').textContent = t === 'dark' ? '☀️' : '🌙'; try { localStorage.setItem(THEME_KEY, t); } catch (e) {} }
   try { var saved = localStorage.getItem(THEME_KEY); if (saved) setTheme(saved); else setTheme(window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'); } catch (e) { setTheme('light'); }
   document.getElementById('tgTheme').addEventListener('click', function () { setTheme(document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark'); });

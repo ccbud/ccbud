@@ -1,109 +1,96 @@
-# Clawdy — Claude Code Gateway
+<div align="center">
 
-一个跨平台桌面应用（macOS / Windows / Linux），本质是 **Claude Code 的本地网关**。
+<img src="docs/img/icon.png" alt="CCBUD" width="120" height="120" style="border-radius: 26px; box-shadow: 0 12px 32px rgba(0,0,0,0.18);">
 
-在 App 里添加多家 Anthropic 兼容服务（智谱 GLM、DeepSeek、小米 MiMo、月之暗面 Kimi……），
-**点一下「一键接入」就帮你写好 Claude Code 配置，点一下卡片就切换服务，再点一下「断开接入」原样还原** ——
-全程不用懂、不用碰任何环境变量。
+# CCBUD
 
-## 它解决什么
+### Claude Code Buddy
 
-- 普通人根本不知道 `export ANTHROPIC_BASE_URL` 是干嘛 → **一键接入**，自动写入 Claude Code 设置
-- 买了多家服务，每次切换要手动改一堆配置 → 多家**并存**，点一下卡片**即时切换**
-- 还要记每家的模型名 → 网关自动把 Claude 默认模型名映射到当前服务的模型
-- 用完想还原 → **一键断开**，接入前的配置自动备份并完整恢复
+**Point Claude Code at any Anthropic-compatible provider — one click, all local.**
 
-## 工作原理
+[![Platform](https://img.shields.io/badge/platform-macOS%20%C2%B7%20Windows%20%C2%B7%20Linux-5b6cff?style=flat-square)](#-installation)
+[![Built with Electron](https://img.shields.io/badge/built%20with-Electron-47848F?style=flat-square&logo=electron&logoColor=white)](https://www.electronjs.org/)
+[![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-3b82f6?style=flat-square)](./LICENSE)
 
-```
-Claude Code ──(ANTHROPIC_BASE_URL=127.0.0.1:port)──▶ Clawdy 网关 ──▶ 激活服务上游
-                                                       │
-                                          · 替换为上游真实 token
-                                          · 模型名路由 / 映射
-                                          · 篡改响应里的 model 名回客户端期望值
-```
+[Installation](#-installation) · [Quick Start](#-quick-start) · [How it works](#-how-it-works)
 
-- **不修改任何第三方服务的配置**，只在本机起一个转发 server。
-- 客户端可用「上游原名」直连透传；也可用「别名」，网关转发后会把响应里的
-  `model` 字段（含流式 `message_start`）改回别名，保证客户端看到的就是它请求的名字。
-- 自动模型映射：未配置 `ANTHROPIC_MODEL` 时，Claude Code 发来的 `claude-*`
-  默认模型名会被映射到激活服务的主模型（含 `haiku` → 小模型）。
+**English** · [简体中文](./README.zh-CN.md)
 
-## 接入方式（一键，无需懂环境变量）
+</div>
 
-1. 打开 App，点 `+` 添加一个或多个服务（选预设 → 粘贴 API Key 即可）。
-2. 点首页大按钮 **「一键接入」**。Clawdy 会自动把网关地址写入 Claude Code 的
-   `~/.claude/settings.json`（`env.ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN`），
-   并清掉会干扰的模型名覆盖项 —— **你不用碰任何环境变量**。
-3. 重启 Claude Code（新开会话）即生效。之后想换服务，点一下下面的服务卡片即可，
-   **即时切换、无需任何额外操作**；不想用了点 **「断开接入」**，Clawdy 会把你原来的
-   配置原样还原。
+---
 
-> Clawdy 会在断开/退出时完整恢复你接入前的 Claude 配置（接入前会自动备份）。
-> 接入期间请保持 Clawdy 运行（关闭窗口会缩到托盘继续工作；可开启「开机自启动」）。
+**CCBUD** (`cc` Claude Code + `bud` buddy) is a cross-platform desktop app that runs a tiny **local gateway** between Claude Code and any Anthropic-compatible provider — Kimi, DeepSeek, GLM, MiMo and more. Add your providers once, switch with a single click, and let CCBUD wire up Claude Code for you. **You never touch an environment variable.**
 
-也支持手动：首页「高级 / 手动配置」里有网关地址和 `export` 写法。
+<div align="center">
+  <img src="docs/img/services.jpg" alt="CCBUD — services view" width="820">
+</div>
 
-## 界面
+- **One-click Connect** — CCBUD writes `~/.claude/settings.json` for you, and restores it exactly when you disconnect.
+- **Switch in a click** — keep many providers side by side; tap a card to switch instantly.
+- **Automatic model mapping** — Claude's default model names are routed to the active provider's models for you.
+- **Stays on your machine** — the gateway binds to `127.0.0.1`; nothing leaves your computer.
 
-- **服务商**：卡片式管理多家服务，单选激活、拖动排序、一键测试连接；添加/编辑弹窗带预设供应商(GLM/DeepSeek/MiMo/Kimi)与模型映射配置。风格参考 cc-switch。
-- **对话**(实时监控,重点)：网关对每次 `/v1/messages` 做**非破坏式劫持**,实时重建整段对话——
-  用户/助手消息、**思考块**、逐个**工具调用卡片 + 结果**(Bash/Read/Edit&Write 带 diff/Grep/Glob/
-  Todo/Task/WebSearch/MCP…)、Markdown + 代码高亮、图片、**流式生成光标**,并标注模型(请求→实际)、
-  token、耗时、stop_reason。三栏布局(会话列表 / 消息流 / 概览+导航),对标 claude-code-history-viewer。
-  同时**增量 tail** `~/.claude/projects/*.jsonl`,用助手 `message.id` 关联补全 项目/cwd/分支。
-  对话内容**本地持久化(带容量上限、可一键清空、可在设置关闭捕获)**,数据不出本机。
-- **运行监控**：实时统计卡(状态/活跃服务/总请求/成功率/平均耗时)+ 实时请求流(逐条展示 `请求模型 → 实际模型`、是否改写 ✎、状态码、耗时),以及网关日志。
-- **菜单栏用量面板**：网关会从每次响应里抓真实 token 用量。点系统菜单栏图标弹出用量面板
-  (总用量 / 请求数 / 活跃天数 / 连续天数 / 峰值时段 / 常用模型 + 活跃热力图 + 按模型占比),
-  可切 今日 / 7 天 / 30 天 / 全部;可在「高级」里开启**在菜单栏直接显示 token 数**(xK/xM/xB)。
-- 顶部支持浅色 / 深色主题切换。
+## 📥 Installation
 
-## 开发 / 运行
+### Download (recommended)
+
+Grab the latest build for your platform from the **[Releases page](https://github.com/loadchange/clawdy/releases)**:
+
+| Platform | File |
+| :-- | :-- |
+| **macOS** (Apple Silicon & Intel) | `.dmg` |
+| **Windows** | `.exe` installer |
+| **Linux** | `.AppImage` / `.deb` |
+
+> **macOS Gatekeeper:** if the first launch is blocked, right-click the app → **Open**, or run
+> `xattr -dr com.apple.quarantine /Applications/ccbud.app`.
+
+### Build from source
 
 ```bash
+git clone https://github.com/loadchange/clawdy.git
+cd clawdy
 npm install
-npm start        # 启动桌面应用
-npm test         # 跑网关核心自测（会打真实上游验证转发 + 模型改写）
+npm start                 # run in development
+
+# package a distributable for your OS:
+npm run dist:mac          # or: dist:win · dist:linux
 ```
 
-## 安全 / 设置
+## 🚀 Quick Start
 
-- 网关只绑定 `127.0.0.1`，不对外暴露。
-- **网关访问令牌**：在 App 顶部「① 接入」区可勾选「要求本地访问令牌」。开启后，
-  本机任意进程要用网关都必须带上该令牌（否则返回 401），防止别的程序偷用你的上游额度；
-  开启后接入区展示的 `ANTHROPIC_AUTH_TOKEN` 会自动变成该令牌值。不开启时，本机任何
-  进程都能使用网关。
-- **开机自启动**：可在设置里勾选（macOS / Windows / 打包后的 Linux 原生支持）。
-- 配置保存在 Electron `userData/config.json`，文件权限 `0600`，上游密钥以明文保存
-  （本地桌面应用的常规做法）。
+**1 · Add a provider**
+Open CCBUD, click **`+`**, pick a preset (GLM · DeepSeek · MiMo · Kimi …) or enter a custom base URL, and paste your API key.
 
-## 打包
+<div align="center"><img src="docs/img/switch.jpg" alt="Add and switch providers" width="760"></div>
 
-```bash
-npm run dist:mac     # macOS dmg/zip (x64 + arm64)
-npm run dist:win     # Windows nsis/portable
-npm run dist:linux   # Linux AppImage/deb
+**2 · Connect**
+Hit the big **Connect** button. CCBUD points Claude Code at the local gateway by writing `env.ANTHROPIC_BASE_URL` and `env.ANTHROPIC_AUTH_TOKEN` into `~/.claude/settings.json` — backing up whatever was there before.
+
+**3 · Use Claude Code**
+Start a new Claude Code session and you're on your chosen provider. Switch anytime by clicking another card; hit **Disconnect** to restore your original settings, untouched. Keep CCBUD running while you work — closing the window tucks it into the menu bar / tray.
+
+## 🔧 How it works
+
+```text
+Claude Code ──(ANTHROPIC_BASE_URL = 127.0.0.1:port)──▶ CCBUD gateway ──▶ active provider
+                                                          │
+                                          · swaps in the upstream's real token
+                                          · routes / maps model names
+                                          · rewrites the model name in the response
+                                            back to the name the client asked for
 ```
 
-### macOS 签名 / 公证
+CCBUD never edits your providers' own configs — it just runs a forwarding server on your machine. When you use a model alias, the gateway rewrites the `model` field in the response (including the streaming `message_start`) back to the alias, so Claude Code always sees the name it requested. If you don't set `ANTHROPIC_MODEL`, Claude's default `claude-*` model names are mapped to the active provider's main model (with `haiku` → its small model).
 
-CI 已接好**签名 + 公证**:配置以下仓库 secrets(`Settings → Secrets and variables → Actions`)后，
-推送到 `main` 产出的 mac 包会自动签名并公证、Gatekeeper 直接放行(`source=Notarized Developer ID`)。
+## 📸 A look inside
 
-签名(必填):
+| | |
+| :--: | :--: |
+| <img src="docs/img/switch.jpg" width="420"><br>Switch providers and map models in a click | <img src="docs/img/monitor.jpg" width="420"><br>Watch every request flow through, live |
+| <img src="docs/img/usage.jpg" width="420"><br>Usage at a glance — even from the menu bar | <img src="docs/img/privacy.jpg" width="420"><br>Redact sensitive data before it ever leaves |
 
-| Secret | 说明 |
-|--------|------|
-| `MAC_CSC_LINK` | `Developer ID Application` 证书 `.p12` 的 base64 |
-| `MAC_CSC_KEY_PASSWORD` | `.p12` 导出密码 |
-| `APPLE_TEAM_ID` | 10 位 Team ID |
+## 📄 License
 
-公证(二选一)：
-
-- **A. App Store Connect API Key(推荐)**：`APPLE_API_KEY_P8`(`.p8` 的 base64)、`APPLE_API_KEY_ID`、`APPLE_API_ISSUER`。
-- **B. Apple ID**：`APPLE_ID`、`APPLE_APP_SPECIFIC_PASSWORD`(+ 上面的 `APPLE_TEAM_ID`)。
-
-> Developer ID 证书只能由「账号持有人」在 developer.apple.com / Xcode 创建(API 不行);
-> 但**公证**可用 API Key。未配置 secrets 时仍出**未签名**包,首次打开右键「打开」或
-> `xattr -dr com.apple.quarantine /Applications/Clawdy.app`。
+Released under the [GPL-3.0](./LICENSE) license.

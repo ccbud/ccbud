@@ -119,7 +119,7 @@ function markHistoryDirty(files) {
 
 function currentToken() {
   const c = store.get();
-  return c.requireToken && c.gatewayToken ? c.gatewayToken : 'clawdy-local';
+  return c.requireToken && c.gatewayToken ? c.gatewayToken : 'ccbud-local';
 }
 
 /* ---------- history / usage directories ---------- */
@@ -552,6 +552,9 @@ function createPopover() {
     backgroundColor: '#00000000',
     webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false },
   });
+  // Show on whatever Space/desktop the user is currently on (and over fullscreen apps), instead of
+  // yanking them to the Space where the main window lives when the menu-bar icon is clicked.
+  try { popover.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true }); } catch (_) {}
   popover.loadFile(path.join(__dirname, '..', 'renderer', 'popover.html'));
   popover.on('blur', () => hidePopover());
 }
@@ -600,7 +603,7 @@ function createWindow() {
     vibrancy: 'under-window',
     visualEffectState: 'active',
     backgroundColor: '#00000000',
-    title: 'Clawdy — Claude Code Gateway',
+    title: 'ccbud — Claude Code Gateway',
     webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false },
   });
   mainWindow.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
@@ -615,6 +618,19 @@ function setSettingsWindowMode(_on) { /* no-op: settings no longer locks window 
 if (gotLock) {
   app.whenReady().then(async () => {
     const userData = app.getPath('userData');
+    // One-time migration: the app was renamed Clawdy → ccbud, which moves the userData dir. If the new
+    // dir has no config yet but the old "clawdy" dir does, carry the config (+ request log) across so
+    // existing providers/settings survive the rename.
+    try {
+      const oldDir = path.join(path.dirname(userData), 'clawdy');
+      if (oldDir !== userData && fs.existsSync(path.join(oldDir, 'config.json')) && !fs.existsSync(path.join(userData, 'config.json'))) {
+        fs.mkdirSync(userData, { recursive: true });
+        for (const name of ['config.json', 'requests.log']) {
+          const from = path.join(oldDir, name);
+          if (fs.existsSync(from)) { try { fs.copyFileSync(from, path.join(userData, name)); } catch (_) {} }
+        }
+      }
+    } catch (_) {}
     requestLogPath = path.join(userData, 'requests.log');
     store = createStore(userData);
     // First run: pick the UI language from the system locale (then it's user-controlled).
@@ -661,9 +677,15 @@ if (gotLock) {
     }
 
     try {
-      const img = nativeImage.createFromPath(path.join(__dirname, 'icon.png')).resize({ width: 18, height: 18 });
+      let img;
+      if (process.platform === 'darwin') {
+        img = nativeImage.createFromPath(path.join(__dirname, 'iconTemplate.png')).resize({ width: 18, height: 18 });
+        img.setTemplateImage(true);
+      } else {
+        img = nativeImage.createFromPath(path.join(__dirname, 'icon.png')).resize({ width: 18, height: 18 });
+      }
       tray = new Tray(img);
-      tray.setToolTip('Clawdy — Claude Code Gateway');
+      tray.setToolTip('ccbud — Claude Code Gateway');
       createPopover();
       updateTrayTitle();
       tray.on('click', () => togglePopover());

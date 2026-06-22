@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * End-to-end self test for the Clawdy gateway core, hitting the REAL upstream
+ * End-to-end self test for the ccbud gateway core, hitting the REAL upstream
  * (bigmodel / GLM). Run with:  node test/selftest.js
  *
  * Verifies: passthrough, streaming, alias rewrite, default-model mapping,
@@ -13,8 +13,8 @@ const { createGateway } = require('../src/main/proxy');
 const GLM = {
   id: 'glm',
   name: 'BigModel GLM',
-  baseUrl: process.env.CLAWDY_TEST_BASEURL || 'https://open.bigmodel.cn/api/anthropic',
-  authToken: process.env.CLAWDY_TEST_TOKEN || '', // never commit a real key — set via env to run live tests
+  baseUrl: process.env.CCBUD_TEST_BASEURL || 'https://open.bigmodel.cn/api/anthropic',
+  authToken: process.env.CCBUD_TEST_TOKEN || '', // never commit a real key — set via env to run live tests
   defaultModel: 'glm-5.1',
   smallFastModel: 'glm-5.1',
   mapDefaultModels: true,
@@ -118,7 +118,7 @@ function firstModelInSse(sse) {
   );
 
   if (!GLM.authToken) {
-    console.log('\n(skipping live upstream checks — set CLAWDY_TEST_TOKEN to run them)');
+    console.log('\n(skipping live upstream checks — set CCBUD_TEST_TOKEN to run them)');
     await gateway.stop();
     console.log(`\n${pass} passed, ${fail} failed`);
     process.exit(fail ? 1 : 0);

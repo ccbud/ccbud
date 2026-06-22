@@ -1,5 +1,5 @@
 'use strict';
-// Generates build/icon.png (1024×1024): Clawdy gateway hub mark on indigo gradient squircle.
+// Generates build/icon.png (1024×1024): ccbud gateway hub mark on indigo gradient squircle.
 const fs = require('fs');
 const path = require('path');
 const zlib = require('zlib');

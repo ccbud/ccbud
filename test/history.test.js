@@ -4,8 +4,8 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const root = fs.mkdtempSync(path.join(os.tmpdir(), 'clawdy-hist-'));
-process.env.CLAWDY_HISTORY_DIR = root;
+const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ccbud-hist-'));
+process.env.CCBUD_HISTORY_DIR = root;
 const { createHistoryWatcher } = require('../src/main/history');
 
 let pass = 0, fail = 0;

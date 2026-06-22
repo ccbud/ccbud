@@ -1,6 +1,6 @@
 'use strict';
 
-const api = window.clawdy;
+const api = window.ccbud;
 let config = { port: 8788, activeProviderId: null, providers: [] };
 let status = { running: false, port: null, connected: false, lastStartError: null, claudePath: '' };
 let editingId = null;
@@ -9,7 +9,7 @@ let dragId = null;
 const stats = { total: 0, ok: 0, sumMs: 0, last: null };
 
 const $ = (id) => document.getElementById(id);
-const I = window.ClawdyIcons || {};
+const I = window.ccbudIcons || {};
 
 function injectIcons(root) {
   (root || document).querySelectorAll('[data-icon]').forEach((el) => {
@@ -176,7 +176,7 @@ function renderConnect() {
   const port = (status.running && status.port) || config.port;
   $('endpoint').textContent = `http://localhost:${port}`;
   $('portInput').value = config.port;
-  const token = config.requireToken && config.gatewayToken ? config.gatewayToken : 'clawdy-local';
+  const token = config.requireToken && config.gatewayToken ? config.gatewayToken : 'ccbud-local';
   $('exportBlock').textContent = [
     `export ANTHROPIC_BASE_URL=http://localhost:${port}`,
     `export ANTHROPIC_AUTH_TOKEN=${token}`,
@@ -801,7 +801,7 @@ async function refresh() {
   // Reconcile the boot language (from localStorage) with the persisted config truth.
   try {
     if (config.language && config.language !== I18n.lang) { I18n.setLang(config.language); I18n.apply(document); }
-    else localStorage.setItem('clawdy-lang', I18n.lang);
+    else localStorage.setItem('ccbud-lang', I18n.lang);
   } catch (_) {}
   renderAll();
   refreshGatewayLog();
@@ -856,7 +856,7 @@ function confirmDialog({ title, message, confirmText, cancelText, danger }) {
 function genToken() {
   const a = new Uint8Array(18);
   crypto.getRandomValues(a);
-  return 'clawdy_' + Array.from(a).map((b) => b.toString(16).padStart(2, '0')).join('');
+  return 'ccbud_' + Array.from(a).map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 function switchView(view) {
   document.querySelectorAll('#tabs .nav-item, #tabs .seg-btn').forEach((b) => b.classList.toggle('active', b.dataset.view === view));
@@ -900,7 +900,7 @@ function switchView(view) {
       });
     }
 
-    if (view === 'conversations' && window.ClawdyConversations) window.ClawdyConversations.onShow();
+    if (view === 'conversations' && window.ccbudConversations) window.ccbudConversations.onShow();
     if (view === 'monitor') refreshGatewayLog();
     if (view === 'settings') startDesktopPoll(); else stopDesktopPoll();
     // Lock the window to a fixed, non-resizable size on Settings; restore it elsewhere.
@@ -924,7 +924,7 @@ function switchView(view) {
 }
 function applyTheme(t) {
   document.documentElement.setAttribute('data-theme', t);
-  try { localStorage.setItem('clawdy-theme', t); } catch (_) {}
+  try { localStorage.setItem('ccbud-theme', t); } catch (_) {}
   const dark = t === 'dark';
   const hd = document.getElementById('hljs-dark');
   const hl = document.getElementById('hljs-light');
@@ -995,7 +995,7 @@ function bind() {
   const subnavBtn = $('btnSubnavCollapse');
   if (settingsNav && subnavBtn) {
     try {
-      if (localStorage.getItem('clawdy-subnav-collapsed') === '1') {
+      if (localStorage.getItem('ccbud-subnav-collapsed') === '1') {
         settingsNav.classList.add('collapsed');
         const ic = subnavBtn.querySelector('[data-icon]');
         if (ic && I.chevronRight) ic.innerHTML = I.chevronRight;
@@ -1006,7 +1006,7 @@ function bind() {
       const collapsed = settingsNav.classList.toggle('collapsed');
       const ic = subnavBtn.querySelector('[data-icon]');
       if (ic) ic.innerHTML = collapsed ? (I.chevronRight || '›') : (I.chevronLeft || '‹');
-      try { localStorage.setItem('clawdy-subnav-collapsed', collapsed ? '1' : '0'); } catch (_) {}
+      try { localStorage.setItem('ccbud-subnav-collapsed', collapsed ? '1' : '0'); } catch (_) {}
     });
   }
   $('btnTheme').addEventListener('click', () => {
@@ -1020,7 +1020,7 @@ function bind() {
   if (collapseBtn && sidebar) {
     // restore
     try {
-      if (localStorage.getItem('clawdy-sidebar-collapsed') === '1') {
+      if (localStorage.getItem('ccbud-sidebar-collapsed') === '1') {
         sidebar.classList.add('collapsed');
         const icon = collapseBtn.querySelector('[data-icon]');
         if (icon && I.chevronRight) icon.innerHTML = I.chevronRight;
@@ -1030,7 +1030,7 @@ function bind() {
       const isCollapsed = sidebar.classList.toggle('collapsed');
       const icon = collapseBtn.querySelector('[data-icon]');
       if (icon) icon.innerHTML = isCollapsed ? (I.chevronRight || '›') : (I.chevronLeft || '‹');
-      try { localStorage.setItem('clawdy-sidebar-collapsed', isCollapsed ? '1' : '0'); } catch (_) {}
+      try { localStorage.setItem('ccbud-sidebar-collapsed', isCollapsed ? '1' : '0'); } catch (_) {}
     });
   }
   $('btnConnect').addEventListener('click', toggleConnect);
@@ -1075,10 +1075,10 @@ function bind() {
   $('fTrayRange').addEventListener('change', (e) => persist({ trayUsage: { enabled: $('fTrayUsage').checked, range: e.target.value } }));
   if ($('fLang')) $('fLang').addEventListener('change', async (e) => {
     const language = e.target.value;
-    I18n.setLang(language);            // updates <html lang> + localStorage['clawdy-lang']
+    I18n.setLang(language);            // updates <html lang> + localStorage['ccbud-lang']
     I18n.apply(document);              // static data-i18n nodes
     renderAll();                       // dynamic strings (hero/status/monitor/providers/settings)
-    if (window.ClawdyConversations && window.ClawdyConversations.setLang) window.ClawdyConversations.setLang();
+    if (window.ccbudConversations && window.ccbudConversations.setLang) window.ccbudConversations.setLang();
     await persist({ language });       // → config:save → main rebuilds tray on next open
   });
 
@@ -1130,7 +1130,7 @@ function bind() {
     renderDesktopCard();
   });
   // Re-check the moment the window regains focus (e.g. right after approving in System Settings),
-  // in case the background poll was throttled while Clawdy was in the background.
+  // in case the background poll was throttled while ccbud was in the background.
   window.addEventListener('focus', () => { if (desktopPollTimer) { renderDesktopCard(); renderPresidioCard(); } });
 
   const fPresidio = $('fPresidio');
@@ -1332,12 +1332,12 @@ function bind() {
   api.onStatus((s) => { status = s; renderAll(); });
 }
 
-try { applyTheme(localStorage.getItem('clawdy-theme') || 'light'); } catch (_) { applyTheme('light'); }
+try { applyTheme(localStorage.getItem('ccbud-theme') || 'light'); } catch (_) { applyTheme('light'); }
 // Apply the UI language synchronously before first paint (mirrors theme; no flash). Boot from
 // localStorage; the async refresh() then reconciles with config.language (the source of truth).
 function bootLang() {
   let l = '';
-  try { l = localStorage.getItem('clawdy-lang') || ''; } catch (_) {}
+  try { l = localStorage.getItem('ccbud-lang') || ''; } catch (_) {}
   if (!l) {
     const nav = (navigator.language || 'en').toLowerCase();
     l = nav.startsWith('zh') ? ((/-(tw|hk|mo)\b/.test(nav) || nav.includes('hant')) ? 'zh-TW' : 'zh')

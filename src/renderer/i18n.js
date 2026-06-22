@@ -6,7 +6,7 @@
  * is NO RTL handling here on purpose; adding Arabic/Hebrew later must be a deliberate change.
  */
 (function () {
-  var D = (window.ClawdyI18nDict) || { DICT: { en: {} }, LANGS: ['en'], LOCALE_TAG: { en: 'en-US' } };
+  var D = (window.ccbudI18nDict) || { DICT: { en: {} }, LANGS: ['en'], LOCALE_TAG: { en: 'en-US' } };
   var lang = 'en';
 
   function dict() { return D.DICT[lang] || D.DICT.en || {}; }
@@ -36,7 +36,7 @@
   function setLang(l) {
     lang = (D.LANGS.indexOf(l) >= 0) ? l : 'en';
     try { document.documentElement.setAttribute('lang', I18n.localeTag); } catch (_) {}
-    try { localStorage.setItem('clawdy-lang', lang); } catch (_) {}
+    try { localStorage.setItem('ccbud-lang', lang); } catch (_) {}
   }
 
   var I18n = {

@@ -7,7 +7,7 @@
  * upstreams don't implement it and answer 404, which makes the client treat the endpoint
  * as down. The gateway must:
  *   - forward the probe honestly first,
- *   - on a 404, substitute a 200 (flagged via x-clawdy-fallback header) so the probe passes,
+ *   - on a 404, substitute a 200 (flagged via x-ccbud-fallback header) so the probe passes,
  *   - and NOT alter: a genuine upstream 200, a non-root HEAD 404, or GET / 404.
  */
 
@@ -40,8 +40,8 @@ function startUpstream() {
 function probe(base, path, method) {
   return fetch(base + path, { method }).then((r) => ({
     status: r.status,
-    fb: r.headers.get('x-clawdy-fallback'),
-    up: r.headers.get('x-clawdy-upstream-status'),
+    fb: r.headers.get('x-ccbud-fallback'),
+    up: r.headers.get('x-ccbud-upstream-status'),
   }));
 }
 
@@ -61,7 +61,7 @@ function probe(base, path, method) {
   // 1) HEAD / → upstream 404 → gateway substitutes 200 + flags the bypass
   const a = await probe(base, '/', 'HEAD');
   check('HEAD / → 200 (fallback)', a.status === 200, `status=${a.status}`);
-  check('HEAD / carries x-clawdy-fallback header', a.fb === 'head-root-404-to-200', `fb=${a.fb}`);
+  check('HEAD / carries x-ccbud-fallback header', a.fb === 'head-root-404-to-200', `fb=${a.fb}`);
   check('HEAD / reports real upstream status (404)', a.up === '404', `up=${a.up}`);
   check('probe was forwarded honestly first', received.some((r) => r.method === 'HEAD' && r.url === '/'), JSON.stringify(received));
 

@@ -13,6 +13,7 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
+SRC="${PRESIDIO_SRC:-$HOME/code/presidio}"
 OUT="$HERE/vendor/presidio-env"
 SRCOUT="$HERE/vendor/presidio-src"
 PYVER="${PRESIDIO_PYTHON:-3.12}"

@@ -17,7 +17,7 @@ const os = require('os');
 const http = require('http');
 const { spawn, execFile } = require('child_process');
 
-const ROOT = path.join(os.homedir(), 'Library', 'Application Support', 'clawdy', 'presidio-env');
+const ROOT = path.join(os.homedir(), 'Library', 'Application Support', 'ccbud', 'presidio-env');
 const USER_VENV = path.join(ROOT, 'venv');
 const NLP_CONF = path.join(ROOT, 'nlp-sm.yaml');
 const SETUP_LOG = path.join(ROOT, 'setup.log');
@@ -29,7 +29,7 @@ function venvPy(venv) { return IS_WIN ? path.join(venv, 'Scripts', 'python.exe')
 // shipped under resourcesPath/presidio-env/python, with Presidio installed into its OWN
 // site-packages (no venv → no pyvenv.cfg / symlink-to-host problems). This is the shipping path.
 function bundledPy() {
-  const roots = [process.env.CLAWDY_PRESIDIO_ENV, process.resourcesPath && path.join(process.resourcesPath, 'presidio-env')].filter(Boolean);
+  const roots = [process.env.CCBUD_PRESIDIO_ENV, process.resourcesPath && path.join(process.resourcesPath, 'presidio-env')].filter(Boolean);
   for (const r of roots) {
     const py = path.join(r, 'python', 'bin', IS_WIN ? 'python.exe' : 'python3.12');
     try { if (fs.existsSync(py)) return py; } catch (_) {}
@@ -93,13 +93,13 @@ function clearFindings() { _findBuf.length = 0; }
 
 const isMac = () => process.platform === 'darwin';
 function uvPath() {
-  const c = [process.env.CLAWDY_UV, path.join(os.homedir(), '.local/bin/uv'), '/opt/homebrew/bin/uv', '/usr/local/bin/uv'].filter(Boolean);
+  const c = [process.env.CCBUD_UV, path.join(os.homedir(), '.local/bin/uv'), '/opt/homebrew/bin/uv', '/usr/local/bin/uv'].filter(Boolean);
   return c.find((p) => { try { return fs.existsSync(p); } catch (_) { return false; } }) || 'uv';
 }
 // Presidio source — bundled with the packaged app; the local checkout in dev.
 function sourceDir() {
   const c = [
-    process.env.CLAWDY_PRESIDIO_SRC,
+    process.env.CCBUD_PRESIDIO_SRC,
     process.resourcesPath && path.join(process.resourcesPath, 'presidio'),
     path.join(os.homedir(), 'code', 'presidio'),
   ].filter(Boolean);
@@ -132,7 +132,7 @@ function setup() {
     `"${uv}" pip install --python "${USER_VENV}" "${src}/presidio-analyzer[server]" "${src}/presidio-anonymizer[server]"`,
     // uv venvs have no pip, so install the spaCy model WHEEL directly (matches spaCy 3.8.x).
     `"${uv}" pip install --python "${USER_VENV}" "https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl"`,
-    'echo CLAWDY_SETUP_DONE',
+    'echo CCBUD_SETUP_DONE',
   ].join('\n');
   const out = fs.openSync(SETUP_LOG, 'a');
   setupProc = spawn('/bin/bash', ['-c', script], { stdio: ['ignore', out, out] });

@@ -8,7 +8,7 @@ const { createUsageStore, formatTokens } = require('../src/main/usage');
 let pass = 0, fail = 0;
 const check = (n, c, d) => { if (c) { pass++; console.log(`  \x1b[32mPASS\x1b[0m ${n}`); } else { fail++; console.log(`  \x1b[31mFAIL\x1b[0m ${n}${d ? ' — ' + d : ''}`); } };
 
-const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'clawdy-usage-'));
+const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccbud-usage-'));
 const DAY = 86400000;
 const now = new Date(2026, 5, 18, 12, 0, 0).getTime(); // 2026-06-18 12:00 local
 const at = (daysAgo, h = 12) => new Date(2026, 5, 18 - daysAgo, h, 0, 0).getTime();

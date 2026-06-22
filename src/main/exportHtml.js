@@ -183,7 +183,7 @@ function htmlFromData(data) {
   const title = (data.meta.title || 'Conversation').replace(/[<>]/g, '');
   return '<!doctype html><html lang="zh" data-theme="light"><head><meta charset="utf-8">'
     + '<meta name="viewport" content="width=device-width,initial-scale=1">'
-    + '<title>' + title + ' · Clawdy</title>'
+    + '<title>' + title + ' · ccbud</title>'
     + '<style>' + skin + '\n' + hljsCss + '</style>'
     + '</head><body><div id="app"></div>'
     + '<script>' + marked + '</script>'

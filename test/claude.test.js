@@ -5,8 +5,8 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
-const tmp = path.join(os.tmpdir(), `clawdy-claude-test-${process.pid}.json`);
-process.env.CLAWDY_CLAUDE_SETTINGS = tmp;
+const tmp = path.join(os.tmpdir(), `ccbud-claude-test-${process.pid}.json`);
+process.env.CCBUD_CLAUDE_SETTINGS = tmp;
 const claude = require('../src/main/claude');
 
 let pass = 0, fail = 0;
@@ -31,10 +31,10 @@ try {
   }, null, 2));
 
   const store = makeStore();
-  claude.connect(8788, 'clawdy-local', store);
+  claude.connect(8788, 'ccbud-local', store);
   let s = read();
   check('connect sets ANTHROPIC_BASE_URL', s.env.ANTHROPIC_BASE_URL === 'http://localhost:8788');
-  check('connect sets ANTHROPIC_AUTH_TOKEN', s.env.ANTHROPIC_AUTH_TOKEN === 'clawdy-local');
+  check('connect sets ANTHROPIC_AUTH_TOKEN', s.env.ANTHROPIC_AUTH_TOKEN === 'ccbud-local');
   check('connect clears model overrides', !('ANTHROPIC_DEFAULT_SONNET_MODEL' in s.env) && !('ANTHROPIC_DEFAULT_OPUS_MODEL' in s.env));
   check('connect clears top-level model', !('model' in s));
   check('connect preserves unrelated env', s.env.OTHER === 'keep-me');
@@ -60,7 +60,7 @@ try {
   s = read();
   check('connect creates file when none', s && s.env.ANTHROPIC_BASE_URL === 'http://localhost:9000');
 
-  fs.writeFileSync(tmp, JSON.stringify({ env: { ANTHROPIC_BASE_URL: 'http://127.0.0.1:8788', ANTHROPIC_AUTH_TOKEN: 'clawdy-local' } }));
+  fs.writeFileSync(tmp, JSON.stringify({ env: { ANTHROPIC_BASE_URL: 'http://127.0.0.1:8788', ANTHROPIC_AUTH_TOKEN: 'ccbud-local' } }));
   check('isConnected accepts legacy 127.0.0.1 URL', claude.isConnected(8788));
   claude.disconnect(store2);
   s = read();

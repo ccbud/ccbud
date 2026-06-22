@@ -8,7 +8,7 @@ const { createInsights } = require('../src/main/insights');
 let pass = 0, fail = 0;
 const check = (n, c, d) => { if (c) { pass++; console.log(`  \x1b[32mPASS\x1b[0m ${n}`); } else { fail++; console.log(`  \x1b[31mFAIL\x1b[0m ${n}${d ? ' — ' + d : ''}`); } };
 
-const root = fs.mkdtempSync(path.join(os.tmpdir(), 'clawdy-ins-'));
+const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ccbud-ins-'));
 const today = new Date(); today.setHours(12, 0, 0, 0);
 const iso = today.toISOString();
 

@@ -1,4 +1,4 @@
-/* Clawdy conversation export — Claude design language (warm paper + terracotta), light & dark.
+/* ccbud conversation export — Claude design language (warm paper + terracotta), light & dark.
    Self-contained: no external fonts/CSS. Code blocks stay dark in both themes (like claude.ai). */
 
 :root, [data-theme="light"] {

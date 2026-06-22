@@ -2,7 +2,7 @@
 
 const { contextBridge, ipcRenderer } = require('electron');
 
-contextBridge.exposeInMainWorld('clawdy', {
+contextBridge.exposeInMainWorld('ccbud', {
   getConfig: () => ipcRenderer.invoke('config:get'),
   saveConfig: (cfg) => ipcRenderer.invoke('config:save', cfg),
 

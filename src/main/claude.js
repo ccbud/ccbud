@@ -9,7 +9,7 @@
  *            provider is active. The user's original values are backed up first.
  * Disconnect: restore the exact prior state from the backup.
  *
- * The settings path is overridable via CLAWDY_CLAUDE_SETTINGS (used by tests so the real
+ * The settings path is overridable via CCBUD_CLAUDE_SETTINGS (used by tests so the real
  * user config is never touched).
  */
 
@@ -28,7 +28,7 @@ const MODEL_ENV_KEYS = [
 const ALL_BACKUP_KEYS = ['ANTHROPIC_BASE_URL', 'ANTHROPIC_AUTH_TOKEN', ...MODEL_ENV_KEYS];
 
 function settingsPath() {
-  return process.env.CLAWDY_CLAUDE_SETTINGS || path.join(os.homedir(), '.claude', 'settings.json');
+  return process.env.CCBUD_CLAUDE_SETTINGS || path.join(os.homedir(), '.claude', 'settings.json');
 }
 
 function readSettings() {
@@ -44,7 +44,7 @@ function readSettings() {
 function writeSettings(obj) {
   const p = settingsPath();
   fs.mkdirSync(path.dirname(p), { recursive: true });
-  const tmp = p + '.clawdy.tmp';
+  const tmp = p + '.ccbud.tmp';
   fs.writeFileSync(tmp, JSON.stringify(obj, null, 2));
   fs.renameSync(tmp, p);
 }

@@ -4,7 +4,7 @@
  * Reads Claude Code's on-disk session history across ONE OR MORE config directories
  * (each a `<configDir>/projects/<enc-cwd>/<uuid>.jsonl` tree). The default config dir is
  * ~/.claude, but Claude Code can run against others (CLAUDE_CONFIG_DIR / --config); the user
- * registers those in settings and Clawdy aggregates / switches between them.
+ * registers those in settings and ccbud aggregates / switches between them.
  *
  *  - getDirs() supplies [{ id, label, projectsDir }]; the watcher watches ALL of them, while
  *    listSessions/listProjects can be filtered to one (the directory switcher) or 'all'.
@@ -12,7 +12,7 @@
  *  - WATCH: fs.watch each projects dir, emit 'changed' { files } on growth so the renderer
  *    live-follows; 'correlate' for each new assistant line (tests / future use).
  *
- * Test override: CLAWDY_HISTORY_DIR points the default single dir at a temp projects tree.
+ * Test override: CCBUD_HISTORY_DIR points the default single dir at a temp projects tree.
  */
 
 const fs = require('fs');
@@ -21,7 +21,7 @@ const os = require('os');
 const { EventEmitter } = require('events');
 
 function defaultDirs() {
-  const root = process.env.CLAWDY_HISTORY_DIR || path.join(os.homedir(), '.claude', 'projects');
+  const root = process.env.CCBUD_HISTORY_DIR || path.join(os.homedir(), '.claude', 'projects');
   return [{ id: 'default', label: '~/.claude', projectsDir: root }];
 }
 
