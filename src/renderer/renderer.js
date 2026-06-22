@@ -75,17 +75,17 @@ function emojiIcon(emoji, name) {
 // icon (optional): a user-set image (data:/http) or emoji; otherwise brand logo, else a default emoji.
 function renderProviderIcon(name, icon) {
   if (icon && typeof icon === 'string') {
-    if (/^(data:|https?:|assets\/)/.test(icon)) return { style: 'background: transparent; box-shadow: none;', html: `<img src="${escapeHtml(icon)}" class="prov-svg" style="width:100%;height:100%;object-fit:cover;display:block" />` };
+    if (/^(data:|https?:|assets\/)/.test(icon)) return { style: 'background: transparent; box-shadow: none;', html: `<img src="${escapeHtml(icon)}" class="prov-svg" alt="" style="width:100%;height:100%;object-fit:cover;display:block" />` };
     return emojiIcon(icon, name); // a chosen emoji
   }
   const n = (name || '').trim().toLowerCase();
   const brand = { kimi: ['kimi', 'moonshot', '月之'], deepseek: ['deepseek'], zhipu: ['glm', '智谱', 'bigmodel'], xiaomi: ['mimo', '小米', 'xiaomi'], zenmux: ['zenmux'] };
   for (const file in brand) {
-    if (brand[file].some((k) => n.includes(k))) return { style: 'background: transparent; box-shadow: none;', html: `<img src="assets/${file}.svg" class="prov-svg" style="width:100%;height:100%;display:block" />` };
+    if (brand[file].some((k) => n.includes(k))) return { style: 'background: transparent; box-shadow: none;', html: `<img src="assets/${file}.svg" class="prov-svg" alt="" style="width:100%;height:100%;display:block" />` };
   }
   if (n.includes('claude') || n.includes('anthropic')) {
     const h = hashHue(name || '?');
-    return { style: `background: linear-gradient(135deg, hsl(28,70%,48%), hsl(${(h + 40) % 360},75%,45%))`, html: `<svg class="prov-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L3 7v10l9 5 9-5V7l-9-5z" stroke-linecap="round"/><path d="M12 2v20 M3 12h18" stroke-linecap="round"/></svg>` };
+    return { style: `background: linear-gradient(135deg, hsl(28,70%,48%), hsl(${(h + 40) % 360},75%,45%))`, html: `<svg class="prov-svg" aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L3 7v10l9 5 9-5V7l-9-5z" stroke-linecap="round"/><path d="M12 2v20 M3 12h18" stroke-linecap="round"/></svg>` };
   }
   return emojiIcon(ICON_EMOJIS[hashHue(name || '?') % ICON_EMOJIS.length], name); // default: deterministic emoji
 }
@@ -115,6 +115,8 @@ async function renderHeroUsage() {
   if (!u) return;
   const port = (status.running && status.port) || config.port;
   const ep = $('heroEndpointText'); if (ep) ep.textContent = `localhost:${port}`;
+  // a11y: the button's accessible name must contain its visible text (localhost:port).
+  const epBtn = $('heroEndpoint'); if (epBtn) epBtn.setAttribute('aria-label', `localhost:${port} · ${I18n.t('hero.copyEndpoint')}`);
   const tk = $('heroTokens'); if (tk) tk.textContent = fmtNum(u.tokens || 0);
   const rq = $('heroReqs'); if (rq) rq.textContent = I18n.t('hero.reqsN', { n: (u.requests || 0).toLocaleString() });
   const md = $('heroModel'); if (md) md.textContent = u.favoriteModel && u.favoriteModel !== '—' ? `· ${u.favoriteModel}` : '';
@@ -386,7 +388,7 @@ function renderProviders() {
     const tags = [];
     if (p.defaultModel) tags.push(`<span class="tag text-[11px] font-mono bg-chip-bg rounded-[4px] px-1.5 py-0.25 text-fg whitespace-nowrap">${escapeHtml(I18n.t('providers.tagMain'))} ${escapeHtml(p.defaultModel)}</span>`);
     if (p.smallFastModel && p.smallFastModel !== p.defaultModel) tags.push(`<span class="tag text-[11px] font-mono bg-chip-bg rounded-[4px] px-1.5 py-0.25 text-fg whitespace-nowrap">${escapeHtml(I18n.t('providers.tagFast'))} ${escapeHtml(p.smallFastModel)}</span>`);
-    for (const m of p.models || []) tags.push(`<span class="tag map text-[11px] font-mono bg-brand-soft rounded-[4px] px-1.5 py-0.25 text-brand font-medium whitespace-nowrap">${escapeHtml(m.alias)} → ${escapeHtml(m.upstream)}</span>`);
+    for (const m of p.models || []) tags.push(`<span class="tag map text-[11px] font-mono bg-brand-soft rounded-[4px] px-1.5 py-0.25 text-brand font-medium whitespace-nowrap" title="${escapeHtml(m.alias)} → ${escapeHtml(m.upstream)}">${escapeHtml(m.alias)} → ${escapeHtml(m.upstream)}</span>`);
 
     const iconData = renderProviderIcon(p.name, p.icon);
     el.innerHTML = `
@@ -396,7 +398,7 @@ function renderProviders() {
         <div class="pname flex items-center gap-1.5 font-semibold text-[14.5px] tracking-tight text-fg">${escapeHtml(p.name)} ${isActive ? '<span class="badge-active text-[10.5px] font-semibold text-green bg-green-soft rounded-full px-1.75 py-0.25">' + escapeHtml(I18n.t('providers.active')) + '</span>' : ''}</div>
         <div class="pmeta mt-0.5 text-xs font-mono text-caption truncate">${escapeHtml(mask(p.authToken))} · ${escapeHtml(p.baseUrl.replace(/^https?:\/\//,''))}</div>
       </div>
-      <div class="pmodels flex gap-1 flex-wrap justify-end max-w-[200px]">${tags.join('') || '<span class="caption text-caption text-xs">—</span>'}</div>
+      <div class="pmodels flex gap-1 flex-wrap justify-end max-w-[340px]">${tags.join('') || '<span class="caption text-caption text-xs">—</span>'}</div>
       <div class="pactions flex gap-0.25">
         <button class="w-6.5 h-6.5 border-0 rounded-[6px] bg-transparent text-muted cursor-pointer flex items-center justify-center transition-all duration-100 hover:bg-chip-bg hover:text-fg" title="${escapeHtml(I18n.t('providers.test'))}" data-test="${p.id}">${I.refresh || '↻'}</button>
         <button class="w-6.5 h-6.5 border-0 rounded-[6px] bg-transparent text-muted cursor-pointer flex items-center justify-center transition-all duration-100 hover:bg-chip-bg hover:text-fg" title="${escapeHtml(I18n.t('providers.edit'))}" data-edit="${p.id}">${I.edit || '✎'}</button>
@@ -889,12 +891,13 @@ function switchView(view) {
     if (target) {
       target.style.transition = 'none';
       target.style.opacity = '0';
-      void target.offsetWidth;
-      target.style.transition = 'opacity 0.22s cubic-bezier(0.23, 1, 0.32, 1)';
-      target.style.opacity = '1';
-      setTimeout(() => {
-        if (target) target.style.transition = '';
-      }, 280);
+      // Restart the fade on the next frame instead of `void target.offsetWidth` — that read forced a
+      // synchronous full-document layout on every view switch (costly on the heavy 对话 view; traced).
+      requestAnimationFrame(() => {
+        target.style.transition = 'opacity 0.22s cubic-bezier(0.23, 1, 0.32, 1)';
+        target.style.opacity = '1';
+        setTimeout(() => { if (target) target.style.transition = ''; }, 280);
+      });
     }
 
     if (view === 'conversations' && window.ClawdyConversations) window.ClawdyConversations.onShow();
@@ -902,6 +905,9 @@ function switchView(view) {
     if (view === 'settings') startDesktopPoll(); else stopDesktopPoll();
     // Lock the window to a fixed, non-resizable size on Settings; restore it elsewhere.
     if (api.setSettingsMode) api.setSettingsMode(view === 'settings');
+    // 对话 needs the wide 3-column layout (min 1300); other views can be narrower (900) so a wide
+    // window doesn't leave big side gaps. Switching to 对话 auto-grows the window to ≥1300.
+    if (api.setViewMinWidth) api.setViewMinWidth(view === 'conversations' ? 1300 : 900);
   };
 
   if (current && current !== target) {
@@ -924,6 +930,9 @@ function applyTheme(t) {
   const hl = document.getElementById('hljs-light');
   if (hd) hd.disabled = !dark;
   if (hl) hl.disabled = dark;
+  // Theme-toggle icon reflects the current mode: sun in light, moon in dark.
+  const tbIcon = document.querySelector('#btnTheme [data-icon]');
+  if (tbIcon) { const nm = dark ? 'moon' : 'theme'; tbIcon.dataset.icon = nm; if (I[nm]) tbIcon.innerHTML = I[nm]; }
 }
 
 /* ---------- drag reorder ---------- */

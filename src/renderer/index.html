@@ -9,8 +9,8 @@
     <link id="hljs-dark" rel="stylesheet" href="vendor/hljs-dark.css" disabled />
   </head>
   <body>
-    <div class="app-window flex h-screen bg-bg-app backdrop-blur-[52px] saturate-[1.9] border border-window-border rounded-[14px] overflow-hidden shadow-[inset_0_0.5px_0_rgba(255,255,255,0.12)]">
-      <aside class="sidebar drag-region group/sidebar backdrop-blur-xl bg-bg-sidebar/70 border-r border-border-custom/40 w-[196px] group-[.collapsed]/sidebar:w-[52px] transition-[width] duration-220 ease-[cubic-bezier(0.23,1,0.32,1)] flex flex-col pt-0 pb-3.5 px-[10px] group-[.collapsed]/sidebar:px-[5px] flex-shrink-0">
+    <div class="app-window flex h-screen bg-bg-app border border-window-border rounded-[14px] overflow-hidden shadow-[inset_0_0.5px_0_rgba(255,255,255,0.12)]">
+      <aside class="sidebar drag-region group/sidebar backdrop-blur-md bg-bg-sidebar/70 border-r border-border-custom/40 w-[196px] group-[.collapsed]/sidebar:w-[52px] transition-[width] duration-220 ease-[cubic-bezier(0.23,1,0.32,1)] flex flex-col pt-0 pb-3.5 px-[10px] group-[.collapsed]/sidebar:px-[5px] flex-shrink-0">
         <div class="h-14 drag-region shrink-0"></div>
         <header class="sidebar-brand no-drag flex items-center gap-[9px] px-[6px] pb-5">
           <div class="logo w-[30px] h-[30px] flex-shrink-0 drop-shadow-[0_2px_8px_var(--brand-glow)]" id="appLogo" aria-hidden="true"></div>
@@ -60,7 +60,7 @@
         <div class="main-scroll flex-grow min-h-0 overflow-y-auto overflow-x-hidden scrollbar-gutter-stable has-[#view-conversations:not(.hidden)]:overflow-hidden has-[#view-conversations:not(.hidden)]:flex has-[#view-conversations:not(.hidden)]:flex-col has-[#view-settings:not(.hidden)]:overflow-hidden has-[#view-settings:not(.hidden)]:flex has-[#view-settings:not(.hidden)]:flex-col" id="mainScroll">
 
         <!-- 服务 -->
-        <section id="view-providers" class="panel flex-none max-w-[880px] mx-auto px-10 pt-4 pb-10 w-full flex flex-col gap-6 animate-[panelIn_0.28s_ease-[cubic-bezier(0.23,1,0.32,1)]]">
+        <section id="view-providers" class="panel flex-none max-w-[1120px] mx-auto px-10 pt-4 pb-10 w-full flex flex-col gap-6 animate-[panelIn_0.28s_ease-[cubic-bezier(0.23,1,0.32,1)]]">
           <header class="panel-hero group/hero flex flex-wrap items-center gap-x-6 gap-y-5 p-6 bg-bg-elev border border-border-custom rounded-[18px] shadow-card transition-all duration-300 hover:border-brand-3/30 relative overflow-hidden [&.connected]:border-green/30 bg-gradient-to-tr from-brand-soft/20 via-transparent to-brand-3/5" id="hero">
             <div class="hero-body flex items-center gap-3 flex-1 min-w-0">
               <div class="hero-icon w-[38px] h-[38px] rounded-[10px] bg-chip-bg text-muted flex items-center justify-center shrink-0 transition-all duration-220 ease-[cubic-bezier(0.23,1,0.32,1)] group-[.connected]/hero:bg-green-soft group-[.connected]/hero:text-green" id="heroIcon"></div>
@@ -111,7 +111,7 @@
         </section>
 
         <!-- 设置 -->
-        <section id="view-settings" class="panel hidden flex-1 min-h-0 max-w-[880px] mx-auto px-10 pt-4 pb-5 w-full flex flex-col gap-6 animate-[panelIn_0.28s_ease-[cubic-bezier(0.23,1,0.32,1)]]">
+        <section id="view-settings" class="panel hidden flex-1 min-h-0 max-w-[1120px] mx-auto px-10 pt-4 pb-5 w-full flex flex-col gap-6 animate-[panelIn_0.28s_ease-[cubic-bezier(0.23,1,0.32,1)]]">
           <header class="panel-toolbar settings-head shrink-0 mb-6 px-[2px] py-1">
             <div class="settings-head-row flex items-center gap-2.5">
               <button type="button" id="btnSubnavCollapse" class="tool-btn shrink-0 w-[26px] h-[26px] border border-border-custom rounded-[7px] bg-bg-elev text-muted cursor-pointer flex items-center justify-center transition-all duration-140 hover:text-fg hover:bg-chip-bg hover:border-border-strong" data-i18n-title="settings.nav.collapse" title="收起 / 展开" aria-label="收起 / 展开"><span data-icon="chevronLeft"></span></button>
@@ -144,7 +144,7 @@
               </button>
             </nav>
 
-            <div id="settingsPanes" class="settings-content flex-1 min-w-0 min-h-0 max-w-[660px] overflow-y-auto overflow-x-hidden pr-1 pb-2 flex flex-col gap-7">
+            <div id="settingsPanes" class="settings-content flex-1 min-w-0 min-h-0 max-w-[920px] overflow-y-auto overflow-x-hidden pr-1 pb-2 flex flex-col gap-7">
             <div data-pane="gateway">
             <div class="settings-card bg-bg-elev border border-border-custom rounded-xl shadow-card p-7 flex flex-col gap-6 transition-all duration-300">
               <h3 class="settings-card-title text-[13px] font-semibold text-fg" data-i18n="settings.gateway">网关</h3>
@@ -308,7 +308,7 @@
         </section>
 
         <!-- 监控 -->
-        <section id="view-monitor" class="panel hidden flex-none max-w-[880px] mx-auto px-10 pt-4 pb-10 w-full flex flex-col gap-6 animate-[panelIn_0.28s_ease-[cubic-bezier(0.23,1,0.32,1)]]">
+        <section id="view-monitor" class="panel hidden flex-none max-w-[1120px] mx-auto px-10 pt-4 pb-10 w-full flex flex-col gap-6 animate-[panelIn_0.28s_ease-[cubic-bezier(0.23,1,0.32,1)]]">
           <div class="metric-grid grid grid-cols-4 gap-3.5">
             <div class="metric bg-bg-elev border border-border-custom rounded-[16px] p-5 shadow-card flex flex-col gap-2">
               <span class="metric-label text-[11px] font-semibold uppercase tracking-[0.03em] text-caption" data-i18n="monitor.gateway">网关</span>
@@ -373,6 +373,13 @@
                   <button id="convDetailSearchPrev" class="tool-btn w-[26px] h-[26px] border border-border-custom rounded-[7px] bg-bg-elev text-muted cursor-pointer flex items-center justify-center transition-all duration-140 hover:text-fg hover:bg-chip-bg hover:border-border-strong" data-i18n-title="conv.prev" title="上一个"><span>↑</span></button>
                   <button id="convDetailSearchNext" class="tool-btn w-[26px] h-[26px] border border-border-custom rounded-[7px] bg-bg-elev text-muted cursor-pointer flex items-center justify-center transition-all duration-140 hover:text-fg hover:bg-chip-bg hover:border-border-strong" data-i18n-title="conv.next" title="下一个"><span>↓</span></button>
                   <button id="convDetailSearchClear" class="tool-btn w-[26px] h-[26px] border border-border-custom rounded-[7px] bg-bg-elev text-muted cursor-pointer flex items-center justify-center transition-all duration-140 hover:text-fg hover:bg-chip-bg hover:border-border-strong" data-i18n-title="conv.clearSearch" title="清除"><span>✕</span></button>
+                </div>
+                <div class="conv-export-wrap relative shrink-0">
+                  <button id="convExportBtn" class="no-drag inline-flex items-center gap-1.5 h-[28px] px-3 border border-border-custom rounded-[7px] bg-bg-elev text-muted cursor-pointer transition-all duration-140 hover:text-fg hover:bg-chip-bg hover:border-border-strong disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap shrink-0" data-i18n-title="conv.export" title="导出" disabled><span data-icon="download" class="shrink-0 inline-flex items-center"></span><span class="text-[11px] font-medium whitespace-nowrap" data-i18n="conv.export">导出</span><span class="text-[8px] opacity-70 shrink-0">▾</span></button>
+                  <div id="convExportMenu" class="conv-export-menu hidden absolute right-0 top-[32px] z-30 min-w-[170px] bg-bg-elev border border-border-custom rounded-[9px] shadow-[0_10px_30px_rgba(0,0,0,0.24)] p-1 animate-[panelIn_0.14s_ease]">
+                    <button data-export="jsonl" class="conv-export-item w-full text-left px-2.5 py-1.5 rounded-[6px] text-[12px] text-fg cursor-pointer flex items-center gap-2 hover:bg-chip-bg"><span class="text-[13px]">📄</span><span data-i18n="conv.exportJsonl">导出 JSONL（原始）</span></button>
+                    <button data-export="html" class="conv-export-item w-full text-left px-2.5 py-1.5 rounded-[6px] text-[12px] text-fg cursor-pointer flex items-center gap-2 hover:bg-chip-bg"><span class="text-[13px]">🌐</span><span data-i18n="conv.exportHtml">导出 HTML（可分享）</span></button>
+                  </div>
                 </div>
               </div>
               <div id="convDetail" class="conv-detail flex-1 min-h-0 overflow-y-auto p-[22px_26px] flex flex-col gap-4">

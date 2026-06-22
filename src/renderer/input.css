@@ -57,8 +57,8 @@
   --card-shadow-hover: 0 3px 8px rgba(17, 24, 39, .08), 0 16px 36px rgba(17, 24, 39, .13);
 
   --fg: #1b1c22;
-  --muted: #6a7280;
-  --caption: #99a1ad;
+  --muted: #535a67;   /* a11y: darkened to pass WCAG AA on light backgrounds (was #6a7280) */
+  --caption: #59606d; /* a11y: darkened to pass WCAG AA (was #99a1ad, ~2.2:1) */
   --border: rgba(17, 24, 39, 0.13);
   --border-strong: rgba(17, 24, 39, 0.2);
   --window-border: rgba(0, 0, 0, 0.12);
@@ -71,11 +71,11 @@
      `-text`/`-border` tokens below so light surfaces don't glare (Tailwind skin pattern:
      vivid fill = ~500, text = ~700, border = ~200). */
   --green: #34C759;
-  --green-text: #1a8c46;
+  --green-text: #0d5f2e;
   --green-soft: rgba(52, 199, 89, 0.12);
   --green-border: rgba(52, 199, 89, 0.30);
   --red: #FF3B30;
-  --red-text: #cf342c;
+  --red-text: #bd2a22;
   --red-soft: rgba(255, 59, 48, 0.09);
   --red-border: rgba(255, 59, 48, 0.22);
   --orange: #FF9500;
@@ -105,8 +105,8 @@
   --card-shadow-hover: inset 0 1px 0 rgba(255,255,255,.08), 0 2px 8px rgba(0,0,0,.4), 0 22px 50px rgba(0,0,0,.55);
 
   --fg: rgba(255, 255, 255, 0.92);
-  --muted: rgba(255, 255, 255, 0.54);
-  --caption: rgba(255, 255, 255, 0.38);
+  --muted: rgba(255, 255, 255, 0.60);   /* a11y: more contrast on dark cards/sidebar */
+  --caption: rgba(255, 255, 255, 0.55); /* a11y: was 0.38, too dim */
   --border: rgba(255, 255, 255, 0.08);
   --border-strong: rgba(255, 255, 255, 0.14);
   --window-border: rgba(255, 255, 255, 0.09);
@@ -125,6 +125,8 @@
   --red: #FF6961;
   --red-text: #FF6961;
   --red-soft: rgba(255, 105, 97, 0.14);
+  --green-text: #54c47e; /* a11y: bright enough for dark soft-green backgrounds */
+  --red-text: #ff8a80;
   --red-border: rgba(255, 69, 58, 0.20);
   --amber-text: #FF9F0A;
   --amber-soft: rgba(255, 179, 64, 0.14);
@@ -158,8 +160,9 @@ body {
   display: flex;
   height: 100vh;
   background: var(--bg-app);
-  backdrop-filter: blur(52px) saturate(190%);
-  -webkit-backdrop-filter: blur(52px) saturate(190%);
+  /* No CSS backdrop-filter here: --bg-app is ~94% opaque, so a 52px blur was nearly invisible yet
+     repainted the ENTIRE window every frame (the main resize/scroll jank). Native macOS vibrancy
+     ('under-window', set in main.js createWindow) supplies the subtle frosting that does show. */
   border: 1px solid var(--window-border);
   border-radius: 14px;
   overflow: hidden;
@@ -173,9 +176,23 @@ body {
   flex-direction: column;
   padding: 48px 10px 14px;
   background: var(--bg-sidebar);
-  border-right: 1px solid var(--border);
   flex-shrink: 0;
+  position: relative;
+  overflow: hidden; /* clip labels mid-animation so they don't wrap while the sidebar is briefly narrow */
   transition: width 0.22s var(--ease);
+}
+/* The divider is a pseudo-element that starts BELOW the titlebar / traffic-light zone (rather than a
+   full-height border-right). When collapsed to 52px the border used to run right up against the macOS
+   traffic-light buttons, which looked jarring; starting it lower keeps the top clean. */
+.sidebar::after {
+  content: '';
+  position: absolute;
+  top: 44px;
+  right: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--border);
+  pointer-events: none;
 }
 
 .sidebar.collapsed {
@@ -189,6 +206,10 @@ body {
 #view-settings { flex: 1 1 0%; min-height: 0; }
 
 /* Settings sub-nav (二级菜单) — a bounded left column, collapsible with auto-shrinking width */
+/* Settings view: left-align it (override .panel's `margin: 0 auto`) so the sub-nav sits flush after the
+   main sidebar instead of floating in the centre with a big empty gap on its left. */
+#view-settings { margin-left: 0; margin-right: auto; }
+
 .settings-subnav {
   width: 148px;
   align-self: stretch;                  /* divider runs the full height of the section */
@@ -196,8 +217,12 @@ body {
   padding-right: 16px;
   margin-right: 2px;
   min-height: 232px;
+  overflow: hidden;                     /* clip labels mid-animation instead of letting them wrap */
   transition: width 0.2s var(--ease);
 }
+/* Keep each item on one line — during the expand animation the sub-nav is briefly narrow, and without
+   this the labels (e.g. 内容过滤) wrap to two lines until it finishes. */
+.settings-subnav-item { white-space: nowrap; }
 .settings-subnav.collapsed {
   width: 52px;
   padding-right: 10px;
@@ -229,6 +254,7 @@ body {
   font-weight: 600;
   letter-spacing: -0.02em;
   line-height: 1.15;
+  white-space: nowrap;
   transition: color 0.2s;
 }
 
@@ -236,10 +262,14 @@ body {
 
 .brand-sub {
   font-size: 11.5px;
-  color: var(--caption);
+  color: #59616f; /* a11y: --caption was too light over the sidebar (failed WCAG AA contrast) */
   letter-spacing: -0.01em;
   margin-top: 1px;
+  white-space: nowrap;
 }
+/* a11y: sidebar text needs more contrast than the global muted/caption tokens. */
+[data-theme="dark"] .brand-sub { color: rgba(255, 255, 255, 0.56); }
+[data-theme="dark"] .nav-item { color: rgba(255, 255, 255, 0.66); }
 
 .sidebar.collapsed .brand-text { display: none; }
 
@@ -258,8 +288,9 @@ body {
   border: none;
   border-radius: var(--radius-sm);
   background: transparent;
-  color: var(--muted);
+  color: #4e5564; /* a11y: was --muted, too light over the sidebar (WCAG AA) */
   font: 500 13.5px/1.2 var(--sans);
+  white-space: nowrap; /* label stays one line during the collapse/expand width animation */
   cursor: pointer;
   text-align: left;
   transition: background 0.18s var(--ease), color 0.18s var(--ease), transform 0.12s;
@@ -274,9 +305,10 @@ body {
 
 .nav-item.active {
   background: var(--brand-soft);
-  color: var(--brand);
+  color: #3a37a6; /* a11y: var(--brand) (#5856D6) failed contrast on the light brand-soft tint */
   font-weight: 600;
 }
+[data-theme="dark"] .nav-item.active { color: #c9c7ff; }
 
 .nav-icon {
   width: 16px;
@@ -318,6 +350,7 @@ body {
   color: var(--muted);
   background: var(--chip-bg);
   letter-spacing: -0.01em;
+  white-space: nowrap;
 }
 
 .status-chip.on {
@@ -382,7 +415,7 @@ body {
 
 .panel {
   flex: 0 0 auto;
-  max-width: 880px;
+  max-width: 1120px;
   margin: 0 auto;
   padding: 0 32px 28px;
   width: 100%;
@@ -709,6 +742,23 @@ body {
 .icon-picker .ip-act:hover { background: var(--chip-bg); border-color: var(--border-strong); }
 
 .pinfo { min-width: 0; }
+
+/* Provider rows respond to their OWN width (container query) so relaxing the window min-width
+   never lets the model-alias chips collide with the name/URL. Below ~760px the chips drop to a
+   full-width row beneath the name instead of overflowing into it. */
+.provider-list { container-type: inline-size; }
+@container (max-width: 760px) {
+  .provider {
+    grid-template-columns: 14px 36px 1fr auto;
+    grid-template-areas: "grip icon info actions" "models models models models";
+    row-gap: 7px;
+  }
+  .provider > .grip { grid-area: grip; }
+  .provider > .prov-icon { grid-area: icon; }
+  .provider > .pinfo { grid-area: info; }
+  .provider > .pactions { grid-area: actions; }
+  .provider > .pmodels { grid-area: models; justify-content: flex-start; max-width: none; }
+}
 
 .pname {
   display: flex;
@@ -1306,6 +1356,41 @@ body {
   overflow: hidden;
 }
 
+/* Export toast (transient confirmation after a JSONL/HTML export) */
+.conv-toast {
+  position: fixed;
+  bottom: 28px;
+  left: 50%;
+  transform: translateX(-50%) translateY(10px);
+  background: var(--fg);
+  color: var(--bg-app);
+  font-size: 12.5px;
+  font-weight: 500;
+  padding: 9px 16px;
+  border-radius: 9px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.28);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.18s var(--ease), transform 0.18s var(--ease);
+  z-index: 400;
+}
+.conv-toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+.conv-toast.err { background: var(--red); color: #fff; }
+
+/* Tool-card category accent (left rail) — lets you scan what each step is doing */
+.tool-card { border-left-width: 3px; }
+.tool-exec { border-left-color: #f59e0b; }   /* run / Bash */
+.tool-read { border-left-color: #3b82f6; }   /* read */
+.tool-write { border-left-color: #22c55e; }  /* edit / write */
+.tool-search { border-left-color: #a855f7; } /* grep / glob */
+.tool-task { border-left-color: #ec4899; }   /* subagent */
+.tool-net { border-left-color: #06b6d4; }    /* web */
+.tool-todo { border-left-color: #6366f1; }   /* todos */
+.tool-mcp { border-left-color: #14b8a6; }    /* mcp */
+.tool-default { border-left-color: var(--border-strong); }
+/* result-size chip pushed to the right edge of the result summary */
+.tool-res-size { margin-left: auto; font-family: ui-monospace, monospace; font-size: 9.5px; font-weight: 600; color: var(--caption); background: var(--chip-bg); padding: 1px 6px; border-radius: 5px; }
+
 .conv-sidebar {
   width: 248px;
   min-width: 200px;
@@ -1313,7 +1398,8 @@ body {
   display: flex;
   flex-direction: column;
   flex-shrink: 0;
-  transition: width 0.2s var(--ease);
+  /* No width transition: animating the width reflows the (large) message area every frame — noticeable
+     jank once a thread has many messages loaded. Collapse instantly (a single reflow) instead. */
   overflow: hidden;
 }
 
@@ -1455,8 +1541,8 @@ body {
   top: 0;
   z-index: 1;
   background: var(--bg-sidebar);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
   user-select: none;
 }
 .conv-proj-head:hover { background: var(--chip-bg); }
@@ -1597,6 +1683,11 @@ body {
   color: #111;
   box-shadow: 0 0 0 1.5px rgba(241, 196, 15, 0.5);
 }
+
+/* CSS Custom Highlight API — in-conversation search paints matches with NO DOM mutation (Range-based),
+   so typing doesn't reflow a huge thread per keystroke. (::highlight only supports a few paint props.) */
+::highlight(cd-search) { background-color: rgba(255, 200, 50, 0.40); }
+::highlight(cd-current) { background-color: #f1c40f; color: #111; }
 
 /* Messages */
 .msg {
@@ -1777,7 +1868,7 @@ pre.cmd { color: var(--green); }
   display: flex;
   flex-direction: column;
   flex-shrink: 0;
-  transition: width 0.2s var(--ease);
+  /* No width transition — see .conv-sidebar: avoids per-frame reflow of the message area on collapse. */
 }
 
 .conv-nav.collapsed {

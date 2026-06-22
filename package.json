@@ -72,5 +72,8 @@
       ]
     },
     "artifactName": "${productName}-${version}-${os}-${arch}.${ext}"
+  },
+  "dependencies": {
+    "js-tiktoken": "^1.0.21"
   }
 }

@@ -19,6 +19,7 @@ const http = require('http');
 const https = require('https');
 const zlib = require('zlib');
 const presidio = require('./presidio');
+const { estimateInputTokens } = require('./countTokens');
 const { URL } = require('url');
 const { Transform, Writable, pipeline } = require('stream');
 const { EventEmitter } = require('events');
@@ -350,6 +351,9 @@ function createGateway({ getConfig }) {
     // client treat the endpoint as down. We still forward the probe honestly, but if it
     // 404s we substitute a 200 from the gateway (see the upstream-response handler).
     const isHeadRoot = req.method === 'HEAD' && reqPath === '/';
+    // Claude Code calls POST /v1/messages/count_tokens before sending, to size context.
+    // Many providers don't implement it (404) → forward honestly, estimate locally on miss.
+    const isCountTokens = req.method === 'POST' && /\/v1\/messages\/count_tokens\/?$/.test(reqPath);
 
     let target;
     try {
@@ -541,6 +545,37 @@ function createGateway({ getConfig }) {
             return;
           }
           let buf = Buffer.concat(cs);
+          // count_tokens: pass the upstream's real number through when it implements the
+          // endpoint; otherwise (404 / non-JSON / missing input_tokens) estimate locally so
+          // Claude Code's context sizing keeps working. Flagged in headers; never under-counted.
+          if (isCountTokens) {
+            let upstreamOk = null;
+            if (upRes.statusCode >= 200 && upRes.statusCode < 300) {
+              try { const o = JSON.parse(buf.toString('utf8')); if (o && typeof o.input_tokens === 'number') upstreamOk = o; } catch (_) {}
+            }
+            if (upstreamOk) {
+              outHeaders['x-clawdy-tokens'] = 'upstream';
+              outHeaders['content-length'] = Buffer.byteLength(buf);
+              res.writeHead(200, outHeaders);
+              res.end(buf);
+              emitExchange(200, outHeaders, capText(buf, RES_CAP));
+              finishLog();
+              return;
+            }
+            const est = estimateInputTokens(parsed || {});
+            const ebuf = Buffer.from(JSON.stringify({ input_tokens: est }), 'utf8');
+            const eh = Object.assign({}, outHeaders);
+            eh['content-type'] = 'application/json';
+            eh['content-length'] = Buffer.byteLength(ebuf);
+            eh['x-clawdy-tokens'] = 'estimated';
+            eh['x-clawdy-upstream-status'] = String(upRes.statusCode);
+            res.writeHead(200, eh);
+            res.end(ebuf);
+            log('info', `count_tokens estimated locally (upstream ${upRes.statusCode}): ${est}`);
+            emitExchange(200, eh, capText(ebuf, RES_CAP));
+            finishLog(null, 200);
+            return;
+          }
           // /v1/models: merge aliases into a working upstream list, else synthesize from aliases.
           if (isModelsList) {
             let upstreamObj = null;
@@ -588,6 +623,22 @@ function createGateway({ getConfig }) {
         } catch (_) {}
         log('info', '/v1/models synthesized from aliases (upstream unreachable: ' + err.message + ')');
         emitExchange(200, { 'content-type': 'application/json' }, capText(mbuf, RES_CAP));
+        emitter.emit('request', {
+          id: exId, method: req.method, path: reqPath, provider: provider.name || provider.id,
+          requestedModel, outgoingModel: routing.outgoingModel, clientFacingModel: routing.clientFacingModel,
+          rewritten: needRewriteResponse, sessionId, agentId, status: 200, ms: Date.now() - startedAt, error: null,
+        });
+        return;
+      }
+      // count_tokens with the provider unreachable → estimate locally instead of erroring,
+      // so Claude Code still gets a usable number.
+      if (isCountTokens && !res.headersSent) {
+        const est = estimateInputTokens(parsed || {});
+        const ebuf = Buffer.from(JSON.stringify({ input_tokens: est }), 'utf8');
+        const eh = { 'content-type': 'application/json', 'content-length': Buffer.byteLength(ebuf), 'x-clawdy-tokens': 'estimated', 'x-clawdy-upstream-status': 'error' };
+        try { res.writeHead(200, eh); res.end(ebuf); } catch (_) {}
+        log('info', 'count_tokens estimated locally (upstream unreachable: ' + err.message + '): ' + est);
+        emitExchange(200, eh, capText(ebuf, RES_CAP));
         emitter.emit('request', {
           id: exId, method: req.method, path: reqPath, provider: provider.name || provider.id,
           requestedModel, outgoingModel: routing.outgoingModel, clientFacingModel: routing.clientFacingModel,

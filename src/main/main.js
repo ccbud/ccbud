@@ -434,9 +434,55 @@ function registerIpc() {
     return { active: saved.historyActive };
   });
 
+  // Export a conversation: raw .jsonl (verbatim source) or a self-contained .html the
+  // renderer assembled (inlined styles + rendered timeline). Both go through a save dialog.
+  function saveDialogPath(defName, ext, extLabel) {
+    const win = mainWindow && !mainWindow.isDestroyed() ? mainWindow : null;
+    return dialog.showSaveDialog(win, {
+      title: mt('dialog.exportTitle'),
+      defaultPath: path.join(app.getPath('downloads'), defName),
+      filters: [{ name: extLabel, extensions: [ext] }],
+    });
+  }
+  ipcMain.handle('history:exportRaw', async (_e, file) => {
+    if (!file) return { canceled: true, error: 'no file' };
+    let data;
+    try { data = fs.readFileSync(file, 'utf8'); } catch (e) { return { canceled: true, error: e && e.message }; }
+    let res;
+    try { res = await saveDialogPath(path.basename(file), 'jsonl', 'JSONL'); } catch (e) { return { canceled: true, error: e && e.message }; }
+    if (res.canceled || !res.filePath) return { canceled: true };
+    try { fs.writeFileSync(res.filePath, data, 'utf8'); } catch (e) { return { canceled: true, error: e && e.message }; }
+    return { canceled: false, path: res.filePath };
+  });
+  // Build the standalone Claude-styled viewer (+ embedded subagent dialogues, read from
+  // disk here since the renderer never loads them) and save it.
+  ipcMain.handle('history:exportHtml', async (_e, file) => {
+    if (!file) return { canceled: true, error: 'no file' };
+    let html, name;
+    try {
+      const exportHtml = require('./exportHtml');
+      const data = exportHtml.buildData(file);
+      name = (data.meta.title || 'conversation').replace(/[\/\\:*?"<>|\n\r]+/g, '_').slice(0, 80);
+      html = exportHtml.htmlFromData(data);
+    } catch (e) { return { canceled: true, error: e && e.message }; }
+    let res;
+    try { res = await saveDialogPath(name + '.html', 'html', 'HTML'); } catch (e) { return { canceled: true, error: e && e.message }; }
+    if (res.canceled || !res.filePath) return { canceled: true };
+    try { fs.writeFileSync(res.filePath, html, 'utf8'); } catch (e) { return { canceled: true, error: e && e.message }; }
+    return { canceled: false, path: res.filePath };
+  });
+
   ipcMain.handle('app:openMain', () => { showWindow(); return true; });
   ipcMain.handle('app:quit', () => { app.quit(); return true; });
   ipcMain.handle('window:settingsMode', (_e, on) => { setSettingsWindowMode(!!on); return true; });
+  // Per-view window minimum width (renderer drives it on view switch): 对话 needs 1300 for its
+  // 3-column layout; other views can go down to ~900 so a wide window doesn't leave side gaps.
+  ipcMain.handle('window:viewMinWidth', (_e, w) => {
+    const win = mainWindow;
+    if (!win || win.isDestroyed()) return false;
+    try { win.setMinimumSize(Math.max(600, (w | 0) || 900), 600); } catch (_) {}
+    return true;
+  });
 
   ipcMain.handle('util:copy', (_e, text) => { clipboard.writeText(String(text || '')); return true; });
   ipcMain.handle('util:openExternal', (_e, url) => {
@@ -543,11 +589,12 @@ function showWindow() {
 
 function createWindow() {
   mainWindow = new BrowserWindow({
-    width: 1120,
-    height: 730,
-    minWidth: 950,
-    minHeight: 730,
-    maxHeight: 730,
+    width: 1400,
+    height: 920,
+    // Per-view minimum width: the renderer raises this to 1300 for the 3-column 对话 view and
+    // drops it to 900 for the others (window:viewMinWidth). Startup view is 服务 (non-对话) → 900.
+    minWidth: 900,
+    minHeight: 600,
     titleBarStyle: 'hidden',
     trafficLightPosition: { x: 20, y: 20 },
     vibrancy: 'under-window',
@@ -560,28 +607,10 @@ function createWindow() {
   mainWindow.on('closed', () => { mainWindow = null; });
 }
 
-// Window height is fixed at 730 for every view (unified). The Settings view additionally locks
-// the width (1055) and disables resizing entirely; leaving Settings restores the prior width.
-let settingsWinState = null;
-function setSettingsWindowMode(on) {
-  const win = mainWindow;
-  if (!win || win.isDestroyed()) return;
-  if (on) {
-    if (settingsWinState) return; // already locked
-    settingsWinState = { bounds: win.getNormalBounds(), maximized: win.isMaximized() };
-    if (win.isFullScreen()) win.setFullScreen(false);
-    if (win.isMaximized()) win.unmaximize();
-    win.setSize(1055, 730, true);
-    win.center();
-    win.setResizable(false);
-  } else {
-    if (!settingsWinState) return; // not locked
-    const st = settingsWinState; settingsWinState = null;
-    win.setResizable(true);
-    if (st.maximized) win.maximize();
-    else if (st.bounds) win.setBounds({ x: st.bounds.x, y: st.bounds.y, width: st.bounds.width, height: 730 }, true);
-  }
-}
+// All views — including Settings — now share ONE freely-resizable window with a unified minimum
+// size (set in createWindow). Settings is no longer a fixed-size special case; this stays as a
+// no-op so the renderer's settings-mode IPC call remains valid without changing behavior.
+function setSettingsWindowMode(_on) { /* no-op: settings no longer locks window size */ }
 
 if (gotLock) {
   app.whenReady().then(async () => {
@@ -646,7 +675,10 @@ if (gotLock) {
     if (titleTimer && titleTimer.unref) titleTimer.unref();
 
     createWindow();
-    app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
+    // Dock-icon click. Use showWindow() (not a getAllWindows().length check): the tray popover is also
+    // a BrowserWindow, so after the main window is closed the count is still ≥1 and the old check did
+    // nothing — leaving the Dock icon dead until you used the tray menu. showWindow() re-creates/shows it.
+    app.on('activate', () => showWindow());
   });
 }
 
