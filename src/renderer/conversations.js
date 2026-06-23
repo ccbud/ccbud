@@ -31,6 +31,7 @@
                            //  DOM small so collapse/resize/scroll stay cheap no matter how far you browse.
   let vStart = 0, vEnd = 0;      // rendered window into currentDetail.messages
   let detailTexts = null;        // per-message plain text, for data-driven search (built on open)
+  let subInlineKeys = new Set(); // subagent keys rendered inline (nested under their Task card) this paint
 
   try { collapsed = new Set(JSON.parse(localStorage.getItem('ccbud-collapsed-projects') || '[]')); } catch (_) {}
   function persistCollapsed() { try { localStorage.setItem('ccbud-collapsed-projects', JSON.stringify([...collapsed])); } catch (_) {} }
@@ -373,9 +374,11 @@
     const total = messages.length;
     if (!total) return `<div class="conv-empty">${esc(L('conv.emptyConv'))}</div>`;
     const results = buildResults(messages); // scan ALL so tool_use cards resolve their result even if out of window
+    subInlineKeys = new Set(); // reset per paint; renderToolCard marks subagents shown inline
     let html = vStart > 0 ? winBtn('earlier', vStart) : '';
     for (let i = vStart; i < vEnd; i++) html += renderMessage(messages[i], results, i);
     if (vEnd < total) html += winBtn('later', total - vEnd);
+    else html += renderRemainingSubagents(); // tail in view → list any subagents not shown inline above
     return html || `<div class="conv-empty">${esc(L('conv.emptyConv'))}</div>`;
   }
   function paintWindow() {
@@ -510,7 +513,19 @@
     // A Task/Agent call that spawned a subagent gets its full dialogue nested right below the card
     // (keyed by this tool_use id), so subagents are observable in the live view — not only in export.
     const sub = (name === 'Task' || name === 'Agent') && currentDetail && currentDetail.subagents ? currentDetail.subagents[tu.id] : null;
+    if (sub) subInlineKeys.add(tu.id);
     return card + (sub ? renderSubagentBlock(sub) : '');
+  }
+
+  // Subagents whose spawning Task call isn't rendered inline in the current window (it's outside the
+  // window, or the link is missing) would otherwise be invisible — the HTML export shows them, the
+  // windowed live view didn't. Surface every not-yet-shown subagent in a section at the thread's end.
+  function renderRemainingSubagents() {
+    const subs = (currentDetail && currentDetail.subagents) || {};
+    const keys = Object.keys(subs).filter((k) => !subInlineKeys.has(k));
+    if (!keys.length) return '';
+    const blocks = keys.map((k) => renderSubagentBlock(subs[k])).join('');
+    return `<div class="conv-subagents-extra max-w-[780px] w-full my-2 pt-3 border-t border-border-custom"><div class="text-[10px] font-bold uppercase tracking-wider text-caption mb-1.5 flex items-center gap-1.25">🤖 ${esc(L('conv.stat.subagents'))} (${keys.length})</div>${blocks}</div>`;
   }
 
   // Render a subagent's full dialogue as a collapsible block, nested under the Task/Agent card that
