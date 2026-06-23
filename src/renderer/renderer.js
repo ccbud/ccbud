@@ -432,6 +432,79 @@ function renderMonitor() {
 
 function renderAll() { renderStatus(); renderHero(); renderConnect(); renderProviders(); renderMonitor(); }
 
+/* ---------- in-app updates ---------- */
+let updateState = null;
+let updateBusy = false;
+function show(el, on) { if (el) el.classList.toggle('hidden', !on); }
+function renderUpdate() {
+  const s = updateState;
+  const verEl = $('updVersion'), latEl = $('updLatest'), stEl = $('updStatus'), chip = $('updateChip');
+  const actions = $('updActions'), bDl = $('btnUpdateDownload'), bApply = $('btnUpdateApply'),
+    bOpen = $('btnUpdateOpen'), bBrew = $('btnUpdateBrew'), notes = $('updNotes');
+  if (!verEl) return;
+  if (s) {
+    verEl.textContent = s.runningVersion || s.shellVersion || '—';
+    latEl.textContent = s.latestVersion || '—';
+  }
+  // reset
+  [bDl, bApply, bOpen, bBrew].forEach((b) => show(b, false));
+  show(actions, false); show(notes, false); show(chip, false);
+  if (chip) chip.classList.remove('text-green', 'text-amber');
+
+  if (!s) { stEl.textContent = I18n.t('about.idle'); return; }
+  const staged = s.pending && s.pending.staged;
+  if (staged) {
+    stEl.textContent = I18n.t('about.stagedReady', { v: s.pending.version });
+    chip.textContent = I18n.t('about.ready'); chip.classList.add('text-green'); show(chip, true);
+    show(actions, true); show(bApply, true);
+    return;
+  }
+  if (s.ok === false) { stEl.textContent = I18n.t('about.checkFailed', { msg: s.error || '' }); return; }
+  if (!s.latestVersion || s.mode === 'unknown') { stEl.textContent = I18n.t('about.idle'); return; }
+  if (s.mode === 'none') { stEl.textContent = I18n.t('about.upToDate'); chip.textContent = I18n.t('about.upToDateChip'); chip.classList.add('text-green'); show(chip, true); return; }
+
+  // an update is available
+  chip.textContent = I18n.t('about.availableChip'); chip.classList.add('text-amber'); show(chip, true);
+  show(actions, true);
+  if (s.notes) { notes.textContent = s.notes; show(notes, true); }
+  if (s.mode === 'hot') {
+    stEl.textContent = updateBusy ? I18n.t('about.downloading') : I18n.t('about.hotAvailable', { v: s.latestVersion });
+    show(bDl, true); bDl.disabled = updateBusy; bDl.textContent = updateBusy ? I18n.t('about.downloading') : I18n.t('about.downloadInstall');
+  } else { // full
+    stEl.textContent = I18n.t('about.fullAvailable', { v: s.latestVersion });
+    show(bOpen, true);
+    if (s.installMethod === 'mac' || s.installMethod === 'linux') { bBrew.textContent = s.brewCommand || 'brew upgrade --cask ccbud'; show(bBrew, true); }
+  }
+}
+async function loadUpdateState() {
+  try { updateState = await api.updateState(); } catch (_) {}
+  syncAutoToggles();
+  renderUpdate();
+}
+async function checkUpdate() {
+  const btn = $('btnUpdateCheck');
+  if (btn) { btn.disabled = true; }
+  $('updStatus').textContent = I18n.t('about.checking');
+  try { updateState = await api.updateCheck(); } catch (e) { updateState = { ok: false, error: (e && e.message) || '' }; }
+  if (btn) btn.disabled = false;
+  renderUpdate();
+}
+async function downloadUpdate() {
+  updateBusy = true; renderUpdate();
+  let res;
+  try { res = await api.updateDownload(); } catch (e) { res = { ok: false, error: (e && e.message) || '' }; }
+  updateBusy = false;
+  try { updateState = await api.updateState(); } catch (_) {}
+  if (res && !res.ok && updateState) updateState.error = res.error;
+  renderUpdate();
+}
+function syncAutoToggles() {
+  const au = (config && config.autoUpdate) || {};
+  const c = $('fAutoCheck'), d = $('fAutoDownload');
+  if (c) c.checked = au.check !== false;
+  if (d) d.checked = au.autoDownload !== false;
+}
+
 /* ---------- monitor stream ---------- */
 function pushStreamRow(r) {
   stats.total++;
@@ -979,6 +1052,7 @@ function switchSettings(pane) {
   // Refresh the live cards the moment their section is revealed.
   if (pane === 'desktop') renderDesktopCard();
   if (pane === 'privacy') { renderPresidioCard(); renderPresidioLog(); refreshFindCount(); if (presidioTab === 'findings') renderPresidioFindings(); }
+  if (pane === 'about') loadUpdateState();
 }
 
 function bind() {
@@ -1334,6 +1408,33 @@ function bind() {
   api.onRequest((r) => pushStreamRow(r));
   api.onLog((l) => pushRawLog(l));
   api.onStatus((s) => { status = s; renderAll(); });
+
+  // ----- in-app updates -----
+  const bUpdCheck = $('btnUpdateCheck');
+  if (bUpdCheck) bUpdCheck.addEventListener('click', checkUpdate);
+  const bUpdDl = $('btnUpdateDownload');
+  if (bUpdDl) bUpdDl.addEventListener('click', downloadUpdate);
+  const bUpdApply = $('btnUpdateApply');
+  if (bUpdApply) bUpdApply.addEventListener('click', async () => {
+    const ok = await confirmDialog({ title: I18n.t('about.restartTitle'), message: I18n.t('about.restartMsg'), confirmText: I18n.t('about.restartNow') });
+    if (ok) api.updateApply();
+  });
+  const bUpdOpen = $('btnUpdateOpen');
+  if (bUpdOpen) bUpdOpen.addEventListener('click', () => api.openExternal((updateState && updateState.releaseUrl) || 'https://github.com/ccbud/ccbud/releases/latest'));
+  const bUpdBrew = $('btnUpdateBrew');
+  if (bUpdBrew) bUpdBrew.addEventListener('click', (e) => copyFeedback(e.currentTarget, (updateState && updateState.brewCommand) || 'brew upgrade --cask ccbud'));
+  const bRepo = $('btnRepo');
+  if (bRepo) bRepo.addEventListener('click', () => api.openExternal('https://github.com/ccbud/ccbud'));
+  const bReleases = $('btnReleases');
+  if (bReleases) bReleases.addEventListener('click', () => api.openExternal('https://github.com/ccbud/ccbud/releases'));
+  const fAutoCheck = $('fAutoCheck');
+  if (fAutoCheck) fAutoCheck.addEventListener('change', async (e) => { config.autoUpdate = await api.updateSetAuto({ check: e.target.checked }); });
+  const fAutoDownload = $('fAutoDownload');
+  if (fAutoDownload) fAutoDownload.addEventListener('change', async (e) => { config.autoUpdate = await api.updateSetAuto({ autoDownload: e.target.checked }); });
+
+  if (api.onUpdateState) api.onUpdateState((s) => { updateState = s; renderUpdate(); });
+  if (api.onUpdateStaged) api.onUpdateStaged(() => { loadUpdateState(); pushRawLog({ level: 'info', msg: I18n.t('about.stagedLog') }); });
+  if (api.onUpdateOpenPane) api.onUpdateOpenPane(() => { switchView('settings'); switchSettings('about'); checkUpdate(); });
 }
 
 try { applyTheme(localStorage.getItem('ccbud-theme') || 'light'); } catch (_) { applyTheme('light'); }

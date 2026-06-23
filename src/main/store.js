@@ -21,6 +21,10 @@ function defaultConfig() {
     // Skip TLS certificate verification on upstream HTTPS requests. Off by default; turn on
     // only when a corporate proxy / self-signed chain breaks otherwise-valid connections.
     insecureSkipVerify: false,
+    // In-app updates. `check`: auto-check GitHub for new releases on launch + daily.
+    // `autoDownload`: when a release qualifies for a hot (JS-only) update, fetch + stage it
+    // automatically (applied on next launch). Full (native) updates are never auto-applied.
+    autoUpdate: { check: true, autoDownload: true },
     providers: [],
   };
 }
@@ -67,6 +71,8 @@ function normalize(cfg) {
     baseMs: Number.isFinite(rr.baseMs) && rr.baseMs >= 0 ? Math.min(Math.floor(rr.baseMs), 10000) : 500,
   };
   c.insecureSkipVerify = !!c.insecureSkipVerify;
+  const au = c.autoUpdate || {};
+  c.autoUpdate = { check: au.check !== false, autoDownload: au.autoDownload !== false };
   // language: keep null (= "not yet chosen", main.js fills it from the system locale on first run)
   c.language = ['en', 'zh', 'zh-TW', 'ja', 'ko'].includes(c.language) ? c.language : null;
   // History/usage directories: trimmed, trailing-slash-normalized (so '~/.claude' and

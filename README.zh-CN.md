@@ -46,6 +46,22 @@
 > **macOS 首次打开被拦截：** 右键点应用 → **打开**，或执行
 > `xattr -dr com.apple.quarantine /Applications/ccbud.app`。
 
+### Homebrew（macOS）
+
+```bash
+brew install --cask ccbud/tap/ccbud   # 首次安装
+brew upgrade --cask ccbud             # 后续升级
+```
+
+### 保持最新（应用内更新）
+
+CCBUD 会在启动时（以及每天）检查新版本，并在 **设置 → 关于与更新** 中提示：
+
+- **热更新** —— 仅改动 JS/界面层的版本会**原地**下载并应用，无需重装，下次启动生效（也可点「立即重启更新」）。默认开启「热更自动下载」，符合条件的更新会在后台自动拉取。
+- **完整更新** —— 涉及原生组件（Electron、内置二进制）的版本会提示重新安装（下载安装包，或 `brew upgrade --cask ccbud`）。
+
+热更新会用发布清单做 SHA-256 校验（并可选 Ed25519 签名）。详见 [docs/HOT-UPDATE.md](docs/HOT-UPDATE.md)。
+
 ### 从源码构建
 
 ```bash

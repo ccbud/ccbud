@@ -8,6 +8,7 @@ const { createGateway } = require('./proxy');
 const claude = require('./claude');
 const claudeDesktop = require('./claudeDesktop');
 const presidio = require('./presidio');
+const updater = require('./updater');
 const os = require('os');
 const { formatTokens } = require('./usage');
 const { createHistoryWatcher } = require('./history');
@@ -547,6 +548,39 @@ function registerIpc() {
     } catch (_) {}
     return false;
   });
+
+  // In-app updates. `update:state` is the cached snapshot (versions + last check); `update:check`
+  // hits GitHub; `update:download` stages a hot bundle; `update:apply` relaunches into it.
+  ipcMain.handle('update:state', () => updater.publicState());
+  ipcMain.handle('update:check', async () => updater.checkForUpdates({ manual: true }));
+  ipcMain.handle('update:download', async () => updater.downloadAndStageHot());
+  ipcMain.handle('update:apply', () => { updater.relaunchToApply(); return true; });
+  ipcMain.handle('update:setAuto', (_e, patch) => {
+    const cfg = JSON.parse(JSON.stringify(store.get()));
+    cfg.autoUpdate = Object.assign({}, cfg.autoUpdate, patch || {});
+    return store.save(cfg).autoUpdate;
+  });
+}
+
+// Auto-update: on launch (after a short delay) and once a day, check GitHub. When a release
+// qualifies for a hot (JS-only) update and autoDownload is on, stage it silently — it applies on
+// the next launch (we never force a relaunch). Full (native) updates only surface in the UI.
+let updateTimer = 0;
+async function runAutoUpdate() {
+  try {
+    if (!(store.get().autoUpdate || {}).check) return;
+    const st = await updater.checkForUpdates({ auto: true });
+    if (st && st.ok && st.mode === 'hot' && (store.get().autoUpdate || {}).autoDownload && !(st.pending && st.pending.staged)) {
+      const r = await updater.downloadAndStageHot();
+      if (r && r.ok) broadcast('update:staged', { version: r.version });
+    }
+  } catch (_) {}
+}
+function scheduleAutoUpdate() {
+  const kick = () => { runAutoUpdate(); };
+  setTimeout(kick, 8000); // give the gateway/tray time to settle first
+  updateTimer = setInterval(kick, 24 * 60 * 60 * 1000);
+  if (updateTimer && updateTimer.unref) updateTimer.unref();
 }
 
 function applyOpenAtLogin(cfg) {
@@ -566,6 +600,7 @@ function buildTrayMenu() {
       ? { label: mt('tray.disconnect'), click: () => doDisconnect() }
       : { label: mt('tray.connect'), click: () => doConnect() },
     { type: 'separator' },
+    { label: mt('tray.checkUpdates'), click: () => { showWindow(); setTimeout(() => broadcast('update:openPane'), 250); } },
     { label: mt('tray.quit'), click: () => app.quit() },
   ]);
 }
@@ -730,6 +765,18 @@ if (gotLock) {
     try { history.start(); } catch (_) {}
 
     registerIpc();
+
+    // Hot-update plumbing: confirm this boot succeeded (so a freshly-applied bundle isn't rolled
+    // back) and kick off background update checks.
+    updater.init({
+      userData,
+      getConfig: () => store.get(),
+      broadcast,
+      log: (msg) => pushGatewayLog({ level: 'info', msg: '[update] ' + msg }),
+    });
+    setTimeout(() => updater.confirmBootSuccess(), 4000);
+    scheduleAutoUpdate();
+
     if (store.get().openAtLogin) applyOpenAtLogin(store.get());
 
     // If Claude Code is still pointed at us (from a previous session), bring the

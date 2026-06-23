@@ -62,6 +62,16 @@ contextBridge.exposeInMainWorld('ccbud', {
   copy: (t) => ipcRenderer.invoke('util:copy', t),
   openExternal: (u) => ipcRenderer.invoke('util:openExternal', u),
 
+  // in-app updates
+  updateState: () => ipcRenderer.invoke('update:state'),
+  updateCheck: () => ipcRenderer.invoke('update:check'),
+  updateDownload: () => ipcRenderer.invoke('update:download'),
+  updateApply: () => ipcRenderer.invoke('update:apply'),
+  updateSetAuto: (patch) => ipcRenderer.invoke('update:setAuto', patch),
+  onUpdateState: (cb) => ipcRenderer.on('update:state', (_e, s) => cb(s)),
+  onUpdateStaged: (cb) => ipcRenderer.on('update:staged', (_e, s) => cb(s)),
+  onUpdateOpenPane: (cb) => ipcRenderer.on('update:openPane', () => cb()),
+
   onLog: (cb) => ipcRenderer.on('gateway:log', (_e, l) => cb(l)),
   onRequest: (cb) => ipcRenderer.on('gateway:request', (_e, r) => cb(r)),
   onStatus: (cb) => ipcRenderer.on('gateway:status', (_e, s) => cb(s)),

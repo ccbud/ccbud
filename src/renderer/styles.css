@@ -214,6 +214,9 @@
   .collapse {
     visibility: collapse;
   }
+  .invisible {
+    visibility: hidden;
+  }
   .visible {
     visibility: visible;
   }
@@ -465,6 +468,9 @@
   }
   .max-h-\[150px\] {
     max-height: 150px;
+  }
+  .max-h-\[180px\] {
+    max-height: 180px;
   }
   .min-h-0 {
     min-height: 0;
@@ -784,6 +790,12 @@
   .gap-x-6 {
     column-gap: calc(var(--spacing) * 6);
   }
+  .gap-x-8 {
+    column-gap: calc(var(--spacing) * 8);
+  }
+  .gap-y-2 {
+    row-gap: calc(var(--spacing) * 2);
+  }
   .gap-y-4 {
     row-gap: calc(var(--spacing) * 4);
   }
@@ -1010,6 +1022,9 @@
   }
   .bg-bg-input {
     background-color: var(--color-bg-input);
+  }
+  .bg-bg-sidebar {
+    background-color: var(--color-bg-sidebar);
   }
   .bg-bg-sidebar\/20 {
     background-color: var(--color-bg-sidebar);
@@ -2250,6 +2265,13 @@
     &:hover {
       @media (hover: hover) {
         color: var(--color-red);
+      }
+    }
+  }
+  .hover\:underline {
+    &:hover {
+      @media (hover: hover) {
+        text-decoration-line: underline;
       }
     }
   }

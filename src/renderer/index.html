@@ -142,6 +142,10 @@
                 <span class="w-4 h-4 flex items-center justify-center opacity-80 [.active_&]:opacity-100" data-icon="folder"></span>
                 <span class="settings-subnav-label" data-i18n="settings.nav.data">数据</span>
               </button>
+              <button type="button" data-settings="about" class="settings-subnav-item flex items-center gap-2.5 w-full px-2.5 py-2 rounded-[9px] border-none bg-transparent text-muted font-medium text-[13px] leading-tight cursor-pointer text-left transition-all duration-150 hover:bg-chip-bg hover:text-fg active:scale-[0.985] [&.active]:bg-brand-soft [&.active]:text-brand [&.active]:font-semibold">
+                <span class="w-4 h-4 flex items-center justify-center opacity-80 [.active_&]:opacity-100" data-icon="download"></span>
+                <span class="settings-subnav-label" data-i18n="settings.nav.about">关于与更新</span>
+              </button>
             </nav>
 
             <div id="settingsPanes" class="settings-content flex-1 min-w-0 min-h-0 max-w-[920px] overflow-y-auto overflow-x-hidden pr-1 pb-2 flex flex-col gap-7">
@@ -310,6 +314,50 @@
               </div>
               <p class="caption text-[12px] text-caption" data-i18n="settings.histDirDesc">对话与用量统计的数据来源 —— Claude Code 的配置目录（含 projects/）。默认 ~/.claude；若用 CLAUDE_CONFIG_DIR / claude --config 指定了其他目录，在此添加，可在「对话」页切换查看。</p>
               <div id="histDirList" class="hist-dir-list"></div>
+            </div>
+            </div>
+            <div data-pane="about" class="hidden">
+            <div class="settings-card bg-bg-elev border border-border-custom rounded-xl shadow-card p-7 flex flex-col gap-6 transition-all duration-300">
+              <div class="settings-card-header flex justify-between items-center gap-3">
+                <h3 class="settings-card-title text-[13px] font-semibold text-fg flex items-center gap-2"><span data-i18n="about.title">检查更新</span><span id="updateChip" class="desktop-chip text-[10.5px] font-semibold rounded-full px-2 py-0.25 bg-chip-bg text-muted hidden"></span></h3>
+                <button id="btnUpdateCheck" type="button" class="btn btn-sm btn-primary bg-primary text-white border-none rounded-md px-2.25 py-1.25 font-semibold text-[11px] leading-none cursor-pointer transition-all duration-140 hover:bg-primary-hover active:scale-[0.985]" data-i18n="about.check">检查更新</button>
+              </div>
+              <div class="flex items-center gap-x-8 gap-y-2 flex-wrap">
+                <div class="flex flex-col gap-0.5">
+                  <span class="text-[11px] uppercase tracking-[0.03em] text-caption font-semibold" data-i18n="about.version">当前版本</span>
+                  <span id="updVersion" class="text-[15px] font-bold text-fg font-mono">—</span>
+                </div>
+                <div class="flex flex-col gap-0.5">
+                  <span class="text-[11px] uppercase tracking-[0.03em] text-caption font-semibold" data-i18n="about.latest">最新版本</span>
+                  <span id="updLatest" class="text-[15px] font-bold text-fg font-mono">—</span>
+                </div>
+              </div>
+              <p id="updStatus" class="caption text-[12px] text-caption leading-[1.55]" data-i18n="about.idle">点击「检查更新」查看是否有新版本。</p>
+              <div id="updActions" class="flex items-center gap-2 flex-wrap hidden">
+                <button id="btnUpdateDownload" type="button" class="btn btn-sm btn-primary bg-primary text-white border-none rounded-md px-2.75 py-1.5 font-semibold text-[12px] leading-none cursor-pointer transition-all duration-140 hover:bg-primary-hover active:scale-[0.985] hidden" data-i18n="about.downloadInstall">下载并安装</button>
+                <button id="btnUpdateApply" type="button" class="btn btn-sm btn-primary bg-primary text-white border-none rounded-md px-2.75 py-1.5 font-semibold text-[12px] leading-none cursor-pointer transition-all duration-140 hover:bg-primary-hover active:scale-[0.985] hidden" data-i18n="about.restartNow">立即重启更新</button>
+                <button id="btnUpdateOpen" type="button" class="btn btn-sm bg-bg-elev text-fg border border-border-custom rounded-md px-2.75 py-1.5 font-medium text-[12px] leading-none cursor-pointer transition-all duration-140 hover:bg-chip-bg hover:border-border-strong active:scale-[0.985] hidden" data-i18n="about.openDownload">前往下载页</button>
+                <button id="btnUpdateBrew" type="button" class="btn btn-sm bg-bg-elev text-fg border border-border-custom rounded-md px-2.75 py-1.5 font-mono text-[11.5px] leading-none cursor-pointer transition-all duration-140 hover:bg-chip-bg hover:border-border-strong active:scale-[0.985] hidden">brew upgrade --cask ccbud</button>
+              </div>
+              <pre id="updNotes" class="hidden m-0 px-3.5 py-3 rounded-lg bg-bg-input border border-border-custom font-mono text-[11px] leading-[1.6] text-caption max-h-[180px] overflow-auto whitespace-pre-wrap break-words"></pre>
+              <div class="settings-row flex items-center gap-x-6 gap-y-4 flex-wrap pt-6 border-t border-border-custom">
+                <label class="switch inline-flex items-center gap-1.75 cursor-pointer text-[12.5px] no-drag">
+                  <input id="fAutoCheck" type="checkbox" class="hidden peer" />
+                  <span class="track w-8 h-[17px] rounded-full bg-border-strong relative transition-colors duration-180 ease-[cubic-bezier(0.23,1,0.32,1)] shrink-0 peer-checked:bg-primary after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:w-[13px] after:h-[13px] after:rounded-full after:bg-white after:shadow-[0_1px_2px_rgba(0,0,0,0.18)] after:transition-transform after:duration-180 after:ease-[cubic-bezier(0.23,1,0.32,1)] peer-checked:after:translate-x-[15px]"></span>
+                  <span class="switch-label" data-i18n="about.autoCheck">自动检查更新</span>
+                </label>
+                <label class="switch inline-flex items-center gap-1.75 cursor-pointer text-[12.5px] no-drag">
+                  <input id="fAutoDownload" type="checkbox" class="hidden peer" />
+                  <span class="track w-8 h-[17px] rounded-full bg-border-strong relative transition-colors duration-180 ease-[cubic-bezier(0.23,1,0.32,1)] shrink-0 peer-checked:bg-primary after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:w-[13px] after:h-[13px] after:rounded-full after:bg-white after:shadow-[0_1px_2px_rgba(0,0,0,0.18)] after:transition-transform after:duration-180 after:ease-[cubic-bezier(0.23,1,0.32,1)] peer-checked:after:translate-x-[15px]"></span>
+                  <span class="switch-label" data-i18n="about.autoDownload">热更自动下载</span>
+                </label>
+              </div>
+              <p class="caption text-[11.5px] text-caption leading-[1.5]" data-i18n="about.autoDesc">热更（仅 JS）满足条件时自动下载并在下次启动时生效；涉及原生改动的更新会提示你重新安装。</p>
+              <div class="settings-row flex items-center gap-3 flex-wrap pt-6 border-t border-border-custom">
+                <button id="btnRepo" type="button" class="text-[12px] text-brand hover:underline cursor-pointer no-drag" data-i18n="about.repo">项目主页</button>
+                <span class="text-caption">·</span>
+                <button id="btnReleases" type="button" class="text-[12px] text-brand hover:underline cursor-pointer no-drag" data-i18n="about.releaseNotes">发布记录</button>
+              </div>
             </div>
             </div>
 

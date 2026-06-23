@@ -108,6 +108,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
       - name: Read version
         id: ver
         shell: bash
@@ -121,6 +126,21 @@ jobs:
       - name: List artifacts
         run: ls -la artifacts
 
+      # Hot-update assets: a gzipped JS-only bundle + manifest the app downloads and applies
+      # in place (no reinstall) when a release qualifies. See scripts/build-hotupdate.js.
+      - name: Build hot-update bundle
+        shell: bash
+        env:
+          # Optional: set this repo secret to sign bundles (Ed25519 PKCS#8 PEM).
+          CCBUD_UPDATE_PRIVATE_KEY: ${{ secrets.CCBUD_UPDATE_PRIVATE_KEY }}
+          RELEASE_NOTES: ccbud v${{ steps.ver.outputs.version }}
+        run: |
+          npm install --no-audit --no-fund
+          npm run build:css
+          npm run build:hotupdate
+          cp dist/hotupdate-manifest.json dist/ccbud-hotupdate-*.json.gz artifacts/
+          ls -la artifacts
+
       - name: Publish to GitHub Releases
         uses: softprops/action-gh-release@v2
         with:
@@ -133,10 +153,44 @@ jobs:
 
             Pick the installer for your platform:
 
-            - **macOS** — `.dmg` (x64 / arm64)
+            - **macOS** — `.dmg` (x64 / arm64) · or `brew install --cask ccbud/tap/ccbud`
             - **Windows** — `.exe` (x64 / arm64)
             - **Linux** — `.AppImage` / `.deb` (x64 / arm64)
+
+            Installed copies update themselves in-app: qualifying JS-only releases apply as a hot
+            update (no reinstall); releases that change native components prompt a fresh install.
           files: artifacts/*
           make_latest: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Publish/refresh the Homebrew cask in the tap repo. Skipped unless HOMEBREW_TAP_TOKEN
+      # (a PAT with push access to the tap repo) is configured. Tap repo defaults to
+      # ccbud/homebrew-tap; override with the HOMEBREW_TAP_REPO repo variable.
+      - name: Detect tap token
+        id: tap
+        shell: bash
+        env:
+          TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: echo "have=${TOKEN:+yes}" >> "$GITHUB_OUTPUT"
+
+      - name: Publish Homebrew cask
+        if: steps.tap.outputs.have == 'yes'
+        shell: bash
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          HOMEBREW_TAP_REPO: ${{ vars.HOMEBREW_TAP_REPO || 'ccbud/homebrew-tap' }}
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          set -e
+          # Pin sha256 from the freshly-released dmgs (present in artifacts/).
+          node scripts/update-cask.js artifacts homebrew/Casks/ccbud.rb
+          git clone "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/${HOMEBREW_TAP_REPO}.git" tap
+          mkdir -p tap/Casks
+          cp homebrew/Casks/ccbud.rb tap/Casks/ccbud.rb
+          cd tap
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Casks/ccbud.rb
+          git commit -m "ccbud ${VERSION}" || { echo "no cask change"; exit 0; }
+          git push

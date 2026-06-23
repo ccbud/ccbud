@@ -46,6 +46,22 @@ Grab the latest build for your platform from the **[Releases page](https://githu
 > **macOS Gatekeeper:** if the first launch is blocked, right-click the app → **Open**, or run
 > `xattr -dr com.apple.quarantine /Applications/ccbud.app`.
 
+### Homebrew (macOS)
+
+```bash
+brew install --cask ccbud/tap/ccbud   # first install
+brew upgrade --cask ccbud             # later upgrades
+```
+
+### Staying up to date
+
+CCBUD checks for new releases on launch (and daily) and surfaces them under **Settings → About & Updates**:
+
+- **Hot update** — releases that only change the app's JS/UI layer download and apply **in place**, no reinstall. They take effect on the next launch; you can also hit **Restart now**. With *Auto-download hot updates* on (default), eligible updates are fetched in the background.
+- **Full update** — releases that change native components (Electron, bundled binaries) prompt a normal reinstall (download the installer, or `brew upgrade --cask ccbud`).
+
+Hot updates are SHA-256-verified against the release manifest (and optionally Ed25519-signed). See [docs/HOT-UPDATE.md](docs/HOT-UPDATE.md).
+
 ### Build from source
 
 ```bash
