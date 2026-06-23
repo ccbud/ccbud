@@ -12,7 +12,7 @@ cask "ccbud" do
 
   # ccbud applies JS-only releases in place (in-app hot update); `brew upgrade` handles the rest.
   auto_updates true
-  depends_on macos: ">= :big_sur"
+  depends_on macos: :big_sur
 
   app "ccbud.app"
 
