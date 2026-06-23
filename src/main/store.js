@@ -15,6 +15,12 @@ function defaultConfig() {
     language: null, // ui language ('en'|'zh'|'zh-TW'|'ja'|'ko'); null = derive from system on first run
     historyDirs: ['~/.claude'], // Claude config dirs to read history/usage from (each has projects/)
     historyActive: 'all',       // which configured dir the conversation/usage views show ('all' or a path)
+    // Auto-retry upstream 429s before surfacing them to the client (gives low-concurrency
+    // providers a moment to recover instead of failing the request outright).
+    retry429: { enabled: true, max: 3, baseMs: 500 },
+    // Skip TLS certificate verification on upstream HTTPS requests. Off by default; turn on
+    // only when a corporate proxy / self-signed chain breaks otherwise-valid connections.
+    insecureSkipVerify: false,
     providers: [],
   };
 }
@@ -22,20 +28,27 @@ function defaultConfig() {
 function normalize(cfg) {
   const c = Object.assign(defaultConfig(), cfg || {});
   c.providers = Array.isArray(c.providers) ? c.providers : [];
-  c.providers = c.providers.map((p) => ({
-    id: p.id,
-    name: p.name || 'Unnamed',
-    baseUrl: p.baseUrl || '',
-    authToken: p.authToken || '',
-    defaultModel: p.defaultModel || '',
-    smallFastModel: p.smallFastModel || '',
-    mapDefaultModels: p.mapDefaultModels !== false,
-    models: Array.isArray(p.models)
-      ? p.models
-          .filter((m) => m && (m.alias || m.upstream))
-          .map((m) => ({ alias: m.alias || '', upstream: m.upstream || '' }))
-      : [],
-  }));
+  c.providers = c.providers.map((p) => {
+    const np = {
+      id: p.id,
+      name: p.name || 'Unnamed',
+      baseUrl: p.baseUrl || '',
+      authToken: p.authToken || '',
+      defaultModel: p.defaultModel || '',
+      smallFastModel: p.smallFastModel || '',
+      mapDefaultModels: p.mapDefaultModels !== false,
+      models: Array.isArray(p.models)
+        ? p.models
+            .filter((m) => m && (m.alias || m.upstream))
+            .map((m) => ({ alias: m.alias || '', upstream: m.upstream || '' }))
+        : [],
+    };
+    // Optional per-provider custom icon — an emoji or a data:/http(s)/assets URL.
+    // Preserve it: rebuilding the object without this field is exactly why custom
+    // icons silently reverted to the brand/default logo on save.
+    if (typeof p.icon === 'string' && p.icon.trim()) np.icon = p.icon.trim();
+    return np;
+  });
   if (!c.providers.find((p) => p.id === c.activeProviderId)) {
     c.activeProviderId = c.providers.length ? c.providers[0].id : null;
   }
@@ -46,6 +59,14 @@ function normalize(cfg) {
   c.claudeBackup = c.claudeBackup || null;
   const tu = c.trayUsage || {};
   c.trayUsage = { enabled: !!tu.enabled, range: ['1d', '7d', '30d', 'all'].includes(tu.range) ? tu.range : '7d' };
+  // 429 auto-retry: clamp to sane bounds so a bad config can't wedge the gateway.
+  const rr = c.retry429 || {};
+  c.retry429 = {
+    enabled: rr.enabled !== false,
+    max: Number.isFinite(rr.max) && rr.max >= 0 ? Math.min(Math.floor(rr.max), 10) : 3,
+    baseMs: Number.isFinite(rr.baseMs) && rr.baseMs >= 0 ? Math.min(Math.floor(rr.baseMs), 10000) : 500,
+  };
+  c.insecureSkipVerify = !!c.insecureSkipVerify;
   // language: keep null (= "not yet chosen", main.js fills it from the system locale on first run)
   c.language = ['en', 'zh', 'zh-TW', 'ja', 'ko'].includes(c.language) ? c.language : null;
   // History/usage directories: trimmed, trailing-slash-normalized (so '~/.claude' and
