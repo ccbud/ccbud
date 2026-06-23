@@ -1,6 +1,6 @@
 {
   "name": "ccbud",
-  "version": "1.0.6",
+  "version": "1.0.7",
   "description": "ccbud — Claude Code Gateway. A cross-platform desktop app that proxies Claude Code to any Anthropic-compatible provider, with one-click switching and model name mapping.",
   "main": "src/main/bootstrap.js",
   "author": {
