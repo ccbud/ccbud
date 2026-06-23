@@ -189,6 +189,8 @@ function renderConnect() {
   $('fRequireToken').checked = !!config.requireToken;
   $('fGatewayToken').value = config.gatewayToken || '';
   $('tokenRow').classList.toggle('hidden', !config.requireToken);
+  if ($('fRetry429')) $('fRetry429').checked = !(config.retry429 && config.retry429.enabled === false);
+  if ($('fInsecureTls')) $('fInsecureTls').checked = !!config.insecureSkipVerify;
   const tu = config.trayUsage || { enabled: false, range: '7d' };
   $('fTrayUsage').checked = !!tu.enabled;
   $('fTrayRange').value = tu.range || '7d';
@@ -1072,6 +1074,8 @@ function bind() {
   });
   $('fGatewayToken').addEventListener('change', (e) => persist({ gatewayToken: e.target.value.trim() }));
   $('btnGenToken').addEventListener('click', () => persist({ gatewayToken: genToken(), requireToken: true }));
+  if ($('fRetry429')) $('fRetry429').addEventListener('change', (e) => persist({ retry429: Object.assign({}, config.retry429, { enabled: e.target.checked }) }));
+  if ($('fInsecureTls')) $('fInsecureTls').addEventListener('change', (e) => persist({ insecureSkipVerify: e.target.checked }));
   $('fTrayUsage').addEventListener('change', (e) => persist({ trayUsage: { enabled: e.target.checked, range: $('fTrayRange').value } }));
   $('fTrayRange').addEventListener('change', (e) => persist({ trayUsage: { enabled: $('fTrayUsage').checked, range: e.target.value } }));
   if ($('fLang')) $('fLang').addEventListener('change', async (e) => {

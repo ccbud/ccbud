@@ -212,6 +212,35 @@ async function restartServer() {
   broadcast('gateway:status', statusPayload());
 }
 
+// Raw HTTPS POST that can skip TLS verification (Node fetch can't, and undici isn't a dep).
+// Only used for the provider Test button when insecure TLS is enabled; mirrors the proxy's
+// `rejectUnauthorized:false` so a self-signed/MITM chain doesn't make Test falsely fail.
+function rawPostJson(urlStr, { headers, body, timeoutMs, insecure }) {
+  return new Promise((resolve, reject) => {
+    let u;
+    try { u = new URL(urlStr); } catch (e) { reject(e); return; }
+    const lib = u.protocol === 'http:' ? require('http') : require('https');
+    const opts = {
+      protocol: u.protocol, hostname: u.hostname,
+      port: u.port || (u.protocol === 'https:' ? 443 : 80),
+      path: u.pathname + u.search, method: 'POST',
+      headers: Object.assign({ 'accept-encoding': 'identity' }, headers), // avoid gzip we'd have to decode
+    };
+    if (insecure && u.protocol === 'https:') opts.rejectUnauthorized = false;
+    const r = lib.request(opts, (resp) => {
+      const chunks = [];
+      resp.on('data', (c) => chunks.push(c));
+      resp.on('end', () => resolve({ status: resp.statusCode, text: Buffer.concat(chunks).toString('utf8') }));
+    });
+    const timer = setTimeout(() => { const e = new Error('timeout'); e.timeout = true; r.destroy(e); }, timeoutMs || 30000);
+    if (timer.unref) timer.unref();
+    r.on('close', () => clearTimeout(timer));
+    r.on('error', reject);
+    if (body) r.write(body);
+    r.end();
+  });
+}
+
 async function testProvider(provider) {
   const model = provider.defaultModel || (provider.models && provider.models[0] && provider.models[0].upstream) || '';
   if (!provider.baseUrl) return { ok: false, message: mt('err.baseUrlEmpty') };
@@ -222,28 +251,33 @@ async function testProvider(provider) {
   } catch (e) {
     return { ok: false, message: mt('err.baseUrlInvalid') };
   }
+  const insecure = !!(store && store.get().insecureSkipVerify);
+  const headers = {
+    'content-type': 'application/json',
+    authorization: 'Bearer ' + (provider.authToken || ''),
+    'x-api-key': provider.authToken || '',
+    'anthropic-version': '2023-06-01',
+  };
+  const body = JSON.stringify({ model: model || 'claude-3-5-haiku-20241022', max_tokens: 16, messages: [{ role: 'user', content: 'ping' }] });
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 30000);
   try {
-    const r = await fetch(url, {
-      method: 'POST',
-      signal: controller.signal,
-      headers: {
-        'content-type': 'application/json',
-        authorization: 'Bearer ' + (provider.authToken || ''),
-        'x-api-key': provider.authToken || '',
-        'anthropic-version': '2023-06-01',
-      },
-      body: JSON.stringify({ model: model || 'claude-3-5-haiku-20241022', max_tokens: 16, messages: [{ role: 'user', content: 'ping' }] }),
-    });
-    const text = await r.text();
+    let status, text;
+    if (insecure) {
+      const resp = await rawPostJson(url, { headers, body, timeoutMs: 30000, insecure: true });
+      status = resp.status; text = resp.text;
+    } else {
+      const r = await fetch(url, { method: 'POST', signal: controller.signal, headers, body });
+      status = r.status; text = await r.text();
+    }
     let json = null;
     try { json = JSON.parse(text); } catch (_) {}
-    if (r.ok && json && json.type === 'message') return { ok: true, status: r.status, model: json.model, message: mt('err.testOk', { model: json.model }) };
-    const msg = (json && json.error && json.error.message) || text.slice(0, 200) || `HTTP ${r.status}`;
-    return { ok: false, status: r.status, message: msg };
+    const httpOk = status >= 200 && status < 300;
+    if (httpOk && json && json.type === 'message') return { ok: true, status, model: json.model, message: mt('err.testOk', { model: json.model }) };
+    const msg = (json && json.error && json.error.message) || text.slice(0, 200) || `HTTP ${status}`;
+    return { ok: false, status, message: msg };
   } catch (e) {
-    return { ok: false, message: e.name === 'AbortError' ? mt('err.timeout') : e.message };
+    return { ok: false, message: e.name === 'AbortError' || e.timeout ? mt('err.timeout') : e.message };
   } finally {
     clearTimeout(timer);
   }

@@ -48,60 +48,98 @@ function respondJson(res, status, obj) {
 function looksSmall(name) {
   return /haiku|small|fast|mini|air|flash|lite|nano|tiny|turbo/i.test(name || '');
 }
+/** Is this one of Claude's own default model names (the only names we auto-remap)? */
+function isClaudeDefault(name) {
+  return /^claude[-_]/i.test(name || '');
+}
 
 /**
- * Decide which provider to use and how to translate the model name.
+ * Decide how to route a request and translate its model name.
  * Returns { provider, outgoingModel, clientFacingModel } or null.
  *
- * clientFacingModel === outgoingModel  => pure passthrough (do NOT touch response)
- * clientFacingModel !== outgoingModel  => we changed the model, so rewrite response back
+ * Unified rule (issue #10): EVERY request goes to the single active provider — we no
+ * longer hop to whichever provider happens to own a matching alias. Against that active
+ * provider the requested model id is resolved, in order:
+ *
+ *   1. a Custom alias of the active provider        -> map alias -> the user's upstream name
+ *   2. the active provider's PRIMARY / LIGHTWEIGHT   -> passthrough untouched
+ *   3. a model the provider really has              -> passthrough untouched
+ *        ("really has" = the upstream side of a configured alias, or present in the
+ *         provider's live /v1/models list captured into `knownModels`)
+ *   4. any other unconfigured id (default mapping on):
+ *        · Claude's main tiers (opus/sonnet/mythos/fable, …) -> PRIMARY
+ *        · everything else unmatched (haiku, foreign names)  -> LIGHTWEIGHT
+ *      With per-provider default mapping turned off, the name is forwarded untouched.
+ *
+ * clientFacingModel === outgoingModel  => pure passthrough (do NOT touch the response)
+ * clientFacingModel !== outgoingModel  => we changed the model, so rewrite the response back
+ *
+ * @param {Set<string>} [knownModels] real upstream model ids for the active provider.
  */
-function resolveRouting(requestedModel, config) {
+function resolveRouting(requestedModel, config, knownModels) {
   const providers = (config && config.providers) || [];
   if (providers.length === 0) return null;
 
   const active = providers.find((p) => p.id === config.activeProviderId) || providers[0];
-
-  if (!requestedModel) {
-    return active ? { provider: active, outgoingModel: null, clientFacingModel: null } : null;
-  }
-
-  // 1) Explicit alias match across ALL providers -> route to the owning provider.
-  for (const p of providers) {
-    for (const m of p.models || []) {
-      if (m.alias && m.alias === requestedModel && m.upstream) {
-        return { provider: p, outgoingModel: m.upstream, clientFacingModel: requestedModel };
-      }
-    }
-  }
-
   if (!active) return null;
 
-  // 2) The client used a real upstream model name of the active provider -> passthrough.
-  if (requestedModel === active.defaultModel || requestedModel === active.smallFastModel) {
-    return { provider: active, outgoingModel: requestedModel, clientFacingModel: requestedModel };
-  }
+  const pass = (m) => ({ provider: active, outgoingModel: m, clientFacingModel: m });
+
+  // No model on the request (e.g. a non-/v1/messages call) -> forward as-is.
+  if (!requestedModel) return { provider: active, outgoingModel: null, clientFacingModel: null };
+
+  const primary = active.defaultModel || '';
+  const light = active.smallFastModel || '';
+
+  // 1) Custom alias of the ACTIVE provider -> rewrite to the user's upstream model.
   for (const m of active.models || []) {
-    if (m.upstream === requestedModel) {
-      return { provider: active, outgoingModel: requestedModel, clientFacingModel: requestedModel };
+    if (m && m.alias && m.alias === requestedModel && m.upstream) {
+      return { provider: active, outgoingModel: m.upstream, clientFacingModel: requestedModel };
     }
   }
 
-  // 3) Automatic mapping of Claude DEFAULT model names (claude-*) to the active
-  //    provider's models. Gated on the claude-* naming convention so that a
-  //    deliberately-requested non-claude model is never silently substituted.
-  if (active.mapDefaultModels !== false && /^claude[-_]/i.test(requestedModel)) {
-    const small = active.smallFastModel || active.defaultModel;
-    const big = active.defaultModel || active.smallFastModel;
-    // Per the goal: haiku -> small fast model, everything else -> main model.
-    const target = looksSmall(requestedModel) ? small : big;
-    if (target) {
-      return { provider: active, outgoingModel: target, clientFacingModel: requestedModel };
-    }
+  // 2) Already the provider's PRIMARY or LIGHTWEIGHT model -> passthrough.
+  if (requestedModel === primary || requestedModel === light) return pass(requestedModel);
+
+  // 3) A model the active provider really has -> passthrough.
+  for (const m of active.models || []) {
+    if (m && m.upstream === requestedModel) return pass(requestedModel);
+  }
+  if (knownModels && typeof knownModels.has === 'function' && knownModels.has(requestedModel)) {
+    return pass(requestedModel);
   }
 
-  // 4) Unknown / explicitly-requested model, no mapping available -> passthrough as-is.
-  return { provider: active, outgoingModel: requestedModel, clientFacingModel: requestedModel };
+  // 4) Unconfigured id. With default mapping off, forward untouched (escape hatch).
+  if (active.mapDefaultModels === false) return pass(requestedModel);
+
+  // Otherwise map onto the active provider's own models: Claude's main tiers -> PRIMARY,
+  // everything else unmatched (Claude small tiers + any foreign name) -> LIGHTWEIGHT.
+  const big = primary || light;
+  const small = light || primary;
+  let target;
+  if (isClaudeDefault(requestedModel)) target = looksSmall(requestedModel) ? small : big;
+  else target = small; // unknown foreign model -> route to the known-good lightweight model
+  if (target) return { provider: active, outgoingModel: target, clientFacingModel: requestedModel };
+
+  // Nothing configured to map onto -> last-resort passthrough.
+  return pass(requestedModel);
+}
+
+/**
+ * How long to wait before retrying an upstream 429. Honors a `Retry-After` header
+ * (delta-seconds or an HTTP-date) when present, otherwise exponential backoff from
+ * `base` (attempt 0,1,2 -> base, 2x, 4x). Always clamped so a hostile/huge value
+ * can't stall the request indefinitely.
+ */
+function retryDelay(retryAfter, attempt, base) {
+  const cap = 30000;
+  if (retryAfter != null) {
+    const s = String(retryAfter).trim();
+    if (/^\d+$/.test(s)) return Math.min(parseInt(s, 10) * 1000, cap);
+    const when = Date.parse(s);
+    if (!Number.isNaN(when)) return Math.min(Math.max(when - Date.now(), 0), cap);
+  }
+  return Math.min((base || 500) * Math.pow(2, attempt), 8000);
 }
 
 // Headers whose VALUES must never surface in the monitor inspector (real upstream key etc).
@@ -273,6 +311,17 @@ function createGateway({ getConfig }) {
   let server = null;
   let currentPort = null;
   let exchangeSeq = 0;
+  // Real upstream model ids per provider, captured opportunistically from any /v1/models
+  // response we proxy (Claude Code probes that endpoint on startup). Lets routing recognize
+  // a model the provider genuinely has — e.g. a not-yet-configured `glm-5.2` — and pass it
+  // through instead of remapping it. Best-effort: empty until the first models probe.
+  const modelsCache = new Map(); // providerId -> Set<string>
+  function recordModels(providerId, list) {
+    if (!providerId || !Array.isArray(list)) return;
+    const ids = new Set();
+    for (const m of list) { if (m && typeof m.id === 'string' && m.id) ids.add(m.id); }
+    if (ids.size) modelsCache.set(providerId, ids);
+  }
 
   function log(level, msg, extra) {
     emitter.emit('log', Object.assign({ level, msg }, extra || {}));
@@ -303,7 +352,13 @@ function createGateway({ getConfig }) {
       }
     }
 
-    const routing = resolveRouting(requestedModel, config);
+    // Look up the active provider's captured model list so routing can recognize a model
+    // the provider really has (mirrors resolveRouting's own active-provider selection).
+    const providersList = config.providers || [];
+    const activeForCache = providersList.find((p) => p.id === config.activeProviderId) || providersList[0];
+    const knownModels = activeForCache ? modelsCache.get(activeForCache.id) : null;
+
+    const routing = resolveRouting(requestedModel, config, knownModels);
     if (!routing || !routing.provider) {
       respondJson(res, 502, JSON.parse(errorBody('ccbud: no provider configured. Add one in the app.', 'api_error')));
       log('warn', 'request rejected: no provider configured');
@@ -418,16 +473,37 @@ function createGateway({ getConfig }) {
     }
 
     const lib = target.protocol === 'http:' ? http : https;
-    const upReq = lib.request(
-      {
+    // Issue #12 — optionally skip TLS verification (self-signed / corporate MITM chains).
+    const insecure = !!config.insecureSkipVerify && target.protocol === 'https:';
+    // Issue #13 — retry upstream 429s a few times before surfacing them to the client.
+    const rc = config.retry429 || {};
+    const retryEnabled = rc.enabled !== false;
+    const retryMax = Number.isFinite(rc.max) ? rc.max : 3;
+    const retryBase = Number.isFinite(rc.baseMs) ? rc.baseMs : 500;
+
+    // One upstream attempt. Re-invoked (with the same buffered body) on a retryable 429.
+    function sendUpstream(attempt) {
+      const opts = {
         protocol: target.protocol,
         hostname: target.hostname,
         port: target.port || (target.protocol === 'https:' ? 443 : 80),
         path: target.pathname + target.search,
         method: req.method,
         headers,
-      },
-      (upRes) => {
+      };
+      if (insecure) opts.rejectUnauthorized = false;
+      const upReq = lib.request(opts, (upRes) => {
+        // 429: the upstream rate-limited us (common with low-concurrency providers). Drain
+        // it and retry after a short wait; only once attempts run out does the 429 reach the
+        // client. Safe to retry — a rate-limited request was never processed upstream.
+        if (retryEnabled && upRes.statusCode === 429 && attempt < retryMax && !res.headersSent) {
+          const delay = retryDelay(upRes.headers['retry-after'], attempt, retryBase);
+          upRes.resume();
+          log('warn', `upstream 429 — retry ${attempt + 1}/${retryMax} in ${delay}ms (${provider.name || provider.id})`);
+          const t = setTimeout(() => sendUpstream(attempt + 1), delay);
+          if (t.unref) t.unref();
+          return;
+        }
         const ct = upRes.headers['content-type'] || '';
         const outHeaders = Object.assign({}, upRes.headers);
         delete outHeaders['content-length'];
@@ -582,6 +658,7 @@ function createGateway({ getConfig }) {
             if (upRes.statusCode >= 200 && upRes.statusCode < 300) {
               try { const o = JSON.parse(buf.toString('utf8')); if (o && Array.isArray(o.data)) upstreamObj = o; } catch (_) {}
             }
+            if (upstreamObj) recordModels(provider.id, upstreamObj.data); // feed real-model routing
             const result = upstreamObj ? mergeModels(upstreamObj, config) : synthesizeModels(config);
             buf = Buffer.from(JSON.stringify(result), 'utf8');
             outHeaders['content-type'] = 'application/json';
@@ -670,10 +747,13 @@ function createGateway({ getConfig }) {
         ms: Date.now() - startedAt,
         error: err.message,
       });
-    });
+      });
 
-    if (outBody.length) upReq.write(outBody);
-    upReq.end();
+      if (outBody.length) upReq.write(outBody);
+      upReq.end();
+    }
+
+    sendUpstream(0);
   }
 
   function onRequest(req, res) {
@@ -771,8 +851,8 @@ function createGateway({ getConfig }) {
     stop,
     status,
     // exported for testing
-    _resolveRouting: (m, c) => resolveRouting(m, c),
+    _resolveRouting: (m, c, k) => resolveRouting(m, c, k),
   };
 }
 
-module.exports = { createGateway, resolveRouting, createSseTransform, extractUsage };
+module.exports = { createGateway, resolveRouting, createSseTransform, extractUsage, retryDelay };

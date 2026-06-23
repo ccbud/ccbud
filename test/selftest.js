@@ -88,8 +88,18 @@ function firstModelInSse(sse) {
   console.log(`gateway up on ${base}\n`);
 
   console.log('Routing unit checks:');
+  // Distinct PRIMARY/LIGHTWEIGHT tiers + a second (inactive) provider, so we can tell the
+  // mapping targets apart and prove routing stays on the ACTIVE provider (issue #10).
+  const cfg2 = {
+    port: 0,
+    activeProviderId: 'main',
+    providers: [
+      { id: 'main', name: 'Main', baseUrl: 'http://127.0.0.1:1', authToken: 'k', defaultModel: 'big-model', smallFastModel: 'small-model', mapDefaultModels: true, models: [{ alias: 'my-alias', upstream: 'aliased-up' }] },
+      { id: 'other', name: 'Other', baseUrl: 'http://127.0.0.1:2', authToken: 'k', defaultModel: 'other-big', smallFastModel: 'other-small', mapDefaultModels: true, models: [{ alias: 'other-alias', upstream: 'other-up' }] },
+    ],
+  };
   check(
-    'alias resolves to owning provider + upstream',
+    'active-provider alias resolves to its upstream',
     (() => {
       const r = gateway._resolveRouting('claude-opus-4.8[1m]', config);
       return r && r.outgoingModel === 'glm-5.1' && r.clientFacingModel === 'claude-opus-4.8[1m]';
@@ -103,17 +113,47 @@ function firstModelInSse(sse) {
     })()
   );
   check(
-    'claude default (haiku) maps to smallFastModel',
+    'claude small tier (haiku) → LIGHTWEIGHT model',
     (() => {
-      const r = gateway._resolveRouting('claude-3-5-haiku-20241022', config);
-      return r && r.outgoingModel === 'glm-5.1' && r.clientFacingModel === 'claude-3-5-haiku-20241022';
+      const r = gateway._resolveRouting('claude-3-5-haiku-20241022', cfg2);
+      return r && r.outgoingModel === 'small-model' && r.clientFacingModel === 'claude-3-5-haiku-20241022';
     })()
   );
   check(
-    'non-claude model is NOT silently remapped (passthrough)',
+    'claude main tier (opus/sonnet) → PRIMARY model',
     (() => {
-      const r = gateway._resolveRouting('gpt-4-turbo', config); // "turbo" must not trip small-mapping
-      return r && r.outgoingModel === 'gpt-4-turbo' && r.clientFacingModel === 'gpt-4-turbo';
+      const r = gateway._resolveRouting('claude-sonnet-4-6', cfg2);
+      return r && r.outgoingModel === 'big-model' && r.clientFacingModel === 'claude-sonnet-4-6';
+    })()
+  );
+  check(
+    'unconfigured foreign model → LIGHTWEIGHT (issue #10 catch-all)',
+    (() => {
+      const r = gateway._resolveRouting('gpt-4-turbo', cfg2);
+      return r && r.outgoingModel === 'small-model' && r.clientFacingModel === 'gpt-4-turbo';
+    })()
+  );
+  check(
+    'a model the provider really has (via /v1/models) passes through',
+    (() => {
+      const r = gateway._resolveRouting('glm-5.2', cfg2, new Set(['glm-5.2']));
+      return r && r.outgoingModel === 'glm-5.2' && r.clientFacingModel === 'glm-5.2';
+    })()
+  );
+  check(
+    'routing stays on the ACTIVE provider — an inactive provider\'s alias is NOT followed',
+    (() => {
+      const r = gateway._resolveRouting('other-alias', cfg2); // belongs to inactive "other"
+      // not an alias/real model of "main" → treated as unknown → mapped onto main's LIGHTWEIGHT
+      return r && r.provider.id === 'main' && r.outgoingModel === 'small-model';
+    })()
+  );
+  check(
+    'mapDefaultModels:false forwards unknown names untouched',
+    (() => {
+      const off = { port: 0, activeProviderId: 'm', providers: [{ id: 'm', name: 'M', baseUrl: 'http://127.0.0.1:1', authToken: 'k', defaultModel: 'big', smallFastModel: 'small', mapDefaultModels: false, models: [] }] };
+      const r = gateway._resolveRouting('whatever-x', off);
+      return r && r.outgoingModel === 'whatever-x' && r.clientFacingModel === 'whatever-x';
     })()
   );
 
