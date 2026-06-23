@@ -1233,7 +1233,6 @@ function bind() {
 
   $('modalClose').addEventListener('click', closeModal);
   $('btnCancel').addEventListener('click', closeModal);
-  $('modal').addEventListener('click', (e) => { if (e.target.id === 'modal') closeModal(); });
   $('presetGrid').addEventListener('click', (e) => { if (e.target.dataset.preset) selectPreset(e.target.dataset.preset); });
   $('fName').addEventListener('input', updateIconPreview);
   const fIconPreview = $('fIconPreview');

@@ -125,17 +125,17 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ steps.ver.outputs.version }}
-          name: Clawdy v${{ steps.ver.outputs.version }}
+          name: ccbud v${{ steps.ver.outputs.version }}
           body: |
-            Clawdy v${{ steps.ver.outputs.version }} — Claude Code 服务切换网关。
+            **ccbud** v${{ steps.ver.outputs.version }} — a cross-platform desktop gateway that proxies Claude Code to any Anthropic-compatible provider, with one-click provider switching and model-name mapping.
 
-            下载对应平台安装包：
-            - macOS: `.dmg`（x64 / arm64）
-            - Windows: `.exe`（x64 / arm64）
-            - Linux: `.AppImage` / `.deb`（x64 / arm64）
+            ### Downloads
 
-            > macOS 未签名，首次打开右键「打开」，或执行
-            > `xattr -dr com.apple.quarantine /Applications/Clawdy.app`。
+            Pick the installer for your platform:
+
+            - **macOS** — `.dmg` (x64 / arm64)
+            - **Windows** — `.exe` (x64 / arm64)
+            - **Linux** — `.AppImage` / `.deb` (x64 / arm64)
           files: artifacts/*
           make_latest: true
         env:

@@ -444,12 +444,32 @@ function registerIpc() {
       filters: [{ name: extLabel, extensions: [ext] }],
     });
   }
+  // Default export name: <project>-<convStart>-<exportedAt>.<ext>, both timestamps as YYMMDDHHmm
+  // (local time). Earlier the JSONL kept the on-disk basename and the HTML used the first user
+  // message — both were collision-prone when exporting many conversations from the same project.
+  function exportBaseName(file) {
+    const fmt = (d) => {
+      const p = (n) => String(n).padStart(2, '0');
+      return String(d.getFullYear()).slice(-2) + p(d.getMonth() + 1) + p(d.getDate()) + p(d.getHours()) + p(d.getMinutes());
+    };
+    const sanitize = (s) => String(s || '').replace(/[\/\\:*?"<>|\n\r]+/g, '_').replace(/\s+/g, '_').replace(/^[_.\-]+|[_.\-]+$/g, '').slice(0, 60);
+    try {
+      const exportHtml = require('./exportHtml');
+      const data = exportHtml.buildData(file);
+      const project = sanitize(data.meta.project) || 'conversation';
+      const convTs = data.meta.firstTs ? new Date(data.meta.firstTs) : null;
+      const convPart = convTs && !isNaN(convTs.getTime()) ? fmt(convTs) : 'unknown';
+      return project + '-' + convPart + '-' + fmt(new Date());
+    } catch (_) {
+      return path.basename(file, '.jsonl');
+    }
+  }
   ipcMain.handle('history:exportRaw', async (_e, file) => {
     if (!file) return { canceled: true, error: 'no file' };
     let data;
     try { data = fs.readFileSync(file, 'utf8'); } catch (e) { return { canceled: true, error: e && e.message }; }
     let res;
-    try { res = await saveDialogPath(path.basename(file), 'jsonl', 'JSONL'); } catch (e) { return { canceled: true, error: e && e.message }; }
+    try { res = await saveDialogPath(exportBaseName(file) + '.jsonl', 'jsonl', 'JSONL'); } catch (e) { return { canceled: true, error: e && e.message }; }
     if (res.canceled || !res.filePath) return { canceled: true };
     try { fs.writeFileSync(res.filePath, data, 'utf8'); } catch (e) { return { canceled: true, error: e && e.message }; }
     return { canceled: false, path: res.filePath };
@@ -458,15 +478,13 @@ function registerIpc() {
   // disk here since the renderer never loads them) and save it.
   ipcMain.handle('history:exportHtml', async (_e, file) => {
     if (!file) return { canceled: true, error: 'no file' };
-    let html, name;
+    let html;
     try {
       const exportHtml = require('./exportHtml');
-      const data = exportHtml.buildData(file);
-      name = (data.meta.title || 'conversation').replace(/[\/\\:*?"<>|\n\r]+/g, '_').slice(0, 80);
-      html = exportHtml.htmlFromData(data);
+      html = exportHtml.htmlFromData(exportHtml.buildData(file));
     } catch (e) { return { canceled: true, error: e && e.message }; }
     let res;
-    try { res = await saveDialogPath(name + '.html', 'html', 'HTML'); } catch (e) { return { canceled: true, error: e && e.message }; }
+    try { res = await saveDialogPath(exportBaseName(file) + '.html', 'html', 'HTML'); } catch (e) { return { canceled: true, error: e && e.message }; }
     if (res.canceled || !res.filePath) return { canceled: true };
     try { fs.writeFileSync(res.filePath, html, 'utf8'); } catch (e) { return { canceled: true, error: e && e.message }; }
     return { canceled: false, path: res.filePath };
