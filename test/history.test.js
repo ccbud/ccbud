@@ -69,6 +69,24 @@ try {
   check('correlate carries cwd/branch/sessionId', corr && corr.cwd === '/proj/x' && corr.gitBranch === 'dev' && corr.sessionId === 's1');
   check('tail emits changed for the touched file', !!changed && changed.files && changed.files.indexOf(file) !== -1, JSON.stringify(changed));
   w.stop();
+
+  // ---- subagents embedded into getSession (nested under the spawning Task tool_use id) ----
+  const subDir = path.join(pdir, path.basename(file, '.jsonl'), 'subagents');
+  fs.mkdirSync(subDir, { recursive: true });
+  fs.writeFileSync(path.join(subDir, 'agent-aaa.jsonl'),
+    L({ type: 'user', isSidechain: true, sessionId: 's1', agentId: 'aaa', uuid: 'su1', timestamp: '2026-06-18T00:00:02Z', message: { role: 'user', content: 'do a thing' } }) +
+    L({ type: 'assistant', isSidechain: true, sessionId: 's1', agentId: 'aaa', uuid: 'sa1', timestamp: '2026-06-18T00:00:03Z', message: { id: 'msg_s1', role: 'assistant', model: 'glm-5.2', content: [{ type: 'text', text: 'done' }], usage: { input_tokens: 1, output_tokens: 4 } } })
+  );
+  fs.writeFileSync(path.join(subDir, 'agent-aaa.meta.json'), JSON.stringify({ agentType: 'general-purpose', description: 'thing doer', toolUseId: 'tu1' }));
+
+  const s2 = w.getSession(file);
+  check('getSession returns a subagents map', s2.subagents && typeof s2.subagents === 'object');
+  check('subagent keyed by spawning toolUseId (tu1)', !!(s2.subagents && s2.subagents.tu1), Object.keys(s2.subagents || {}).join(','));
+  const sa = s2.subagents && s2.subagents.tu1;
+  check('subagent carries type + description', !!sa && sa.type === 'general-purpose' && sa.description === 'thing doer', JSON.stringify(sa && { t: sa.type, d: sa.description }));
+  check('subagent messages shaped (2, last = "done")', !!sa && sa.messages.length === 2 && sa.messages[1].content[0].text === 'done', JSON.stringify(sa && sa.messages.length));
+  check('subagent totals rolled up (in=1 out=4)', !!sa && sa.totals.out === 4 && sa.totals.in === 1, JSON.stringify(sa && sa.totals));
+  check('meta.subagentCount = 1', s2.meta.subagentCount === 1, String(s2.meta.subagentCount));
 } finally {
   fs.rmSync(root, { recursive: true, force: true });
 }

@@ -285,18 +285,26 @@
     currentDetail = detail;
 
     const messages = detail.messages || [];
-    const contentLen = messages.reduce((acc, m) => {
-      if (!m.content) return acc;
-      if (typeof m.content === 'string') return acc + m.content.length;
-      if (Array.isArray(m.content)) {
-        return acc + m.content.reduce((sum, b) => sum + (b.text ? b.text.length : 0) + (b.thinking ? b.thinking.length : 0), 0);
-      }
-      return acc;
-    }, 0);
+    const msgLen = (m) => {
+      if (!m || !m.content) return 0;
+      if (typeof m.content === 'string') return m.content.length;
+      if (Array.isArray(m.content)) return m.content.reduce((sum, b) => sum + (b.text ? b.text.length : 0) + (b.thinking ? b.thinking.length : 0), 0);
+      return 0;
+    };
+    let contentLen = messages.reduce((acc, m) => acc + msgLen(m), 0);
+    // Fold subagent growth into the change key too: while a subagent streams, the main thread can
+    // sit idle, and the skip-guard below would otherwise freeze the nested subagent view mid-run.
+    const subs = detail.subagents || {};
+    let subCount = 0;
+    for (const k of Object.keys(subs)) {
+      const sm = (subs[k] && subs[k].messages) || [];
+      subCount += sm.length;
+      contentLen += sm.reduce((acc, m) => acc + msgLen(m), 0);
+    }
 
     // Skip needless re-renders: on-disk turns are written whole, so a stable message count
     // and content length means nothing changed — preserves scroll + expanded thinking/result panels.
-    if (!force && lastRender.file === openFile && lastRender.count === messages.length && lastRender.contentLen === contentLen && host.querySelector('.msg')) return;
+    if (!force && lastRender.file === openFile && lastRender.count === messages.length && lastRender.contentLen === contentLen && lastRender.subCount === subCount && host.querySelector('.msg')) return;
 
     const total = messages.length;
     const wasBottom = isNearBottom(host);
@@ -318,7 +326,7 @@
       vEnd = Math.min(vEnd, total);
     }
     renderSidePanels(detail);
-    lastRender = { file: openFile, count: total, contentLen };
+    lastRender = { file: openFile, count: total, contentLen, subCount };
   }
   function isNearBottom(el) { return el.scrollHeight - el.scrollTop - el.clientHeight < 120; }
   function highlight(root) {
@@ -332,7 +340,9 @@
     return results;
   }
   // Returns the HTML for one message, or '' for a pure tool_result / meta user turn.
-  function renderMessage(m, results, idx) {
+  // inSub: rendered inside a nested subagent block — suppress the per-turn "subagent" badge
+  // (the surrounding block already labels it) so the nested thread stays clean.
+  function renderMessage(m, results, idx, inSub) {
     const mid = idx == null ? '' : ` id="m${idx}" data-mi="${idx}"`;
     const blocks = normContent(m.content);
     if (m.role === 'user') {
@@ -351,7 +361,7 @@
       else body += `<pre class="pre bg-[#0c0e12] border border-white/7 rounded-[7px] p-2.5 overflow-x-auto font-mono text-[11px] leading-[1.48] text-[#e8edf4] whitespace-pre-wrap break-all">${esc(JSON.stringify(b))}</pre>`;
     });
     if (!body) return '';
-    return `<div class="msg assistant group flex flex-col gap-1.25 animate-[panelIn_0.18s_cubic-bezier(0.23,1,0.32,1)] max-w-[780px] w-full ${m.isSidechain ? 'sidechain' : ''}"${mid}><div class="msg-role text-[10px] font-bold uppercase tracking-wider text-caption flex items-center gap-1.25">✦ Claude${m.isSidechain ? ` <span class="conv-badge text-[10.5px] px-1.5 py-0.25 rounded-full bg-chip-bg text-fg font-sans">${esc(L('conv.subagent'))}</span>` : ''}</div><div class="msg-body text-[13px] leading-[1.58] py-0.5 pr-0 pl-3 border-l-2 border-border-strong group-[.streaming]:border-green">${body}${turnMeta(m)}</div></div>`;
+    return `<div class="msg assistant group flex flex-col gap-1.25 animate-[panelIn_0.18s_cubic-bezier(0.23,1,0.32,1)] max-w-[780px] w-full ${m.isSidechain ? 'sidechain' : ''}"${mid}><div class="msg-role text-[10px] font-bold uppercase tracking-wider text-caption flex items-center gap-1.25">✦ Claude${m.isSidechain && !inSub ? ` <span class="conv-badge text-[10.5px] px-1.5 py-0.25 rounded-full bg-chip-bg text-fg font-sans">${esc(L('conv.subagent'))}</span>` : ''}</div><div class="msg-body text-[13px] leading-[1.58] py-0.5 pr-0 pl-3 border-l-2 border-border-strong group-[.streaming]:border-green">${body}${turnMeta(m)}</div></div>`;
   }
   function winBtn(dir, n) {
     const lbl = esc(L('conv.loadEarlier', { n }));
@@ -496,7 +506,25 @@
     } else {
       resHtml = `<div class="tool-pending py-1.25 px-2.5 text-[10.5px] text-muted border-t border-border-custom">— ${esc(L('conv.noResult'))}</div>`;
     }
-    return `<div class="tool-card tool-${cls} border border-border-strong rounded-[8px] my-2 overflow-hidden bg-bg-elev shadow-card"><div class="tool-head flex items-center gap-1.75 py-1.75 px-2.5 bg-chip-bg border-b border-border-custom text-[11px] font-semibold text-fg"><span class="tool-icon text-[11px]">${icon}</span><span class="tool-name font-mono font-semibold shrink-0">${esc(label)}</span>${target ? `<span class="tool-target font-mono text-[10.5px] text-muted font-normal truncate min-w-0">${esc(target)}</span>` : ''}</div>${bodyInput ? `<div class="tool-input p-2 px-2.5">${bodyInput}</div>` : ''}${resHtml}</div>`;
+    const card = `<div class="tool-card tool-${cls} border border-border-strong rounded-[8px] my-2 overflow-hidden bg-bg-elev shadow-card"><div class="tool-head flex items-center gap-1.75 py-1.75 px-2.5 bg-chip-bg border-b border-border-custom text-[11px] font-semibold text-fg"><span class="tool-icon text-[11px]">${icon}</span><span class="tool-name font-mono font-semibold shrink-0">${esc(label)}</span>${target ? `<span class="tool-target font-mono text-[10.5px] text-muted font-normal truncate min-w-0">${esc(target)}</span>` : ''}</div>${bodyInput ? `<div class="tool-input p-2 px-2.5">${bodyInput}</div>` : ''}${resHtml}</div>`;
+    // A Task/Agent call that spawned a subagent gets its full dialogue nested right below the card
+    // (keyed by this tool_use id), so subagents are observable in the live view — not only in export.
+    const sub = (name === 'Task' || name === 'Agent') && currentDetail && currentDetail.subagents ? currentDetail.subagents[tu.id] : null;
+    return card + (sub ? renderSubagentBlock(sub) : '');
+  }
+
+  // Render a subagent's full dialogue as a collapsible block, nested under the Task/Agent card that
+  // spawned it. Reuses renderMessage so a subagent's timeline looks identical to the main thread.
+  function renderSubagentBlock(sub) {
+    const msgs = (sub && sub.messages) || [];
+    const results = buildResults(msgs);
+    let inner = '';
+    for (let i = 0; i < msgs.length; i++) inner += renderMessage(msgs[i], results, null, true);
+    if (!inner) inner = `<div class="text-muted text-[11px] px-1 py-1">${esc(L('conv.emptyConv'))}</div>`;
+    const out = (sub.totals && sub.totals.out) || 0;
+    const desc = sub.description ? `<span class="subagent-desc text-muted font-normal truncate min-w-0">${esc(sub.description)}</span>` : '';
+    const count = `<span class="subagent-count ml-auto shrink-0 text-caption font-mono">${esc(L('conv.subagentMsgs', { n: sub.count != null ? sub.count : msgs.length }))} · ${fmtTok(out)}↓</span>`;
+    return `<details class="subagent-card border border-border-strong rounded-[8px] my-2 overflow-hidden bg-bg-sidebar shadow-card"><summary class="subagent-head cursor-pointer flex items-center gap-1.75 py-1.75 px-2.5 bg-chip-bg border-b border-border-custom text-[11px] font-semibold text-fg outline-none list-none [&::-webkit-details-marker]:hidden"><span class="subagent-ico">🤖</span><span class="subagent-title font-mono shrink-0">${esc(L('conv.subagent'))} · ${esc(sub.type || 'agent')}</span>${desc}${count}</summary><div class="subagent-body p-2.5 flex flex-col gap-3">${inner}</div></details>`;
   }
 
   function renderSidePanels(detail) {
@@ -510,6 +538,7 @@
       [L('conv.stat.branch'), m.gitBranch],
       [L('conv.stat.session'), m.sessionId ? String(m.sessionId).slice(0, 8) : null],
       [L('conv.stat.messages'), m.messages],
+      ...(m.subagentCount ? [[L('conv.stat.subagents'), m.subagentCount]] : []),
       [L('conv.stat.turns'), t.turns],
       [L('conv.stat.input'), t.in != null ? fmtTok(t.in) : null],
       [L('conv.stat.output'), t.out != null ? fmtTok(t.out) : null],
@@ -659,10 +688,17 @@
     // is rewritten on every streamed turn) we debounce it — bursts of writes coalesce into one
     // rebuild instead of one-per-write, which was the main "under load" jank (traced).
     let detailTimer;
+    // True when a changed file belongs to the OPEN session — its own .jsonl, or one of its
+    // subagent files (<session>/subagents/agent-*.jsonl) — so nested subagents live-follow too.
+    const touchesOpenSession = (files) => {
+      if (!openFile || !files) return false;
+      const base = openFile.replace(/\.jsonl$/i, '');
+      return files.some((f) => f === openFile || f.indexOf(base + '/subagents/') === 0 || f.indexOf(base + '\\subagents\\') === 0);
+    };
     if (api.onHistoryChanged) api.onHistoryChanged((p) => {
       clearTimeout(listTimer);
       listTimer = setTimeout(refresh, 200);
-      if (openFile && p && p.files && p.files.indexOf(openFile) !== -1) {
+      if (p && p.files && touchesOpenSession(p.files)) {
         clearTimeout(detailTimer);
         detailTimer = setTimeout(() => rerenderDetail(false), 300);
       }

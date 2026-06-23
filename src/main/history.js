@@ -108,6 +108,65 @@ function readChunk(file, size, max) {
   } catch (_) { return ''; }
 }
 
+// Shape parsed records into the renderer's message model (+ rollup totals / model / span). Shared
+// by getSession and the subagent reader so a subagent's timeline renders identically to the main one.
+function shapeMessages(recs) {
+  const messages = [];
+  const totals = { in: 0, out: 0, cacheRead: 0, cacheCreation: 0, turns: 0 };
+  let model = null, firstTs = null, lastTs = null;
+  for (const r of recs) {
+    const lm = lineToMessage(r);
+    if (!lm || lm._meta) continue;
+    if (lm._ts) { if (!firstTs) firstTs = lm._ts; lastTs = lm._ts; }
+    const msg = { role: lm.role, content: lm.content };
+    if (lm._sidechain) msg.isSidechain = true;
+    if (lm._ts) msg.ts = lm._ts;
+    if (r.type === 'assistant') {
+      if (lm._model) { msg.modelActual = lm._model; model = lm._model; }
+      if (lm._usage) msg.usage = lm._usage;
+      if (lm._stopReason) msg.stopReason = lm._stopReason;
+      const u = lm._usage;
+      if (u) {
+        totals.in += u.inputTokens; totals.out += u.outputTokens;
+        totals.cacheRead += u.cacheRead; totals.cacheCreation += u.cacheCreation;
+        totals.turns += 1;
+      }
+    }
+    messages.push(msg);
+  }
+  return { messages, totals, model, firstTs, lastTs };
+}
+
+// Read a session's subagent dialogues — <sessionFile-dir>/<sessionId>/subagents/agent-<id>.{jsonl,meta.json}
+// — keyed by the spawning Task/Agent tool_use id (agent-<id>.meta.json's toolUseId), so the "对话"
+// view can nest each subagent's timeline under the call that spawned it. Mirrors the HTML export.
+// Returns {} when the session has no subagents directory.
+function readSubagents(file) {
+  const dir = path.join(path.dirname(file), path.basename(file, '.jsonl'), 'subagents');
+  let entries;
+  try { entries = fs.readdirSync(dir); } catch (_) { return {}; }
+  const byTool = {};
+  for (const name of entries) {
+    if (!/^agent-.*\.jsonl$/.test(name)) continue;
+    const agentId = name.replace(/^agent-/, '').replace(/\.jsonl$/, '');
+    let meta = {};
+    try { meta = JSON.parse(fs.readFileSync(path.join(dir, 'agent-' + agentId + '.meta.json'), 'utf8')); } catch (_) {}
+    let raw;
+    try { raw = fs.readFileSync(path.join(dir, name), 'utf8'); } catch (_) { continue; }
+    const shaped = shapeMessages(parseLines(raw));
+    const key = meta.toolUseId || ('agent:' + agentId);
+    byTool[key] = {
+      agentId,
+      type: meta.agentType || meta.subagent_type || 'agent',
+      description: meta.description || '',
+      count: shaped.messages.length,
+      totals: shaped.totals,
+      messages: shaped.messages,
+    };
+  }
+  return byTool;
+}
+
 function createHistoryWatcher(opts) {
   const getDirs = (opts && opts.getDirs) || defaultDirs;
   const emitter = new EventEmitter();
@@ -237,33 +296,13 @@ function createHistoryWatcher(opts) {
     const agentRec = recs.find((r) => r.agentId) || {};
     const summaryRec = recs.find((r) => r.type === 'summary' && r.summary);
 
-    const messages = [];
-    const totals = { in: 0, out: 0, cacheRead: 0, cacheCreation: 0, turns: 0 };
-    let model = null;
-    let firstTs = null, lastTs = null;
-    for (const r of recs) {
-      const lm = lineToMessage(r);
-      if (!lm) continue;
-      if (lm._meta) continue;
-      if (lm._ts) { if (!firstTs) firstTs = lm._ts; lastTs = lm._ts; }
-      const msg = { role: lm.role, content: lm.content };
-      if (lm._sidechain) msg.isSidechain = true;
-      if (lm._ts) msg.ts = lm._ts;
-      if (r.type === 'assistant') {
-        if (lm._model) { msg.modelActual = lm._model; model = lm._model; }
-        if (lm._usage) msg.usage = lm._usage;
-        if (lm._stopReason) msg.stopReason = lm._stopReason;
-        const u = lm._usage;
-        if (u) {
-          totals.in += u.inputTokens; totals.out += u.outputTokens;
-          totals.cacheRead += u.cacheRead; totals.cacheCreation += u.cacheCreation;
-          totals.turns += 1;
-        }
-      }
-      messages.push(msg);
-    }
+    const shaped = shapeMessages(recs);
+    const messages = shaped.messages;
 
     const subagent = !!agentRec.agentId;
+    // Only a top-level session embeds its child subagent dialogues (a subagent file has no nested
+    // subagents/ dir of its own), so the renderer can nest them under their spawning Task call.
+    const subagents = subagent ? {} : readSubagents(file);
     const cwd = metaRec.cwd || null;
     const baseId = metaRec.sessionId || path.basename(file, '.jsonl');
     const sessId = subagent && agentRec.agentId ? `${baseId}-${agentRec.agentId}` : baseId;
@@ -280,13 +319,15 @@ function createHistoryWatcher(opts) {
         gitBranch: metaRec.gitBranch || null,
         version: metaRec.version || null,
         isSubagent: subagent,
-        model,
-        totals,
+        model: shaped.model,
+        totals: shaped.totals,
         messages: messages.length,
-        firstTs,
-        lastTs,
+        subagentCount: Object.keys(subagents).length,
+        firstTs: shaped.firstTs,
+        lastTs: shaped.lastTs,
       },
       messages,
+      subagents,
     };
   }
 
