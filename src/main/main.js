@@ -601,7 +601,14 @@ function togglePopover() {
   popover.webContents.send('popover:show');
 }
 
+// macOS Dock visibility follows the main window: shown while a window is open, hidden when it's
+// closed so ccbud drops to a menu-bar-only background app (the tray icon stays). Guarded/no-op off
+// macOS. The Dock icon *image* is set once at startup; these just toggle its presence.
+function showDock() { if (process.platform === 'darwin' && app.dock) { try { app.dock.show(); } catch (_) {} } }
+function hideDock() { if (process.platform === 'darwin' && app.dock) { try { app.dock.hide(); } catch (_) {} } }
+
 function showWindow() {
+  showDock();
   if (mainWindow && !mainWindow.isDestroyed()) {
     if (mainWindow.isMinimized()) mainWindow.restore();
     mainWindow.show();
@@ -628,7 +635,13 @@ function createWindow() {
     webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false },
   });
   mainWindow.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
-  mainWindow.on('closed', () => { mainWindow = null; });
+  showDock(); // a visible main window means ccbud should appear in the Dock
+  mainWindow.on('closed', () => {
+    mainWindow = null;
+    // Closing the window (red ×) returns ccbud to the menu bar only — hide the Dock icon. It comes
+    // back when the window is reopened (tray → Open Main, or Dock/activate). Skip during quit.
+    if (!isQuitting) hideDock();
+  });
 }
 
 // All views — including Settings — now share ONE freely-resizable window with a unified minimum
@@ -707,34 +720,32 @@ if (gotLock) {
       }
       tray = new Tray(img);
       tray.setToolTip('ccbud — Claude Code Gateway');
-      createPopover();
-      updateTrayTitle();
+      // Wire the handlers right after creating the Tray so a later failure (e.g. popover) can't
+      // leave the menu-bar icon inert. The popover is best-effort.
       tray.on('click', () => togglePopover());
       tray.on('right-click', () => tray.popUpContextMenu(buildTrayMenu()));
+      try { createPopover(); } catch (_) {}
+      updateTrayTitle();
     } catch (_) { /* tray optional */ }
 
     // refresh the menu-bar token count periodically (range may roll over by day)
     titleTimer = setInterval(() => updateTrayTitle(), 60000);
     if (titleTimer && titleTimer.unref) titleTimer.unref();
 
-    // macOS: ccbud is a normal Dock app (not a menu-bar-only accessory) — the tray icon is an
-    // extra, not a replacement. Set the Dock icon explicitly and make sure the Dock is shown so
-    // the app is always reachable from the Dock, not only the menu-bar icon (issue #6). The
-    // explicit setIcon also covers builds where the bundle icon didn't generate cleanly (icon.png
-    // ships without an alpha channel, which can leave the Dock icon blank/generic).
-    if (process.platform === 'darwin' && app.dock) {
-      try {
-        const dockImg = nativeImage.createFromPath(path.join(__dirname, 'icon.png'));
-        if (dockImg && !dockImg.isEmpty()) app.dock.setIcon(dockImg);
-      } catch (_) {}
-      try { app.dock.show(); } catch (_) {}
-    }
-
     createWindow();
     // Dock-icon click. Use showWindow() (not a getAllWindows().length check): the tray popover is also
     // a BrowserWindow, so after the main window is closed the count is still ≥1 and the old check did
     // nothing — leaving the Dock icon dead until you used the tray menu. showWindow() re-creates/shows it.
     app.on('activate', () => showWindow());
+
+    // macOS: set the Dock icon image once. Dock *visibility* follows the window (showDock/hideDock);
+    // done after the tray + window are up so it never interferes with their setup.
+    if (process.platform === 'darwin' && app.dock) {
+      try {
+        const dockImg = nativeImage.createFromPath(path.join(__dirname, 'icon.png'));
+        if (dockImg && !dockImg.isEmpty()) app.dock.setIcon(dockImg);
+      } catch (_) {}
+    }
   });
 }
 
