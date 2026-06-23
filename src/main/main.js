@@ -487,6 +487,9 @@ function registerIpc() {
     try { res = await saveDialogPath(exportBaseName(file) + '.html', 'html', 'HTML'); } catch (e) { return { canceled: true, error: e && e.message }; }
     if (res.canceled || !res.filePath) return { canceled: true };
     try { fs.writeFileSync(res.filePath, html, 'utf8'); } catch (e) { return { canceled: true, error: e && e.message }; }
+    // Open the freshly-exported viewer in the user's default browser so they don't have to go
+    // hunting for it in the file system (issue #7).
+    try { shell.openPath(res.filePath); } catch (_) {}
     return { canceled: false, path: res.filePath };
   });
 
@@ -713,6 +716,19 @@ if (gotLock) {
     // refresh the menu-bar token count periodically (range may roll over by day)
     titleTimer = setInterval(() => updateTrayTitle(), 60000);
     if (titleTimer && titleTimer.unref) titleTimer.unref();
+
+    // macOS: ccbud is a normal Dock app (not a menu-bar-only accessory) — the tray icon is an
+    // extra, not a replacement. Set the Dock icon explicitly and make sure the Dock is shown so
+    // the app is always reachable from the Dock, not only the menu-bar icon (issue #6). The
+    // explicit setIcon also covers builds where the bundle icon didn't generate cleanly (icon.png
+    // ships without an alpha channel, which can leave the Dock icon blank/generic).
+    if (process.platform === 'darwin' && app.dock) {
+      try {
+        const dockImg = nativeImage.createFromPath(path.join(__dirname, 'icon.png'));
+        if (dockImg && !dockImg.isEmpty()) app.dock.setIcon(dockImg);
+      } catch (_) {}
+      try { app.dock.show(); } catch (_) {}
+    }
 
     createWindow();
     // Dock-icon click. Use showWindow() (not a getAllWindows().length check): the tray popover is also

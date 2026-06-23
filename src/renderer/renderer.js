@@ -22,10 +22,11 @@ const PRESETS = {
   glm: { name: 'GLM', baseUrl: 'https://open.bigmodel.cn/api/anthropic', defaultModel: 'glm-5.2', smallFastModel: 'glm-5.2' },
   deepseek: { name: 'DeepSeek', baseUrl: 'https://api.deepseek.com/anthropic', defaultModel: 'deepseek-v4-pro', smallFastModel: 'deepseek-v4-flash' },
   mimo: { name: 'MiMo', baseUrl: 'https://token-plan-sgp.xiaomimimo.com/anthropic', defaultModel: 'mimo-v2.5-pro', smallFastModel: 'mimo-v2.5' },
-  kimi: { name: 'Kimi', baseUrl: 'https://api.moonshot.cn/anthropic', defaultModel: 'kimi-for-coding', smallFastModel: 'kimi-for-coding' },
+  kimi: { name: 'Kimi', baseUrl: 'https://api.kimi.com/coding', defaultModel: 'kimi-for-coding', smallFastModel: 'kimi-for-coding' },
+  minimax: { name: 'MiniMax', baseUrl: 'https://api.minimax.io/anthropic', defaultModel: 'MiniMax-M3', smallFastModel: 'MiniMax-M3' },
   custom: { name: '', baseUrl: '', defaultModel: '', smallFastModel: '' },
 };
-const PRESET_LABELS = { glm: 'GLM', deepseek: 'DeepSeek', mimo: 'MiMo', kimi: 'Kimi', custom: '自定义' };
+const PRESET_LABELS = { glm: 'GLM', deepseek: 'DeepSeek', mimo: 'MiMo', kimi: 'Kimi', minimax: 'MiniMax', custom: '自定义' };
 
 /* ---------- helpers ---------- */
 function escapeHtml(s) {
@@ -79,7 +80,7 @@ function renderProviderIcon(name, icon) {
     return emojiIcon(icon, name); // a chosen emoji
   }
   const n = (name || '').trim().toLowerCase();
-  const brand = { kimi: ['kimi', 'moonshot', '月之'], deepseek: ['deepseek'], zhipu: ['glm', '智谱', 'bigmodel'], xiaomi: ['mimo', '小米', 'xiaomi'], zenmux: ['zenmux'] };
+  const brand = { kimi: ['kimi', 'moonshot', '月之'], deepseek: ['deepseek'], zhipu: ['glm', '智谱', 'bigmodel'], xiaomi: ['mimo', '小米', 'xiaomi'], zenmux: ['zenmux'], minimax: ['minimax', 'mini max', '海螺'] };
   for (const file in brand) {
     if (brand[file].some((k) => n.includes(k))) return { style: 'background: transparent; box-shadow: none;', html: `<img src="assets/${file}.svg" class="prov-svg" alt="" style="width:100%;height:100%;display:block" />` };
   }
