@@ -155,6 +155,10 @@ body {
 .drag-region { -webkit-app-region: drag; }
 .no-drag, .btn, .tool-btn, .nav-item, .fab, .switch, select, input, textarea, summary { -webkit-app-region: no-drag; }
 
+/* The app-wide `user-select: none` (chrome shouldn't be selectable) also blocked copying the
+   conversation transcript. Re-enable text selection for the message panels (main + request inspector). */
+.conv-detail, .conv-detail *, #reqDrawerBody, #reqDrawerBody * { -webkit-user-select: text; user-select: text; }
+
 /* ── Shell ── */
 .app-window {
   display: flex;

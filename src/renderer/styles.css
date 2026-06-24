@@ -241,17 +241,26 @@
   .top-\[32px\] {
     top: 32px;
   }
+  .top-\[34px\] {
+    top: 34px;
+  }
   .right-0 {
     right: 0;
   }
   .bottom-0 {
     bottom: 0;
   }
+  .left-0 {
+    left: 0;
+  }
   .z-2 {
     z-index: 2;
   }
   .z-10 {
     z-index: 10;
+  }
+  .z-20 {
+    z-index: 20;
   }
   .z-30 {
     z-index: 30;
@@ -457,6 +466,9 @@
   .h-screen {
     height: 100vh;
   }
+  .max-h-\[60vh\] {
+    max-height: 60vh;
+  }
   .max-h-\[62vh\] {
     max-height: 62vh;
   }
@@ -639,6 +651,9 @@
   }
   .min-w-\[200px\] {
     min-width: 200px;
+  }
+  .min-w-\[240px\] {
+    min-width: 240px;
   }
   .flex-1 {
     flex: 1;
@@ -954,10 +969,10 @@
   .border-border-strong {
     border-color: var(--color-border-strong);
   }
-  .border-brand\/20 {
+  .border-brand\/25 {
     border-color: var(--color-brand);
     @supports (color: color-mix(in lab, red, red)) {
-      border-color: color-mix(in oklab, var(--color-brand) 20%, transparent);
+      border-color: color-mix(in oklab, var(--color-brand) 25%, transparent);
     }
   }
   .border-primary {
@@ -1209,9 +1224,6 @@
   }
   .p-\[7px_8px\] {
     padding: 7px 8px;
-  }
-  .p-\[8px_8px_2px\] {
-    padding: 8px 8px 2px;
   }
   .p-\[8px_14px\] {
     padding: 8px 14px;
@@ -2897,6 +2909,10 @@ body {
 }
 .no-drag, .btn, .tool-btn, .nav-item, .fab, .switch, select, input, textarea, summary {
   -webkit-app-region: no-drag;
+}
+.conv-detail, .conv-detail *, #reqDrawerBody, #reqDrawerBody * {
+  -webkit-user-select: text;
+  user-select: text;
 }
 .app-window {
   display: flex;

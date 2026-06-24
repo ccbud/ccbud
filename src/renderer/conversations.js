@@ -23,7 +23,6 @@
   // id in detail.subagents). Each subagent is an independent session, so it gets the WHOLE panel —
   // switched via the agent list in the right nav, not nested inline. Reset to 'main' on open.
   let activeAgent = 'main';
-  let agentsExpanded = true; // the right-nav agent switcher's open/closed state
   // The message list currently shown in the main panel (main thread or the active subagent's).
   function activeMessages() {
     if (!currentDetail) return [];
@@ -81,6 +80,13 @@
   }
   function projName(cwd) { return cwd ? cwd.split('/').filter(Boolean).pop() : null; }
   function isLive(ts) { return ts && (Date.now() - ts) < 90000; }
+  // Is the currently-open session still active (recent on-disk activity)? Used to drive the
+  // safety-net auto-refresh so in-progress conversations live-update even if a watch event is missed.
+  function openSessionLive() {
+    if (!openId) return false;
+    for (const p of projects) for (const s of p.sessions) if (s.id === openId) return isLive(s.lastActivity);
+    return false;
+  }
 
   function relTime(ts) {
     if (!ts) return '';
@@ -340,7 +346,7 @@
       vEnd = Math.min(vEnd, total);
     }
     renderSidePanels(detail);
-    renderAgentSwitcher(detail);
+    renderAgentTabs(detail);
     lastRender = { file: openFile, count: messages.length, contentLen, subCount };
   }
   function isNearBottom(el) { return el.scrollHeight - el.scrollTop - el.clientHeight < 120; }
@@ -527,44 +533,43 @@
     return `<div class="tool-card tool-${cls} border border-border-strong rounded-[8px] my-2 overflow-hidden bg-bg-elev shadow-card"><div class="tool-head flex items-center gap-1.75 py-1.75 px-2.5 bg-chip-bg border-b border-border-custom text-[11px] font-semibold text-fg"><span class="tool-icon text-[11px]">${icon}</span><span class="tool-name font-mono font-semibold shrink-0">${esc(label)}</span>${target ? `<span class="tool-target font-mono text-[10.5px] text-muted font-normal truncate min-w-0">${esc(target)}</span>` : ''}</div>${bodyInput ? `<div class="tool-input p-2 px-2.5">${bodyInput}</div>` : ''}${resHtml}</div>`;
   }
 
-  /* ---------- agent switcher (right nav) ---------- */
-  // Each subagent is an independent session; the switcher lets the user move the WHOLE main panel
-  // between the main thread and any subagent. Rendered only when the session spawned subagents.
-  function renderAgentSwitcher(detail) {
-    const host = $('convAgents');
+  /* ---------- session tabs (top of the main panel) ---------- */
+  // When a conversation spawned subagents, the panel header shows peer tabs: [主会话] [子代理 (N) ▾].
+  // 主会话 and each subagent are equals — picking one moves the WHOLE panel to that session.
+  let agentMenuOpen = false;
+  function renderAgentTabs(detail) {
+    const host = $('convAgentTabs');
     if (!host) return;
     const subs = (detail && detail.subagents) || {};
     const keys = Object.keys(subs);
-    if (!keys.length) { host.innerHTML = ''; host.classList.add('hidden'); return; }
-    host.classList.remove('hidden');
-    const mainCount = ((detail && detail.messages) || []).length;
-    const caret = agentsExpanded ? '▾' : '▸';
-    const head = `<button type="button" data-agents-toggle class="conv-agents-head w-full flex items-center gap-1.5 px-1.75 py-1.5 rounded-[6px] cursor-pointer text-[11px] font-semibold text-caption hover:bg-chip-bg hover:text-fg transition-colors"><span class="truncate">🤖 ${esc(L('conv.stat.subagents'))} (${keys.length})</span><span class="ml-auto text-[10px] shrink-0">${caret}</span></button>`;
-    let list = '';
-    if (agentsExpanded) {
-      list += agentRow('main', '👤', L('conv.mainSession'), '', mainCount, null, activeAgent === 'main');
-      for (const k of keys) {
-        const s = subs[k] || {};
-        const out = (s.totals && s.totals.out) || 0;
-        const cnt = s.count != null ? s.count : ((s.messages || []).length);
-        list += agentRow(k, '🤖', s.type || 'agent', s.description || '', cnt, out, activeAgent === k);
-      }
-      list = `<div class="conv-agents-list flex flex-col gap-0.5 mt-0.5">${list}</div>`;
-    }
-    host.innerHTML = head + list;
-  }
-  function agentRow(key, ico, title, desc, cnt, out, active) {
-    const meta = `${esc(L('conv.subagentMsgs', { n: cnt }))}${out != null ? ' · ' + fmtTok(out) + '↓' : ''}`;
-    return `<button type="button" data-agent="${esc(key)}" class="agent-item w-full flex flex-col gap-0.25 text-left px-1.75 py-1.25 rounded-[6px] cursor-pointer border border-transparent transition-colors ${active ? 'bg-brand-soft text-brand border-brand/20' : 'hover:bg-chip-bg text-fg'}">
-      <div class="flex items-center gap-1.25 min-w-0"><span class="shrink-0 text-[11px]">${ico}</span><span class="font-mono text-[11.5px] font-semibold truncate">${esc(title)}</span></div>
-      ${desc ? `<div class="text-[10.5px] text-muted truncate pl-[18px]">${esc(desc)}</div>` : ''}
-      <div class="text-[10px] text-caption font-mono pl-[18px]">${meta}</div>
-    </button>`;
+    if (!keys.length) { host.innerHTML = ''; host.classList.add('hidden'); host.classList.remove('flex'); agentMenuOpen = false; return; }
+    host.classList.remove('hidden'); host.classList.add('flex');
+    const mainActive = activeAgent === 'main';
+    const activeSub = !mainActive && subs[activeAgent] ? subs[activeAgent] : null;
+    const seg = (active) => `inline-flex items-center gap-1.5 h-[28px] px-3 rounded-[8px] text-[12px] font-semibold cursor-pointer border transition-colors whitespace-nowrap ${active ? 'bg-brand-soft text-brand border-brand/25' : 'bg-bg-elev text-muted border-border-custom hover:text-fg hover:bg-chip-bg'}`;
+    const mainTab = `<button type="button" data-agent="main" class="${seg(mainActive)}">👤 ${esc(L('conv.mainSession'))}</button>`;
+    const ddLabel = activeSub ? `🤖 ${esc(activeSub.type || 'agent')}` : `🤖 ${esc(L('conv.stat.subagents'))} (${keys.length})`;
+    const items = keys.map((k) => {
+      const s = subs[k] || {};
+      const out = (s.totals && s.totals.out) || 0;
+      const cnt = s.count != null ? s.count : ((s.messages || []).length);
+      const active = activeAgent === k;
+      const desc = s.description ? `<div class="text-[10.5px] text-muted truncate pl-[18px]">${esc(s.description)}</div>` : '';
+      return `<button type="button" data-agent="${esc(k)}" class="conv-agent-menu-item w-full flex flex-col gap-0.25 text-left px-2 py-1.5 rounded-[6px] cursor-pointer border border-transparent transition-colors ${active ? 'bg-brand-soft text-brand' : 'hover:bg-chip-bg text-fg'}">
+        <div class="flex items-center gap-1.25 min-w-0"><span class="shrink-0 text-[11px]">🤖</span><span class="font-mono text-[11.5px] font-semibold truncate">${esc(s.type || 'agent')}</span></div>
+        ${desc}
+        <div class="text-[10px] text-caption font-mono pl-[18px]">${esc(L('conv.subagentMsgs', { n: cnt }))} · ${fmtTok(out)}↓</div>
+      </button>`;
+    }).join('');
+    const menu = `<div class="conv-agent-menu ${agentMenuOpen ? '' : 'hidden'} absolute left-0 top-[34px] z-30 min-w-[240px] max-w-[320px] max-h-[60vh] overflow-y-auto bg-bg-elev border border-border-custom rounded-[9px] shadow-[0_10px_30px_rgba(0,0,0,0.24)] p-1 flex flex-col gap-0.5">${items}</div>`;
+    const dd = `<div class="conv-agent-dd relative"><button type="button" data-agent-dd class="${seg(!!activeSub)}">${ddLabel}<span class="text-[8px] opacity-70 ml-0.5">▾</span></button>${menu}</div>`;
+    host.innerHTML = mainTab + dd;
   }
   // Move the main panel to a different session (main thread or a subagent). Resets the render window
   // + search and repaints from the bottom, exactly like opening a fresh conversation.
   function switchAgent(key) {
-    if (key === activeAgent) return;
+    agentMenuOpen = false;
+    if (key === activeAgent) { renderAgentTabs(currentDetail); return; }
     activeAgent = key;
     detailTexts = null; vStart = 0; vEnd = 0;
     clearDetailSearchHighlights();
@@ -574,7 +579,7 @@
     vEnd = total; vStart = Math.max(0, total - DETAIL_WIN);
     paintWindow();
     const host = $('convDetail'); if (host) host.scrollTop = host.scrollHeight;
-    renderAgentSwitcher(currentDetail);
+    renderAgentTabs(currentDetail);
     renderSidePanels(currentDetail);
   }
 
@@ -671,12 +676,26 @@
     const toc = $('convToc');
     if (toc) toc.addEventListener('click', (e) => { const it = e.target.closest('.toc-item'); if (it) jumpToMessage(+it.dataset.go, 'start'); });
 
-    // Agent switcher: toggle the list, or move the main panel to main thread / a subagent session.
-    const agents = $('convAgents');
-    if (agents) agents.addEventListener('click', (e) => {
-      if (e.target.closest('[data-agents-toggle]')) { agentsExpanded = !agentsExpanded; renderAgentSwitcher(currentDetail); return; }
+    // Session tabs: [主会话] [子代理 (N) ▾]. The dropdown toggles a menu of subagents; picking a tab
+    // or a menu item moves the whole panel to that session.
+    const tabs = $('convAgentTabs');
+    if (tabs) tabs.addEventListener('click', (e) => {
+      if (e.target.closest('[data-agent-dd]')) {
+        agentMenuOpen = !agentMenuOpen;
+        const menu = tabs.querySelector('.conv-agent-menu');
+        if (menu) menu.classList.toggle('hidden', !agentMenuOpen);
+        return;
+      }
       const it = e.target.closest('[data-agent]');
       if (it) switchAgent(it.dataset.agent);
+    });
+    // Close the subagent menu when clicking outside the tab bar.
+    document.addEventListener('click', (e) => {
+      if (!agentMenuOpen) return;
+      if (e.target.closest('#convAgentTabs')) return;
+      agentMenuOpen = false;
+      const menu = document.querySelector('#convAgentTabs .conv-agent-menu');
+      if (menu) menu.classList.add('hidden');
     });
 
     // Collapse the conversation list sidebar / nav panel
@@ -761,6 +780,11 @@
         detailTimer = setTimeout(() => rerenderDetail(false), 300);
       }
     });
+
+    // Safety-net auto-refresh: while an in-progress (live) session is open, re-read it on a timer in
+    // case a file-watch event is missed. rerenderDetail's skip-guard makes this a no-op when nothing
+    // changed and only repaints when the view is pinned to the bottom, so it never disrupts reading.
+    setInterval(() => { if (openFile && openSessionLive()) rerenderDetail(false); }, 4000);
   }
 
   window.ccbudConversations = {
