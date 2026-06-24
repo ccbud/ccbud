@@ -19,6 +19,19 @@
   let collapsed = new Set(); // collapsed project cwds
   let lastRender = { file: null, count: -1 };
   let currentDetail = null; // last-loaded session detail (for export)
+  // Which session occupies the main panel: 'main' (the root thread) or a subagent key (its tool_use
+  // id in detail.subagents). Each subagent is an independent session, so it gets the WHOLE panel —
+  // switched via the agent list in the right nav, not nested inline. Reset to 'main' on open.
+  let activeAgent = 'main';
+  let agentsExpanded = true; // the right-nav agent switcher's open/closed state
+  // The message list currently shown in the main panel (main thread or the active subagent's).
+  function activeMessages() {
+    if (!currentDetail) return [];
+    if (activeAgent !== 'main' && currentDetail.subagents && currentDetail.subagents[activeAgent]) {
+      return currentDetail.subagents[activeAgent].messages || [];
+    }
+    return currentDetail.messages || [];
+  }
   // Render only the most recent N messages of a thread; a "load earlier" control reveals more.
   // Huge threads (1000s of turns) otherwise put 1000s of nodes in the DOM, so every window
   // resize / live re-render walks the whole tree (~1s) — the measured root cause of the jank.
@@ -31,7 +44,6 @@
                            //  DOM small so collapse/resize/scroll stay cheap no matter how far you browse.
   let vStart = 0, vEnd = 0;      // rendered window into currentDetail.messages
   let detailTexts = null;        // per-message plain text, for data-driven search (built on open)
-  let subInlineKeys = new Set(); // subagent keys rendered inline (nested under their Task card) this paint
 
   try { collapsed = new Set(JSON.parse(localStorage.getItem('ccbud-collapsed-projects') || '[]')); } catch (_) {}
   function persistCollapsed() { try { localStorage.setItem('ccbud-collapsed-projects', JSON.stringify([...collapsed])); } catch (_) {} }
@@ -120,7 +132,7 @@
     return s;
   }
   function buildDetailTexts() {
-    const messages = (currentDetail && currentDetail.messages) || [];
+    const messages = activeMessages();
     const results = buildResults(messages);
     detailTexts = messages.map((m) => messagePlainText(m, results));
   }
@@ -265,6 +277,7 @@
     if (ds) ds.value = '';
     clearDetailSearchHighlights();
     openId = id; openFile = file || null;
+    activeAgent = 'main'; // new conversation always opens on its main thread
     detailTexts = null; vStart = 0; vEnd = 0; // reset the render window for the new conversation
     lastRender = { file: null, count: -1 };
     const eb = $('convExportBtn'); if (eb) eb.disabled = !openFile;
@@ -307,7 +320,7 @@
     // and content length means nothing changed — preserves scroll + expanded thinking/result panels.
     if (!force && lastRender.file === openFile && lastRender.count === messages.length && lastRender.contentLen === contentLen && lastRender.subCount === subCount && host.querySelector('.msg')) return;
 
-    const total = messages.length;
+    const total = activeMessages().length; // window/paint follow the ACTIVE session (main or subagent)
     const wasBottom = isNearBottom(host);
     buildDetailTexts();
     if (force) {
@@ -327,7 +340,8 @@
       vEnd = Math.min(vEnd, total);
     }
     renderSidePanels(detail);
-    lastRender = { file: openFile, count: total, contentLen, subCount };
+    renderAgentSwitcher(detail);
+    lastRender = { file: openFile, count: messages.length, contentLen, subCount };
   }
   function isNearBottom(el) { return el.scrollHeight - el.scrollTop - el.clientHeight < 120; }
   function highlight(root) {
@@ -370,15 +384,14 @@
   }
   // HTML for the current window [vStart,vEnd) into currentDetail.messages, plus load-earlier/later buttons.
   function renderWindow() {
-    const messages = (currentDetail && currentDetail.messages) || [];
+    const messages = activeMessages();
     const total = messages.length;
     if (!total) return `<div class="conv-empty">${esc(L('conv.emptyConv'))}</div>`;
     const results = buildResults(messages); // scan ALL so tool_use cards resolve their result even if out of window
-    subInlineKeys = new Set(); // reset per paint; renderToolCard marks subagents shown inline
+    const inSub = activeAgent !== 'main'; // in a subagent view the whole panel is that agent — drop per-turn badge
     let html = vStart > 0 ? winBtn('earlier', vStart) : '';
-    for (let i = vStart; i < vEnd; i++) html += renderMessage(messages[i], results, i);
+    for (let i = vStart; i < vEnd; i++) html += renderMessage(messages[i], results, i, inSub);
     if (vEnd < total) html += winBtn('later', total - vEnd);
-    else html += renderRemainingSubagents(); // tail in view → list any subagents not shown inline above
     return html || `<div class="conv-empty">${esc(L('conv.emptyConv'))}</div>`;
   }
   function paintWindow() {
@@ -413,7 +426,7 @@
   }
   function loadLater() {
     const host = $('convDetail'); if (!host) return;
-    const total = ((currentDetail && currentDetail.messages) || []).length;
+    const total = activeMessages().length;
     if (vEnd >= total) return;
     const a = visibleAnchor();
     vEnd = Math.min(total, vEnd + LOAD_MORE);
@@ -422,7 +435,7 @@
   }
   // Render a fresh window centred on message `mi` and bring it into view.
   function jumpToMessage(mi, block) {
-    const total = ((currentDetail && currentDetail.messages) || []).length;
+    const total = activeMessages().length;
     if (!total) return null;
     mi = Math.max(0, Math.min(total - 1, mi));
     if (mi < vStart || mi >= vEnd || vEnd - vStart > DETAIL_WIN * 2) {
@@ -509,37 +522,60 @@
     } else {
       resHtml = `<div class="tool-pending py-1.25 px-2.5 text-[10.5px] text-muted border-t border-border-custom">— ${esc(L('conv.noResult'))}</div>`;
     }
-    const card = `<div class="tool-card tool-${cls} border border-border-strong rounded-[8px] my-2 overflow-hidden bg-bg-elev shadow-card"><div class="tool-head flex items-center gap-1.75 py-1.75 px-2.5 bg-chip-bg border-b border-border-custom text-[11px] font-semibold text-fg"><span class="tool-icon text-[11px]">${icon}</span><span class="tool-name font-mono font-semibold shrink-0">${esc(label)}</span>${target ? `<span class="tool-target font-mono text-[10.5px] text-muted font-normal truncate min-w-0">${esc(target)}</span>` : ''}</div>${bodyInput ? `<div class="tool-input p-2 px-2.5">${bodyInput}</div>` : ''}${resHtml}</div>`;
-    // A Task/Agent call that spawned a subagent gets its full dialogue nested right below the card
-    // (keyed by this tool_use id), so subagents are observable in the live view — not only in export.
-    const sub = (name === 'Task' || name === 'Agent') && currentDetail && currentDetail.subagents ? currentDetail.subagents[tu.id] : null;
-    if (sub) subInlineKeys.add(tu.id);
-    return card + (sub ? renderSubagentBlock(sub) : '');
+    // Subagents are no longer nested under the Task card — each is its own full-panel session,
+    // reachable from the agent switcher in the right nav (renderAgentSwitcher).
+    return `<div class="tool-card tool-${cls} border border-border-strong rounded-[8px] my-2 overflow-hidden bg-bg-elev shadow-card"><div class="tool-head flex items-center gap-1.75 py-1.75 px-2.5 bg-chip-bg border-b border-border-custom text-[11px] font-semibold text-fg"><span class="tool-icon text-[11px]">${icon}</span><span class="tool-name font-mono font-semibold shrink-0">${esc(label)}</span>${target ? `<span class="tool-target font-mono text-[10.5px] text-muted font-normal truncate min-w-0">${esc(target)}</span>` : ''}</div>${bodyInput ? `<div class="tool-input p-2 px-2.5">${bodyInput}</div>` : ''}${resHtml}</div>`;
   }
 
-  // Subagents whose spawning Task call isn't rendered inline in the current window (it's outside the
-  // window, or the link is missing) would otherwise be invisible — the HTML export shows them, the
-  // windowed live view didn't. Surface every not-yet-shown subagent in a section at the thread's end.
-  function renderRemainingSubagents() {
-    const subs = (currentDetail && currentDetail.subagents) || {};
-    const keys = Object.keys(subs).filter((k) => !subInlineKeys.has(k));
-    if (!keys.length) return '';
-    const blocks = keys.map((k) => renderSubagentBlock(subs[k])).join('');
-    return `<div class="conv-subagents-extra max-w-[780px] w-full my-2 pt-3 border-t border-border-custom"><div class="text-[10px] font-bold uppercase tracking-wider text-caption mb-1.5 flex items-center gap-1.25">🤖 ${esc(L('conv.stat.subagents'))} (${keys.length})</div>${blocks}</div>`;
+  /* ---------- agent switcher (right nav) ---------- */
+  // Each subagent is an independent session; the switcher lets the user move the WHOLE main panel
+  // between the main thread and any subagent. Rendered only when the session spawned subagents.
+  function renderAgentSwitcher(detail) {
+    const host = $('convAgents');
+    if (!host) return;
+    const subs = (detail && detail.subagents) || {};
+    const keys = Object.keys(subs);
+    if (!keys.length) { host.innerHTML = ''; host.classList.add('hidden'); return; }
+    host.classList.remove('hidden');
+    const mainCount = ((detail && detail.messages) || []).length;
+    const caret = agentsExpanded ? '▾' : '▸';
+    const head = `<button type="button" data-agents-toggle class="conv-agents-head w-full flex items-center gap-1.5 px-1.75 py-1.5 rounded-[6px] cursor-pointer text-[11px] font-semibold text-caption hover:bg-chip-bg hover:text-fg transition-colors"><span class="truncate">🤖 ${esc(L('conv.stat.subagents'))} (${keys.length})</span><span class="ml-auto text-[10px] shrink-0">${caret}</span></button>`;
+    let list = '';
+    if (agentsExpanded) {
+      list += agentRow('main', '👤', L('conv.mainSession'), '', mainCount, null, activeAgent === 'main');
+      for (const k of keys) {
+        const s = subs[k] || {};
+        const out = (s.totals && s.totals.out) || 0;
+        const cnt = s.count != null ? s.count : ((s.messages || []).length);
+        list += agentRow(k, '🤖', s.type || 'agent', s.description || '', cnt, out, activeAgent === k);
+      }
+      list = `<div class="conv-agents-list flex flex-col gap-0.5 mt-0.5">${list}</div>`;
+    }
+    host.innerHTML = head + list;
   }
-
-  // Render a subagent's full dialogue as a collapsible block, nested under the Task/Agent card that
-  // spawned it. Reuses renderMessage so a subagent's timeline looks identical to the main thread.
-  function renderSubagentBlock(sub) {
-    const msgs = (sub && sub.messages) || [];
-    const results = buildResults(msgs);
-    let inner = '';
-    for (let i = 0; i < msgs.length; i++) inner += renderMessage(msgs[i], results, null, true);
-    if (!inner) inner = `<div class="text-muted text-[11px] px-1 py-1">${esc(L('conv.emptyConv'))}</div>`;
-    const out = (sub.totals && sub.totals.out) || 0;
-    const desc = sub.description ? `<span class="subagent-desc text-muted font-normal truncate min-w-0">${esc(sub.description)}</span>` : '';
-    const count = `<span class="subagent-count ml-auto shrink-0 text-caption font-mono">${esc(L('conv.subagentMsgs', { n: sub.count != null ? sub.count : msgs.length }))} · ${fmtTok(out)}↓</span>`;
-    return `<details class="subagent-card border border-border-strong rounded-[8px] my-2 overflow-hidden bg-bg-sidebar shadow-card"><summary class="subagent-head cursor-pointer flex items-center gap-1.75 py-1.75 px-2.5 bg-chip-bg border-b border-border-custom text-[11px] font-semibold text-fg outline-none list-none [&::-webkit-details-marker]:hidden"><span class="subagent-ico">🤖</span><span class="subagent-title font-mono shrink-0">${esc(L('conv.subagent'))} · ${esc(sub.type || 'agent')}</span>${desc}${count}</summary><div class="subagent-body p-2.5 flex flex-col gap-3">${inner}</div></details>`;
+  function agentRow(key, ico, title, desc, cnt, out, active) {
+    const meta = `${esc(L('conv.subagentMsgs', { n: cnt }))}${out != null ? ' · ' + fmtTok(out) + '↓' : ''}`;
+    return `<button type="button" data-agent="${esc(key)}" class="agent-item w-full flex flex-col gap-0.25 text-left px-1.75 py-1.25 rounded-[6px] cursor-pointer border border-transparent transition-colors ${active ? 'bg-brand-soft text-brand border-brand/20' : 'hover:bg-chip-bg text-fg'}">
+      <div class="flex items-center gap-1.25 min-w-0"><span class="shrink-0 text-[11px]">${ico}</span><span class="font-mono text-[11.5px] font-semibold truncate">${esc(title)}</span></div>
+      ${desc ? `<div class="text-[10.5px] text-muted truncate pl-[18px]">${esc(desc)}</div>` : ''}
+      <div class="text-[10px] text-caption font-mono pl-[18px]">${meta}</div>
+    </button>`;
+  }
+  // Move the main panel to a different session (main thread or a subagent). Resets the render window
+  // + search and repaints from the bottom, exactly like opening a fresh conversation.
+  function switchAgent(key) {
+    if (key === activeAgent) return;
+    activeAgent = key;
+    detailTexts = null; vStart = 0; vEnd = 0;
+    clearDetailSearchHighlights();
+    const ds = $('convDetailSearch'); if (ds) ds.value = '';
+    buildDetailTexts();
+    const total = activeMessages().length;
+    vEnd = total; vStart = Math.max(0, total - DETAIL_WIN);
+    paintWindow();
+    const host = $('convDetail'); if (host) host.scrollTop = host.scrollHeight;
+    renderAgentSwitcher(currentDetail);
+    renderSidePanels(currentDetail);
   }
 
   function renderSidePanels(detail) {
@@ -553,7 +589,6 @@
       [L('conv.stat.branch'), m.gitBranch],
       [L('conv.stat.session'), m.sessionId ? String(m.sessionId).slice(0, 8) : null],
       [L('conv.stat.messages'), m.messages],
-      ...(m.subagentCount ? [[L('conv.stat.subagents'), m.subagentCount]] : []),
       [L('conv.stat.turns'), t.turns],
       [L('conv.stat.input'), t.in != null ? fmtTok(t.in) : null],
       [L('conv.stat.output'), t.out != null ? fmtTok(t.out) : null],
@@ -565,7 +600,7 @@
     // TOC is built from the message DATA (global indices) so it spans the WHOLE thread even though only
     // a window is rendered; clicking jumps the window to that message. Keyed on user turns — the natural
     // navigation points — which also keeps the sidebar light on huge threads.
-    const messages = detail.messages || [];
+    const messages = activeMessages(); // TOC follows the session shown in the main panel
     const toc = [];
     messages.forEach((m, i) => {
       if (m.role !== 'user') return;
@@ -635,6 +670,14 @@
     });
     const toc = $('convToc');
     if (toc) toc.addEventListener('click', (e) => { const it = e.target.closest('.toc-item'); if (it) jumpToMessage(+it.dataset.go, 'start'); });
+
+    // Agent switcher: toggle the list, or move the main panel to main thread / a subagent session.
+    const agents = $('convAgents');
+    if (agents) agents.addEventListener('click', (e) => {
+      if (e.target.closest('[data-agents-toggle]')) { agentsExpanded = !agentsExpanded; renderAgentSwitcher(currentDetail); return; }
+      const it = e.target.closest('[data-agent]');
+      if (it) switchAgent(it.dataset.agent);
+    });
 
     // Collapse the conversation list sidebar / nav panel
     const convSidebar = document.querySelector('.conv-sidebar');

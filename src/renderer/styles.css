@@ -214,9 +214,6 @@
   .collapse {
     visibility: collapse;
   }
-  .invisible {
-    visibility: hidden;
-  }
   .visible {
     visibility: visible;
   }
@@ -957,6 +954,12 @@
   .border-border-strong {
     border-color: var(--color-border-strong);
   }
+  .border-brand\/20 {
+    border-color: var(--color-brand);
+    @supports (color: color-mix(in lab, red, red)) {
+      border-color: color-mix(in oklab, var(--color-brand) 20%, transparent);
+    }
+  }
   .border-primary {
     border-color: var(--color-primary);
   }
@@ -1022,9 +1025,6 @@
   }
   .bg-bg-input {
     background-color: var(--color-bg-input);
-  }
-  .bg-bg-sidebar {
-    background-color: var(--color-bg-sidebar);
   }
   .bg-bg-sidebar\/20 {
     background-color: var(--color-bg-sidebar);
@@ -1209,6 +1209,9 @@
   }
   .p-\[7px_8px\] {
     padding: 7px 8px;
+  }
+  .p-\[8px_8px_2px\] {
+    padding: 8px 8px 2px;
   }
   .p-\[8px_14px\] {
     padding: 8px 14px;
@@ -1422,6 +1425,9 @@
   }
   .pl-3 {
     padding-left: calc(var(--spacing) * 3);
+  }
+  .pl-\[18px\] {
+    padding-left: 18px;
   }
   .pl-\[22px\] {
     padding-left: 22px;
