@@ -157,6 +157,7 @@ function readSubagents(file) {
     const key = meta.toolUseId || ('agent:' + agentId);
     byTool[key] = {
       agentId,
+      file: path.join(dir, name), // absolute path to this subagent's .jsonl (for "copy path")
       type: meta.agentType || meta.subagent_type || 'agent',
       description: meta.description || '',
       count: shaped.messages.length,

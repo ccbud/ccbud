@@ -5,3 +5,4 @@ vendor/
 .DS_Store
 *-preview.html
 src/renderer/preview.html
+.devdata/

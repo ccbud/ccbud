@@ -287,6 +287,9 @@
     detailTexts = null; vStart = 0; vEnd = 0; // reset the render window for the new conversation
     lastRender = { file: null, count: -1 };
     const eb = $('convExportBtn'); if (eb) eb.disabled = !openFile;
+    const cp = $('convCopyPathBtn'); if (cp) cp.disabled = !openFile;
+    const rp = $('convReplayBtn'); if (rp) rp.disabled = !openFile;
+    const mb = $('convMoreBtn'); if (mb) mb.disabled = !openFile;
     renderList();
     // Big sessions take a beat to read+parse off disk — show a loading hint during the async fetch
     // (this wait is genuinely async/IPC, so the hint paints; the later render is what's kept bounded).
@@ -628,6 +631,58 @@
   }
   function hideExportMenu() { const m = $('convExportMenu'); if (m) m.classList.add('hidden'); }
 
+  // Absolute .jsonl path for the session currently in the panel — the active subagent's file when
+  // one is selected, else the main session file. Used by the "copy path" button so a transcript can
+  // be handed to another Claude Code session for replay / agent debugging.
+  function currentJsonlPath() {
+    if (activeAgent !== 'main' && currentDetail && currentDetail.subagents) {
+      const s = currentDetail.subagents[activeAgent];
+      if (s && s.file) return s.file;
+    }
+    return openFile;
+  }
+
+  function doCopyPath() {
+    const p = currentJsonlPath();
+    if (!p) return;
+    try { api.copy(p); } catch (_) {}
+    toast(L('conv.pathCopied'));
+  }
+  async function doReplay(btn) {
+    const p = currentJsonlPath();
+    if (!p || !api.desktopReplay) return;
+    if (btn) btn.disabled = true;
+    toast(L('conv.replayOpening'));
+    let res;
+    try { res = await api.desktopReplay(p); } catch (e) { res = { ok: false, reason: 'failed' }; }
+    if (btn) btn.disabled = false;
+    if (res && res.ok) return; // Claude Desktop now opening with the file + prompt
+    const reason = res && res.reason;
+    toast(
+      reason === 'notInstalled' ? L('conv.replayNoApp')
+        : reason === 'unsupported' ? L('conv.replayUnsupported')
+        : reason === 'permission' ? L('conv.replayPermission')
+        : reason === 'cancelled' ? L('conv.replayOpening')
+        : L('conv.replayFail'),
+      false
+    );
+  }
+  // Collapse the action buttons into a "⋯" menu when the toolbar is too narrow to fit them
+  // alongside a 200px-min search box.
+  function updateToolbarLayout() {
+    const tb = document.querySelector('.conv-detail-toolbar');
+    const actions = $('convActions');
+    const moreWrap = $('convMoreWrap');
+    if (!tb || !actions || !moreWrap) return;
+    actions.classList.remove('hidden');
+    moreWrap.classList.add('hidden');
+    const exp = $('convExportMenu'); if (exp) exp.classList.add('hidden');
+    if (tb.scrollWidth > tb.clientWidth + 1) {
+      actions.classList.add('hidden');
+      moreWrap.classList.remove('hidden');
+    }
+  }
+
   // HTML export is built MAIN-process side (src/main/exportHtml.js): it needs fs access to
   // the on-disk subagent dialogues and emits a self-contained, Claude-styled viewer app.
 
@@ -752,6 +807,34 @@
       if (e.target.closest('[data-load-earlier]')) loadEarlier();
       else if (e.target.closest('[data-load-later]')) loadLater();
     });
+
+    // Action buttons (inline) + their collapsed "⋯" menu equivalents.
+    const copyPathBtn = $('convCopyPathBtn');
+    if (copyPathBtn) copyPathBtn.addEventListener('click', doCopyPath);
+    const replayBtn = $('convReplayBtn');
+    if (replayBtn) replayBtn.addEventListener('click', () => doReplay(replayBtn));
+
+    const moreBtn = $('convMoreBtn');
+    const moreMenu = $('convMoreMenu');
+    if (moreBtn) moreBtn.addEventListener('click', (e) => { e.stopPropagation(); if (moreBtn.disabled) return; if (moreMenu) moreMenu.classList.toggle('hidden'); });
+    if (moreMenu) moreMenu.addEventListener('click', (e) => {
+      const it = e.target.closest('[data-more]'); if (!it) return;
+      moreMenu.classList.add('hidden');
+      const a = it.dataset.more;
+      if (a === 'replay') doReplay();
+      else if (a === 'copyPath') doCopyPath();
+      else if (a === 'jsonl') doExport('jsonl');
+      else if (a === 'html') doExport('html');
+    });
+    document.addEventListener('click', (e) => { if (moreMenu && !e.target.closest('.conv-more-wrap')) moreMenu.classList.add('hidden'); });
+
+    // Responsive toolbar: collapse the action buttons into the "⋯" menu when space is tight.
+    const toolbar = document.querySelector('.conv-detail-toolbar');
+    if (toolbar && window.ResizeObserver) {
+      const ro = new ResizeObserver(() => updateToolbarLayout());
+      ro.observe(toolbar);
+    }
+    updateToolbarLayout();
 
     // Export menu (JSONL / HTML)
     const exportBtn = $('convExportBtn');

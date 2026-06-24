@@ -19,6 +19,7 @@ contextBridge.exposeInMainWorld('ccbud', {
   desktopStatus: () => ipcRenderer.invoke('claudeDesktop:status'),
   desktopConnect: () => ipcRenderer.invoke('claudeDesktop:connect'),
   desktopDisconnect: () => ipcRenderer.invoke('claudeDesktop:disconnect'),
+  desktopReplay: (file) => ipcRenderer.invoke('claudeDesktop:replay', file),
 
   // Presidio local PII content filter
   presidioStatus: () => ipcRenderer.invoke('presidio:status'),

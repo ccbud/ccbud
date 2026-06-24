@@ -386,6 +386,19 @@ function registerIpc() {
     return res;
   });
 
+  // Open a past conversation's .jsonl in Claude Desktop for replay/analysis via the official
+  // `claude://` deep link: a new Cowork chat with the file attached and a prompt prefilled. The user
+  // reviews and presses send. Cowork's `file=` param supports attaching a local absolute path (Claude
+  // prompts for permission on first use). Cross-platform (macOS/Windows) — no UI automation needed.
+  ipcMain.handle('claudeDesktop:replay', async (_e, file) => {
+    if (!file) return { ok: false, reason: 'noFile' };
+    if (process.platform === 'darwin' && !claudeDesktop.appInstalled()) return { ok: false, reason: 'notInstalled' };
+    const prompt = mt('desktop.replayPrompt').slice(0, 13000); // q is truncated ~14k by Claude
+    const url = `claude://cowork/new?q=${encodeURIComponent(prompt)}&file=${encodeURIComponent(file)}`;
+    try { await shell.openExternal(url); return { ok: true }; }
+    catch (e) { return { ok: false, reason: 'failed', message: e && e.message }; }
+  });
+
   // Presidio — bundled local PII filter. The toggle persists config.presidio.enabled and
   // starts/stops the local services; the gateway redacts outbound text when enabled.
   // Stream Presidio's service console output to the renderer so users can see it's working.
