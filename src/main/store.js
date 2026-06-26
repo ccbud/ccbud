@@ -85,7 +85,9 @@ function normalize(cfg) {
     dirs.unshift('~/.claude');
   }
   c.historyDirs = dirs;
-  c.historyActive = c.historyActive === 'all' || dirs.includes(c.historyActive) ? c.historyActive : 'all';
+  // '__imported__' is the synthetic, app-managed store of imported transcripts (not a user dir, so not
+  // in historyDirs) — keep it valid as an active selection so the "导入" filter persists.
+  c.historyActive = c.historyActive === 'all' || c.historyActive === '__imported__' || dirs.includes(c.historyActive) ? c.historyActive : 'all';
   return c;
 }
 

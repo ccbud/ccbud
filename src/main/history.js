@@ -75,16 +75,30 @@ function contentText(content) {
   return '';
 }
 
+// A slash-command turn is stored as XML tags, e.g.
+//   <command-name>/model</command-name> <command-args>fable-5</command-args>
+// Surface it as a readable "/model fable-5" label instead of leaking the raw tags.
+function commandLabel(raw) {
+  const name = (raw.match(/<command-name>([^<]*)<\/command-name>/) || [])[1];
+  if (!name) return '';
+  const args = (raw.match(/<command-args>([^<]*)<\/command-args>/) || [])[1] || '';
+  return (name.trim() + ' ' + args.trim()).trim();
+}
+
 function firstUserText(messages) {
+  let fallbackCmd = ''; // first slash-command label, used only if no prose turn exists
   for (const m of messages) {
     if (!m || m.role !== 'user' || m._meta) continue;
-    const t = contentText(m.content).trim().replace(/\s+/g, ' ');
-    if (!t || t.startsWith('<') || /^(\[Request interrupted|Caveat:)/.test(t)) continue;
+    const raw = contentText(m.content).trim();
+    if (!raw) continue;
+    if (raw.startsWith('<')) { if (!fallbackCmd) fallbackCmd = commandLabel(raw); continue; }
+    const t = raw.replace(/\s+/g, ' ');
+    if (/^(\[Request interrupted|Caveat:)/.test(t)) continue;
     return t.slice(0, 90);
   }
-  const u = messages.find((m) => m && m.role === 'user');
-  const t = u ? contentText(u.content).trim().replace(/\s+/g, ' ') : '';
-  return t ? t.slice(0, 90) : ''; // empty → renderer substitutes a localized "(conversation)"
+  // No prose turn: prefer a parsed "/cmd" label over dumping raw XML; empty → renderer
+  // substitutes a localized "(conversation)".
+  return fallbackCmd.slice(0, 90);
 }
 
 function parseLines(buf) {
@@ -237,6 +251,7 @@ function createHistoryWatcher(opts) {
           title: firstUserText(msgs),
           model,
           isSubagent: subagent,
+          imported: !!(dm && dm.imported),
           lastActivity: st.mtimeMs,
           sizeKB: Math.round(st.size / 1024),
         }
@@ -285,7 +300,7 @@ function createHistoryWatcher(opts) {
     return dirs().map((dm) => {
       let exists = false;
       try { exists = fs.statSync(dm.projectsDir).isDirectory(); } catch (_) {}
-      return { id: dm.id, label: dm.label, projectsDir: dm.projectsDir, sessions: counts[dm.id] || 0, exists };
+      return { id: dm.id, label: dm.label, projectsDir: dm.projectsDir, sessions: counts[dm.id] || 0, exists, imported: !!dm.imported };
     });
   }
 
@@ -301,6 +316,9 @@ function createHistoryWatcher(opts) {
     const messages = shaped.messages;
 
     const subagent = !!agentRec.agentId;
+    // Imported transcripts carry a sidecar recording where they came from (see main.importOne).
+    let imported = null;
+    try { imported = JSON.parse(fs.readFileSync(file.replace(/\.jsonl$/, '.import.json'), 'utf8')); } catch (_) {}
     // Only a top-level session embeds its child subagent dialogues (a subagent file has no nested
     // subagents/ dir of its own), so the renderer can nest them under their spawning Task call.
     const subagents = subagent ? {} : readSubagents(file);
@@ -320,6 +338,9 @@ function createHistoryWatcher(opts) {
         gitBranch: metaRec.gitBranch || null,
         version: metaRec.version || null,
         isSubagent: subagent,
+        imported: !!imported,
+        importedFrom: imported ? imported.originalPath : null,
+        importedAt: imported ? imported.importedAt : null,
         model: shaped.model,
         totals: shaped.totals,
         messages: messages.length,

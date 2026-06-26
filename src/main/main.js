@@ -145,6 +145,16 @@ function configDirs() {
     return { id: raw, label: dirLabel(raw), configDir: exp, projectsDir: path.join(exp, 'projects') };
   });
 }
+// The app-managed import store, laid out exactly like a native config dir's projects/ tree so the
+// whole history pipeline (list/group/subagents/getSession/watch/count) handles imports unchanged.
+const IMPORTED_ID = '__imported__';
+function importsRoot() { return path.join(app.getPath('userData'), 'imports'); }
+function importedDir() {
+  return { id: IMPORTED_ID, label: mt('conv.imported'), configDir: importsRoot(), projectsDir: path.join(importsRoot(), 'projects'), imported: true };
+}
+// History reader sees user dirs + the import store; usage (activeProjectsDirs) deliberately does NOT,
+// so other people's tokens never pollute your usage stats.
+function historyDirsList() { return configDirs().concat([importedDir()]); }
 // Active selection ('all' or one dir id) → list of projects dirs for the usage engine.
 function activeProjectsDirs() {
   const active = (store && store.get().historyActive) || 'all';
@@ -482,6 +492,89 @@ function registerIpc() {
     return { active: saved.historyActive };
   });
 
+  // ---- import: copy someone else's .jsonl into the app-managed store (snapshot; the original may
+  //      be deleted/moved without consequence). Laid out like a native projects/ tree so the rest of
+  //      the pipeline renders it identically; a sidecar .import.json records provenance. ----
+  function encodeCwd(cwd) {
+    // Mirror Claude Code's lossy dir encoding (decodeDirName is the inverse): '/foo/bar' → '-foo-bar'.
+    return cwd ? String(cwd).replace(/[/\\]/g, '-') : '-imported';
+  }
+  function copyDirSync(src, dst) {
+    fs.mkdirSync(dst, { recursive: true });
+    for (const e of fs.readdirSync(src, { withFileTypes: true })) {
+      const s = path.join(src, e.name), d = path.join(dst, e.name);
+      if (e.isDirectory()) copyDirSync(s, d);
+      else if (e.isFile()) fs.copyFileSync(s, d);
+    }
+  }
+  function importOne(src, out) {
+    let raw;
+    try { raw = fs.readFileSync(src, 'utf8'); } catch (e) { out.failed++; return; }
+    const recs = [];
+    for (const line of raw.split('\n')) { const s = line.trim(); if (!s) continue; try { recs.push(JSON.parse(s)); } catch (_) {} }
+    const hasMsg = recs.some((r) => r && (r.type === 'user' || r.type === 'assistant') && r.message);
+    if (!hasMsg) { out.failed++; return; } // not a Claude Code transcript
+    const metaRec = recs.find((r) => r && r.cwd) || recs.find((r) => r && r.sessionId) || {};
+    const baseId = metaRec.sessionId || path.basename(src, '.jsonl');
+    const destDir = path.join(importsRoot(), 'projects', encodeCwd(metaRec.cwd));
+    const destFile = path.join(destDir, baseId + '.jsonl');
+    if (fs.existsSync(destFile)) { out.skipped++; return; } // same session already imported
+    try {
+      fs.mkdirSync(destDir, { recursive: true });
+      fs.copyFileSync(src, destFile);
+      // Bring along the session's subagent dialogues if they sit next to the source file.
+      const srcSub = path.join(path.dirname(src), path.basename(src, '.jsonl'), 'subagents');
+      try { if (fs.statSync(srcSub).isDirectory()) copyDirSync(srcSub, path.join(destDir, baseId, 'subagents')); } catch (_) {}
+      fs.writeFileSync(destFile.replace(/\.jsonl$/, '.import.json'),
+        JSON.stringify({ originalPath: src, originalName: path.basename(src), sessionId: baseId, importedAt: Date.now() }, null, 2), 'utf8');
+      out.imported++;
+    } catch (e) { out.failed++; }
+  }
+  ipcMain.handle('history:import', async () => {
+    const win = mainWindow && !mainWindow.isDestroyed() ? mainWindow : null;
+    let res;
+    try {
+      res = await dialog.showOpenDialog(win, {
+        title: mt('conv.importTitle'),
+        defaultPath: app.getPath('downloads'),
+        buttonLabel: mt('conv.importButton'),
+        properties: ['openFile', 'multiSelections', 'showHiddenFiles'],
+        filters: [{ name: 'JSONL', extensions: ['jsonl'] }],
+      });
+    } catch (e) { return { canceled: true, error: e && e.message }; }
+    if (res.canceled || !res.filePaths || !res.filePaths.length) return { canceled: true };
+    const out = { imported: 0, skipped: 0, failed: 0 };
+    for (const src of res.filePaths) importOne(src, out);
+    broadcast('history:changed', { files: [], active: store.get().historyActive });
+    return out;
+  });
+  ipcMain.handle('history:removeImport', async (_e, file) => {
+    if (!file) return { ok: false };
+    const root = path.resolve(importsRoot());
+    const f = path.resolve(file);
+    // Hard safety: only ever delete inside our own import store.
+    if (f !== root && !f.startsWith(root + path.sep)) return { ok: false, error: 'outside import store' };
+    // Confirm via a native message box (localized buttons — window.confirm can't set them to Chinese).
+    const win = mainWindow && !mainWindow.isDestroyed() ? mainWindow : null;
+    try {
+      const r = await dialog.showMessageBox(win, {
+        type: 'warning',
+        buttons: [mt('modal.cancel'), mt('conv.removeImport')],
+        defaultId: 1, cancelId: 0,
+        message: mt('conv.removeImportConfirm'),
+      });
+      if (r.response !== 1) return { ok: false, canceled: true };
+    } catch (e) { return { ok: false, error: e && e.message }; }
+    try {
+      const dir = path.dirname(f), base = path.basename(f, '.jsonl');
+      fs.rmSync(f, { force: true });
+      fs.rmSync(path.join(dir, base + '.import.json'), { force: true });
+      fs.rmSync(path.join(dir, base), { recursive: true, force: true }); // subagents/
+    } catch (e) { return { ok: false, error: e && e.message }; }
+    broadcast('history:changed', { files: [], active: store.get().historyActive });
+    return { ok: true };
+  });
+
   // Export a conversation: raw .jsonl (verbatim source) or a self-contained .html the
   // renderer assembled (inlined styles + rendered timeline). Both go through a save dialog.
   function saveDialogPath(defName, ext, extLabel) {
@@ -768,7 +861,7 @@ if (gotLock) {
 
     // Watch Claude Code's on-disk session history across ALL configured dirs; the "对话"
     // view reads it directly and live-follows active sessions via the 'changed' broadcast.
-    history = createHistoryWatcher({ getDirs: () => configDirs() });
+    history = createHistoryWatcher({ getDirs: () => historyDirsList() });
     history.on('changed', (p) => {
       const files = (p && p.files) || [];
       files.forEach((f) => insights && insights.invalidate(f));

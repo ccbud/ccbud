@@ -56,6 +56,8 @@ contextBridge.exposeInMainWorld('ccbud', {
   historyDirs: () => ipcRenderer.invoke('history:dirs'),
   historyPickDir: () => ipcRenderer.invoke('history:pickDir'),
   historySetActive: (id) => ipcRenderer.invoke('history:setActive', id),
+  historyImport: () => ipcRenderer.invoke('history:import'),
+  historyRemoveImport: (file) => ipcRenderer.invoke('history:removeImport', file),
   historyExportRaw: (file) => ipcRenderer.invoke('history:exportRaw', file),
   historyExportHtml: (payload) => ipcRenderer.invoke('history:exportHtml', payload),
   onHistoryChanged: (cb) => ipcRenderer.on('history:changed', (_e, p) => cb(p)),

@@ -76,7 +76,7 @@
     blocks.forEach(function (b) {
       if (!b) return;
       if (b.type === 'text') { if (b.text && b.text.trim()) out += '<div class="prose">' + md(b.text) + '</div>'; }
-      else if (b.type === 'thinking') { var first = ((b.thinking || '').split('\n').filter(function (x) { return x.trim(); })[0]) || ''; out += '<details class="thinking"><summary>💭 思考 · ' + esc(trunc(first, 64)) + '</summary><div class="prose">' + md(b.thinking || '') + '</div></details>'; }
+      else if (b.type === 'thinking') { if (b.thinking && b.thinking.trim()) { var first = b.thinking.split('\n').filter(function (x) { return x.trim(); })[0] || ''; out += '<details class="thinking"><summary>💭 思考 · ' + esc(trunc(first, 64)) + '</summary><div class="prose">' + md(b.thinking) + '</div></details>'; } }
       else if (b.type === 'tool_use') out += renderTool(b);
       else if (b.type === 'image') { var s = b.source || {}; out += s.data ? '<img class="msg-img" style="max-width:340px;border-radius:10px;border:1px solid var(--border);margin:6px 0" src="data:' + esc(s.media_type || 'image/png') + ';base64,' + s.data + '">' : '<div class="tool-desc">🖼 image' + (s.oversized ? ' (large, omitted)' : '') + '</div>'; }
     });
@@ -145,7 +145,7 @@
         '</div><nav class="toc" id="toc"></nav>' +
       '</aside>' +
       '<main class="content"><div class="thread" id="thread">' + threadHtml + orphanHtml + '</div>' +
-      '<div class="footer">由 ccbud 导出 · ' + (meta.count || 0) + ' 条消息' + (meta.subagentCount ? ' · ' + meta.subagentCount + ' 个子代理' : '') + '</div></main>' +
+      '<div class="footer">由 <a class="footer-link" href="https://ccbud.github.io/" target="_blank" rel="noopener">ccbud</a> 导出 · ' + (meta.count || 0) + ' 条消息' + (meta.subagentCount ? ' · ' + meta.subagentCount + ' 个子代理' : '') + '<div class="footer-site"><a class="footer-link" href="https://ccbud.github.io/" target="_blank" rel="noopener">https://ccbud.github.io/</a></div></div></main>' +
     '</div>';
 
   var content = app.querySelector('.content');

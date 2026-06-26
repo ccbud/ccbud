@@ -87,14 +87,27 @@ function contentText(content) {
   if (Array.isArray(content)) return content.filter((b) => b && b.type === 'text').map((b) => b.text || '').join(' ');
   return '';
 }
+// A slash-command turn is stored as XML tags, e.g.
+//   <command-name>/model</command-name> <command-args>fable-5</command-args>
+// Surface it as a readable "/model fable-5" label instead of leaking the raw tags.
+function commandLabel(raw) {
+  const name = (raw.match(/<command-name>([^<]*)<\/command-name>/) || [])[1];
+  if (!name) return '';
+  const args = (raw.match(/<command-args>([^<]*)<\/command-args>/) || [])[1] || '';
+  return (name.trim() + ' ' + args.trim()).trim();
+}
 function firstUserText(messages) {
+  let fallbackCmd = '';
   for (const m of messages) {
     if (!m || m.role !== 'user' || m.meta) continue;
-    const t = contentText(m.content).trim().replace(/\s+/g, ' ');
-    if (!t || t.startsWith('<') || /^(\[Request interrupted|Caveat:)/.test(t)) continue;
+    const raw = contentText(m.content).trim();
+    if (!raw) continue;
+    if (raw.startsWith('<')) { if (!fallbackCmd) fallbackCmd = commandLabel(raw); continue; }
+    const t = raw.replace(/\s+/g, ' ');
+    if (/^(\[Request interrupted|Caveat:)/.test(t)) continue;
     return t.slice(0, 100);
   }
-  return '';
+  return fallbackCmd.slice(0, 100);
 }
 const baseName = (p) => (p ? String(p).split('/').filter(Boolean).pop() : null);
 

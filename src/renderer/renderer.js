@@ -351,7 +351,8 @@ async function renderHistoryDirs() {
   const host = $('histDirList');
   if (!host) return;
   let data; try { data = await api.historyDirs(); } catch (_) { data = { dirs: [] }; }
-  const dirs = data.dirs || [];
+  // The synthetic "导入" store is app-managed (not a user config dir) — keep it out of this list.
+  const dirs = (data.dirs || []).filter((d) => !d.imported);
   host.innerHTML = dirs.map((d) => {
     const status = d.exists === false
       ? `<span class="hist-dir-warn text-red font-semibold text-[11px] shrink-0 bg-red-soft px-2.5 py-0.75 rounded-full" title="${escapeHtml(I18n.t('settings.dirMissing'))}">${escapeHtml(I18n.t('settings.dirMissing'))}</span>`

@@ -222,10 +222,12 @@
     const host = $('convDirSwitch');
     if (!host || !api.historyDirs) return;
     let data; try { data = await api.historyDirs(); } catch (_) { data = { dirs: [], active: 'all' }; }
-    const dirs = data.dirs || [];
+    // Hide the synthetic 导入 chip until something is actually imported (keeps the bar clean / unchanged
+    // for single-dir users). The + button is the import entry point regardless.
+    const dirs = (data.dirs || []).filter((d) => !(d.imported && !d.sessions));
     if (dirs.length <= 1) { host.classList.add('hidden'); host.innerHTML = ''; return; }
     const active = data.active || 'all';
-    const opts = [{ id: 'all', label: L('conv.all') }].concat(dirs.map((d) => ({ id: d.id, label: d.label, sessions: d.sessions })));
+    const opts = [{ id: 'all', label: L('conv.all') }].concat(dirs.map((d) => ({ id: d.id, label: d.imported ? '📥 ' + d.label : d.label, sessions: d.sessions })));
     host.classList.remove('hidden');
     host.innerHTML = opts.map((o) => `<button class="dir-chip inline-flex items-center gap-1.25 border border-border-custom bg-transparent text-muted font-medium text-[11.5px] px-2.5 py-1 rounded-full cursor-pointer transition-all duration-150 hover:text-fg hover:bg-chip-bg ${o.id === active ? 'active' : ''}" data-dir="${esc(o.id)}" title="${esc(o.label)}">${esc(o.label)}${o.sessions != null ? ' <span class="dir-chip-n text-[10px] px-1.25 py-0 rounded-full bg-black/12">' + o.sessions + '</span>' : ''}</button>`).join('');
   }
@@ -269,10 +271,13 @@
   function sessionItem(c) {
     const live = isLive(c.lastActivity) ? '<span class="conv-live w-1.25 h-1.25 rounded-full bg-green animate-[pulse_1.6s_infinite] shrink-0"></span>' : '';
     const sub = c.isSubagent ? `<span class="conv-badge text-[10.5px] px-1.5 py-0.25 rounded-full bg-chip-bg text-fg font-sans">${esc(L('conv.subagent'))}</span>` : '';
+    const imp = c.imported ? `<span class="conv-badge text-[10.5px] px-1.5 py-0.25 rounded-full bg-brand-soft text-brand font-sans">📥 ${esc(L('conv.imported'))}</span>` : '';
+    // Imported copies live only in the app store, so they get a remove affordance (deletes the copy).
+    const rm = c.imported ? `<button class="conv-remove-import ml-auto shrink-0 opacity-55 group-hover:opacity-100 text-caption hover:text-red hover:bg-chip-bg rounded text-[12px] leading-none w-[18px] h-[18px] flex items-center justify-center transition-all" data-remove-import="${esc(c.file || '')}" title="${esc(L('conv.removeImport'))}">✕</button>` : '';
     const model = c.model ? `<span class="conv-model text-brand">${esc(c.model)}</span>` : '';
-    return `<div class="conv-item cursor-pointer flex flex-col gap-0.75 py-2.5 pr-3 pl-[22px] transition-colors duration-150 hover:bg-chip-bg border-0 ${c.id === openId ? 'active' : ''}" data-id="${esc(c.id)}" data-file="${esc(c.file || '')}">
-      <div class="conv-item-top flex items-center gap-1.25">${live}<span class="conv-title text-[13.5px] font-semibold truncate">${esc(c.title || L('conv.untitled'))}</span></div>
-      <div class="conv-item-sub flex items-center gap-1.5 text-[11.5px] text-caption font-mono truncate">${model}${sub}</div>
+    return `<div class="conv-item group cursor-pointer flex flex-col gap-0.75 py-2.5 pr-3 pl-[22px] transition-colors duration-150 hover:bg-chip-bg border-0 ${c.id === openId ? 'active' : ''}" data-id="${esc(c.id)}" data-file="${esc(c.file || '')}">
+      <div class="conv-item-top flex items-center gap-1.25">${live}<span class="conv-title text-[13.5px] font-semibold truncate min-w-0">${esc(c.title || L('conv.untitled'))}</span>${rm}</div>
+      <div class="conv-item-sub flex items-center gap-1.5 text-[11.5px] text-caption font-mono truncate">${model}${sub}${imp}</div>
       <div class="conv-item-meta flex items-center gap-1.5 text-[11px] text-caption"><span>${esc(relTime(c.lastActivity))}</span>${c.sizeKB ? '<span>' + c.sizeKB + ' KB</span>' : ''}</div>
     </div>`;
   }
@@ -306,6 +311,7 @@
     if (!host) return;
     if (!detail) { host.innerHTML = `<div class="conv-empty">${esc(L('conv.notFound'))}</div>`; lastRender = { file: null, count: -1 }; return; }
     currentDetail = detail;
+    subIndex = null; // call-site map is rebuilt lazily against the freshly-loaded subagents
 
     const messages = detail.messages || [];
     const msgLen = (m) => {
@@ -374,7 +380,7 @@
       if (!vis.length) return '';
       const textVal = vis.map((b) => b.text || '').join('');
       if (textVal.includes('<system-reminder>') || textVal.includes('<command-name>') || textVal.includes('<local-command')) return '';
-      return `<div class="msg user flex flex-col gap-1.25 animate-[panelIn_0.18s_cubic-bezier(0.23,1,0.32,1)] max-w-[780px] w-full"${mid}><div class="msg-role text-[10px] font-bold uppercase tracking-wider text-caption flex items-center gap-1.25">👤 ${esc(L('conv.you'))}</div><div class="msg-body bg-bg-elev border border-border-custom rounded-[11px] p-3 px-4 shadow-card text-[13px] leading-[1.58]">${vis.map(renderUserBlock).join('')}</div></div>`;
+      return `<div class="msg user flex flex-col gap-1.25 animate-[panelIn_0.18s_cubic-bezier(0.23,1,0.32,1)] w-full"${mid}><div class="msg-role text-[10px] font-bold uppercase tracking-wider text-caption flex items-center gap-1.25">👤 ${esc(L('conv.you'))}</div><div class="msg-body bg-bg-elev border border-border-custom rounded-[11px] p-3 px-4 shadow-card text-[13px] leading-[1.58]">${vis.map(renderUserBlock).join('')}</div></div>`;
     }
     let body = '';
     blocks.forEach((b) => {
@@ -385,7 +391,7 @@
       else body += `<pre class="pre bg-[#0c0e12] border border-white/7 rounded-[7px] p-2.5 overflow-x-auto font-mono text-[11px] leading-[1.48] text-[#e8edf4] whitespace-pre-wrap break-all">${esc(JSON.stringify(b))}</pre>`;
     });
     if (!body) return '';
-    return `<div class="msg assistant group flex flex-col gap-1.25 animate-[panelIn_0.18s_cubic-bezier(0.23,1,0.32,1)] max-w-[780px] w-full ${m.isSidechain ? 'sidechain' : ''}"${mid}><div class="msg-role text-[10px] font-bold uppercase tracking-wider text-caption flex items-center gap-1.25">✦ Claude${m.isSidechain && !inSub ? ` <span class="conv-badge text-[10.5px] px-1.5 py-0.25 rounded-full bg-chip-bg text-fg font-sans">${esc(L('conv.subagent'))}</span>` : ''}</div><div class="msg-body text-[13px] leading-[1.58] py-0.5 pr-0 pl-3 border-l-2 border-border-strong group-[.streaming]:border-green">${body}${turnMeta(m)}</div></div>`;
+    return `<div class="msg assistant group flex flex-col gap-1.25 animate-[panelIn_0.18s_cubic-bezier(0.23,1,0.32,1)] w-full ${m.isSidechain ? 'sidechain' : ''}"${mid}><div class="msg-role text-[10px] font-bold uppercase tracking-wider text-caption flex items-center gap-1.25">✦ Claude${m.isSidechain && !inSub ? ` <span class="conv-badge text-[10.5px] px-1.5 py-0.25 rounded-full bg-chip-bg text-fg font-sans">${esc(L('conv.subagent'))}</span>` : ''}</div><div class="msg-body text-[13px] leading-[1.58] py-0.5 pr-0 pl-3 border-l-2 border-border-strong group-[.streaming]:border-green">${body}${turnMeta(m)}</div></div>`;
   }
   function winBtn(dir, n) {
     const lbl = esc(L('conv.loadEarlier', { n }));
@@ -468,6 +474,9 @@
   }
   function renderThinking(b) {
     const t = b.thinking || '';
+    // Some turns carry a thinking block with only a signature and no visible text (the model/upstream
+    // returned encrypted/empty reasoning). Skip it rather than draw an empty collapsible.
+    if (!t.trim()) return '';
     const first = t.split('\n').find((x) => x.trim()) || L('conv.thinking');
     return `<details class="thinking bg-[#ff9f0a]/4 border border-[#ff9f0a]/12 rounded-[7px] my-1.5"><summary class="cursor-pointer p-1.75 px-2.5 text-[11px] font-medium text-amber outline-none list-none [&::-webkit-details-marker]:hidden">💭 ${esc(L('conv.thinking'))} · <span class="text-muted/70">${esc(first.slice(0, 60))}</span></summary><div class="thinking-body p-2.5 pt-1.75 pb-2 text-[11.5px] text-muted leading-[1.48] border-t border-[#ff9f0a]/8 mt-0.75">${md(t)}</div></details>`;
   }
@@ -531,9 +540,42 @@
     } else {
       resHtml = `<div class="tool-pending py-1.25 px-2.5 text-[10.5px] text-muted border-t border-border-custom">— ${esc(L('conv.noResult'))}</div>`;
     }
-    // Subagents are no longer nested under the Task card — each is its own full-panel session,
-    // reachable from the agent switcher in the right nav (renderAgentSwitcher).
-    return `<div class="tool-card tool-${cls} border border-border-strong rounded-[8px] my-2 overflow-hidden bg-bg-elev shadow-card"><div class="tool-head flex items-center gap-1.75 py-1.75 px-2.5 bg-chip-bg border-b border-border-custom text-[11px] font-semibold text-fg"><span class="tool-icon text-[11px]">${icon}</span><span class="tool-name font-mono font-semibold shrink-0">${esc(label)}</span>${target ? `<span class="tool-target font-mono text-[10.5px] text-muted font-normal truncate min-w-0">${esc(target)}</span>` : ''}</div>${bodyInput ? `<div class="tool-input p-2 px-2.5">${bodyInput}</div>` : ''}${resHtml}</div>`;
+    // If this call spawned a subagent (Task / Agent / Workflow / …, matched by tool_use id), nest its
+    // transcript right under the call so it's read in the context that produced it. See inlineSubagentBlock.
+    const subHtml = inlineSubagentBlock(tu.id);
+    return `<div class="tool-card tool-${cls} border border-border-strong rounded-[8px] my-2 overflow-hidden bg-bg-elev shadow-card"><div class="tool-head flex items-center gap-1.75 py-1.75 px-2.5 bg-chip-bg border-b border-border-custom text-[11px] font-semibold text-fg"><span class="tool-icon text-[11px]">${icon}</span><span class="tool-name font-mono font-semibold shrink-0">${esc(label)}</span>${target ? `<span class="tool-target font-mono text-[10.5px] text-muted font-normal truncate min-w-0">${esc(target)}</span>` : ''}</div>${bodyInput ? `<div class="tool-input p-2 px-2.5">${bodyInput}</div>` : ''}${resHtml}${subHtml}</div>`;
+  }
+
+  // ---------- inline subagents (expand-at-call-site) ----------
+  // A subagent dialogue is keyed by the tool_use id that spawned it (history.readSubagents). We render it
+  // as a lazily-filled disclosure directly under that call — at any nesting depth, since a subagent's own
+  // tool cards run through this same path. Body stays empty until opened (see fillSubBody) to bound the DOM.
+  function inlineSubagentBlock(id) {
+    const subs = (currentDetail && currentDetail.subagents) || {};
+    const s = id && subs[id];
+    if (!s) return '';
+    const cnt = s.count != null ? s.count : ((s.messages || []).length);
+    const out = (s.totals && s.totals.out) || 0;
+    const meta = `${esc(L('conv.subagentMsgs', { n: cnt }))} · ${fmtTok(out)}↓`;
+    const desc = s.description ? ` · <span class="font-normal text-muted">${esc(s.description)}</span>` : '';
+    return `<details class="subagent-inline" data-sub="${esc(id)}"><summary class="cursor-pointer py-2 px-2.5 text-[11px] font-semibold text-brand outline-none list-none [&::-webkit-details-marker]:hidden flex items-center gap-1.5 bg-brand-soft hover:brightness-105"><span class="sub-caret shrink-0 transition-transform">▸</span><span class="shrink-0">🤖 ${esc(L('conv.subagent'))} · ${esc(s.type || 'agent')}</span><span class="truncate min-w-0 flex-1">${desc}</span><span class="text-caption font-mono font-normal shrink-0">${meta}</span></summary><div class="subagent-inline-body pl-3 pr-1 py-1.5 bg-brand-soft/10" data-sub-body="${esc(id)}"></div></details>`;
+  }
+  // Render one subagent's whole thread (recursively wiring its own inline subagents via renderMessage →
+  // renderToolCard). idx=null so nested turns carry no data-mi (they're outside main-window navigation).
+  function renderSubThread(key) {
+    const s = currentDetail && currentDetail.subagents && currentDetail.subagents[key];
+    if (!s) return '';
+    const msgs = s.messages || [];
+    if (!msgs.length) return `<div class="conv-empty text-[11px] text-muted py-1">${esc(L('conv.emptyConv'))}</div>`;
+    const results = buildResults(msgs);
+    return msgs.map((m) => renderMessage(m, results, null, true)).join('') || `<div class="conv-empty text-[11px] text-muted py-1">${esc(L('conv.emptyConv'))}</div>`;
+  }
+  // Fill a subagent disclosure's body on first open (no-op afterwards). Returns the body element.
+  function fillSubBody(det) {
+    const body = det && det.querySelector(':scope > [data-sub-body]');
+    if (!body) return null;
+    if (!body.dataset.filled) { body.innerHTML = renderSubThread(body.getAttribute('data-sub-body')); body.dataset.filled = '1'; highlight(body); }
+    return body;
   }
 
   /* ---------- session tabs (top of the main panel) ---------- */
@@ -586,6 +628,68 @@
     renderSidePanels(currentDetail);
   }
 
+  // Map every subagent to where it was spawned: callSite.get(subKey) = { thread, mi } where thread is
+  // 'main' or another subagent's key (nested spawns), and mi is the message index in that thread. Built
+  // lazily per open session and reset when the session changes.
+  let subIndex = null;
+  function buildSubIndex() {
+    const subs = (currentDetail && currentDetail.subagents) || {};
+    const keys = new Set(Object.keys(subs));
+    const callSite = new Map();
+    const scan = (msgs, threadKey) => (msgs || []).forEach((m, i) => normContent(m.content).forEach((b) => {
+      if (b.type === 'tool_use' && keys.has(b.id) && !callSite.has(b.id)) callSite.set(b.id, { thread: threadKey, mi: i });
+    }));
+    scan((currentDetail && currentDetail.messages) || [], 'main');
+    for (const k of keys) scan(subs[k].messages, k);
+    subIndex = { callSite };
+  }
+  // Ancestor chain from the outermost (spawned in main) down to `key`, e.g. [topSub, …, key]. Empty if
+  // the call site can't be resolved (e.g. a subagent whose meta recorded no toolUseId).
+  function subChain(key) {
+    if (!subIndex) buildSubIndex();
+    const chain = []; const seen = new Set(); let cur = key;
+    while (cur && cur !== 'main' && !seen.has(cur)) {
+      seen.add(cur); chain.unshift(cur);
+      const cs = subIndex.callSite.get(cur);
+      if (!cs) return []; // broken link — can't place it in context
+      cur = cs.thread;
+    }
+    return chain;
+  }
+  // Bring a subagent into view AT ITS CALL SITE: jump the main thread to the outermost spawning turn,
+  // then expand each disclosure down the chain (filling lazily) and scroll/flash the target. Falls back
+  // to the standalone full-panel view when the call site is unknown, so orphan subagents stay reachable.
+  function focusSubagent(key) {
+    agentMenuOpen = false;
+    const menu = document.querySelector('#convAgentTabs .conv-agent-menu');
+    if (menu) menu.classList.add('hidden'); // close the picker immediately as click feedback
+    if (!currentDetail || !(currentDetail.subagents || {})[key]) return;
+    const chain = subChain(key);
+    if (!chain.length) { switchAgent(key); return; } // call site unknown → standalone full-panel view
+    if (activeAgent !== 'main') { activeAgent = 'main'; detailTexts = null; vStart = 0; vEnd = 0; buildDetailTexts(); }
+    const top = subIndex.callSite.get(chain[0]); // { thread:'main', mi }
+    jumpToMessage(top.mi, 'center');
+    const host = $('convDetail');
+    let det = null;
+    if (host) for (const k of chain) {
+      det = host.querySelector(`.subagent-inline[data-sub="${cssAttr(k)}"]`);
+      if (!det) break;
+      fillSubBody(det); det.open = true; // child level now exists in the DOM for the next iteration
+    }
+    renderAgentTabs(currentDetail);
+    if (!det) { switchAgent(key); return; } // couldn't place it inline → don't leave the click doing nothing
+    // Land on the spawning CALL (the tool card), not the middle of the now-tall subagent body, so the
+    // "why did this subagent appear" context reads top-down. Flash the whole block so it's unmistakable.
+    const anchor = det.closest('.tool-card') || det;
+    anchor.scrollIntoView({ block: 'start' });
+    if (host) host.scrollTop = Math.max(0, host.scrollTop - 48);
+    det.classList.remove('sub-flash'); void det.offsetWidth; // restart the animation if re-focused
+    det.classList.add('sub-flash');
+    setTimeout(() => det.classList.remove('sub-flash'), 2200);
+  }
+  // Escape a tool_use id for use inside a [data-sub="…"] attribute selector (ids may contain ':').
+  function cssAttr(s) { return String(s).replace(/(["\\])/g, '\\$1'); }
+
   function renderSidePanels(detail) {
     const m = detail.meta || {};
     const t = m.totals || {};
@@ -593,6 +697,7 @@
       [L('conv.stat.title'), m.title],
       [L('conv.stat.model'), m.model],
       ...(m.isSubagent ? [[L('conv.stat.type'), L('conv.subagentSession')]] : []),
+      ...(m.imported ? [[L('conv.imported'), m.importedFrom || '✓']] : []),
       [L('conv.stat.project'), m.cwd ? projName(m.cwd) : m.project],
       [L('conv.stat.branch'), m.gitBranch],
       [L('conv.stat.session'), m.sessionId ? String(m.sessionId).slice(0, 8) : null],
@@ -705,7 +810,18 @@
   /* ---------- events ---------- */
   function bind() {
     const list = $('convList');
-    if (list) list.addEventListener('click', (e) => {
+    if (list) list.addEventListener('click', async (e) => {
+      const rm = e.target.closest('[data-remove-import]');
+      if (rm) {
+        e.stopPropagation();
+        const file = rm.dataset.removeImport;
+        if (!file || !api.historyRemoveImport) return;
+        let res; try { res = await api.historyRemoveImport(file); } catch (_) { res = null; } // confirms in main
+        if (!res || !res.ok) return; // cancelled or failed → leave the list as-is
+        if (file === openFile) { openId = null; openFile = null; }
+        await refresh();
+        return;
+      }
       const head = e.target.closest('.conv-proj-head');
       if (head) {
         const key = head.dataset.proj;
@@ -721,6 +837,22 @@
     if (sb) sb.addEventListener('input', (e) => { search = e.target.value.trim(); renderList(); });
     const clr = $('convClear');
     if (clr) clr.addEventListener('click', () => { const i = $('convSearch'); if (i) { i.value = ''; search = ''; renderList(); i.focus(); } });
+    const imp = $('convImportBtn');
+    if (imp && api.historyImport) imp.addEventListener('click', async () => {
+      imp.disabled = true;
+      let r; try { r = await api.historyImport(); } catch (_) { r = null; }
+      imp.disabled = false;
+      if (!r || r.canceled) return;
+      if (!r.imported) { toast((r.skipped ? L('conv.importSkip', { n: r.skipped }) : L('conv.importNone')), r.failed ? false : undefined); }
+      else {
+        const parts = [L('conv.importDone', { n: r.imported })];
+        if (r.skipped) parts.push(L('conv.importSkip', { n: r.skipped }));
+        if (r.failed) parts.push(L('conv.importFail', { n: r.failed }));
+        toast(parts.join(' · '));
+        try { if (api.historySetActive) await api.historySetActive('__imported__'); } catch (_) {}
+      }
+      await refresh();
+    });
     const dirSwitch = $('convDirSwitch');
     if (dirSwitch) dirSwitch.addEventListener('click', async (e) => {
       const btn = e.target.closest('[data-dir]');
@@ -731,8 +863,9 @@
     const toc = $('convToc');
     if (toc) toc.addEventListener('click', (e) => { const it = e.target.closest('.toc-item'); if (it) jumpToMessage(+it.dataset.go, 'start'); });
 
-    // Session tabs: [主会话] [子代理 (N) ▾]. The dropdown toggles a menu of subagents; picking a tab
-    // or a menu item moves the whole panel to that session.
+    // Session tabs: [主会话] [子代理 (N) ▾]. The dropdown lists subagents; picking one jumps the main
+    // thread to where it was spawned and expands it inline there (focusSubagent), so it reads in context.
+    // The 主会话 tab switches the whole panel back to the root thread.
     const tabs = $('convAgentTabs');
     if (tabs) tabs.addEventListener('click', (e) => {
       if (e.target.closest('[data-agent-dd]')) {
@@ -742,7 +875,7 @@
         return;
       }
       const it = e.target.closest('[data-agent]');
-      if (it) switchAgent(it.dataset.agent);
+      if (it) { if (it.dataset.agent === 'main') switchAgent('main'); else focusSubagent(it.dataset.agent); }
     });
     // Close the subagent menu when clicking outside the tab bar.
     document.addEventListener('click', (e) => {
@@ -753,12 +886,51 @@
       if (menu) menu.classList.add('hidden');
     });
 
+    // Drag-to-resize the left/right panels (middle absorbs the rest). Widths persist; collapse wins via CSS.
+    (function initConvResizers() {
+      const layout = document.querySelector('.conv-layout');
+      const sidebar = document.querySelector('.conv-sidebar');
+      const nav = document.querySelector('.conv-nav');
+      if (!layout || !sidebar || !nav) return;
+      const MIN_LEFT = 200, MIN_RIGHT = 180, MIN_MAIN = 320; // MIN_MAIN keeps the middle usable, not a fixed width
+      const num = (v, d) => { const n = parseInt(v, 10); return isFinite(n) ? n : d; };
+      let leftW = num(localStorage.getItem('ccbud-conv-leftw'), 248);
+      let rightW = num(localStorage.getItem('ccbud-conv-rightw'), 220);
+      const apply = () => { sidebar.style.setProperty('--conv-left-w', leftW + 'px'); nav.style.setProperty('--conv-right-w', rightW + 'px'); };
+      apply();
+      const startDrag = (side, handle, e) => {
+        e.preventDefault();
+        const total = layout.getBoundingClientRect().width;
+        const startX = e.clientX, sL = leftW, sR = rightW;
+        layout.classList.add('resizing'); handle.classList.add('dragging');
+        const onMove = (ev) => {
+          const dx = ev.clientX - startX;
+          if (side === 'left') leftW = Math.max(MIN_LEFT, Math.min(total - rightW - MIN_MAIN, sL + dx));
+          else rightW = Math.max(MIN_RIGHT, Math.min(total - leftW - MIN_MAIN, sR - dx));
+          apply();
+        };
+        const onUp = () => {
+          document.removeEventListener('mousemove', onMove); document.removeEventListener('mouseup', onUp);
+          layout.classList.remove('resizing'); handle.classList.remove('dragging');
+          try { localStorage.setItem('ccbud-conv-leftw', String(leftW)); localStorage.setItem('ccbud-conv-rightw', String(rightW)); } catch (_) {}
+        };
+        document.addEventListener('mousemove', onMove); document.addEventListener('mouseup', onUp);
+      };
+      layout.querySelectorAll('.conv-resizer').forEach((r) => r.addEventListener('mousedown', (e) => startDrag(r.dataset.resize, r, e)));
+    })();
+
     // Collapse the conversation list sidebar / nav panel
     const convSidebar = document.querySelector('.conv-sidebar');
     const I = window.ccbudIcons || {};
+    // Left sidebar: ‹ when expanded (collapse leftward), › when collapsed (expand rightward).
     const setChevron = (btn, isCol) => {
       const icon = btn && btn.querySelector('[data-icon]');
       if (icon) icon.innerHTML = isCol ? (I.chevronRight || '›') : (I.chevronLeft || '‹');
+    };
+    // Right nav is the mirror image: › when expanded (collapse rightward), ‹ when collapsed.
+    const setChevronNav = (btn, isCol) => {
+      const icon = btn && btn.querySelector('[data-icon]');
+      if (icon) icon.innerHTML = isCol ? (I.chevronLeft || '‹') : (I.chevronRight || '›');
     };
 
     const collapseListBtn = $('btnCollapseConvList');
@@ -775,11 +947,12 @@
     const convNav = document.querySelector('.conv-nav');
     const collapseNavBtn = $('btnCollapseConvNav');
     if (collapseNavBtn && convNav) {
-      try { if (localStorage.getItem('ccbud-convnav-collapsed') === '1') { convNav.classList.add('collapsed'); setChevron(collapseNavBtn, true); } } catch (_) {}
+      setChevronNav(collapseNavBtn, false); // default expanded → › (collapse rightward)
+      try { if (localStorage.getItem('ccbud-convnav-collapsed') === '1') { convNav.classList.add('collapsed'); setChevronNav(collapseNavBtn, true); } } catch (_) {}
       collapseNavBtn.addEventListener('click', (e) => {
         e.stopPropagation();
         const isCol = convNav.classList.toggle('collapsed');
-        setChevron(collapseNavBtn, isCol);
+        setChevronNav(collapseNavBtn, isCol);
         try { localStorage.setItem('ccbud-convnav-collapsed', isCol ? '1' : '0'); } catch (_) {}
       });
     }
@@ -804,8 +977,12 @@
     // Load-earlier / load-later (delegated; #convDetail is stable, its innerHTML isn't).
     const detailHost = $('convDetail');
     if (detailHost) detailHost.addEventListener('click', (e) => {
-      if (e.target.closest('[data-load-earlier]')) loadEarlier();
-      else if (e.target.closest('[data-load-later]')) loadLater();
+      if (e.target.closest('[data-load-earlier]')) { loadEarlier(); return; }
+      if (e.target.closest('[data-load-later]')) { loadLater(); return; }
+      // Lazily render an inline subagent transcript the first time its disclosure is opened (its
+      // children render the same way, so the tree fills one level per click — never all at once).
+      const sum = e.target.closest('.subagent-inline > summary');
+      if (sum) fillSubBody(sum.parentElement);
     });
 
     // Action buttons (inline) + their collapsed "⋯" menu equivalents.
