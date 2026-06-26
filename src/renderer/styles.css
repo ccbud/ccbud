@@ -4282,6 +4282,9 @@ body {
   padding: 1px 6px;
   border-radius: 5px;
 }
+.conv-sidebar.collapsed .conv-search > :not(#btnCollapseConvList) {
+  display: none !important;
+}
 .conv-sidebar {
   width: var(--conv-left-w, 248px);
   min-width: 200px;
@@ -4328,6 +4331,9 @@ body {
 }
 .conv-search .tool-btn {
   flex-shrink: 0;
+}
+#btnCollapseConvList, #btnCollapseConvNav {
+  transition-property: color, background-color, border-color;
 }
 .search-field {
   flex: 1;
@@ -4548,6 +4554,33 @@ body {
   max-width: none;
   width: 100%;
 }
+.conv-detail table {
+  border-collapse: collapse;
+  margin: 10px 0;
+  font-size: 12.5px;
+  display: block;
+  width: fit-content;
+  max-width: 100%;
+  overflow-x: auto;
+}
+.conv-detail th, .conv-detail td {
+  border: 1px solid var(--border-strong);
+  padding: 5px 10px;
+  text-align: left;
+  vertical-align: top;
+}
+.conv-detail thead th {
+  background: var(--chip-bg);
+  font-weight: 600;
+  color: var(--fg);
+  white-space: nowrap;
+}
+.conv-detail tbody tr:nth-child(even) td {
+  background: var(--fg);
+  @supports (color: color-mix(in lab, red, red)) {
+    background: color-mix(in srgb, var(--fg) 3%, transparent);
+  }
+}
 .conv-detail > .conv-empty, .conv-detail > .state-empty {
   max-width: 360px;
   margin: auto;
@@ -4694,6 +4727,11 @@ pre.wrap {
 }
 pre.cmd {
   color: var(--green);
+}
+[data-theme="light"] .conv-detail pre {
+  background: #f6f8fa !important;
+  color: #24292e;
+  border-color: var(--border);
 }
 .thinking {
   background: rgba(255, 159, 10, 0.04);

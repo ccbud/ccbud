@@ -104,6 +104,10 @@ body {
 /* markdown */
 .prose { font-size: 15px; line-height: 1.72; }
 .prose > :first-child { margin-top: 0; } .prose > :last-child { margin-bottom: 0; }
+.prose table { border-collapse: collapse; margin: 12px 0; font-size: 13.5px; display: block; width: fit-content; max-width: 100%; overflow-x: auto; }
+.prose th, .prose td { border: 1px solid var(--border-strong); padding: 6px 11px; text-align: left; vertical-align: top; }
+.prose thead th { background: var(--surface-2); font-weight: 600; color: var(--text); white-space: nowrap; }
+.prose tbody tr:nth-child(even) td { background: var(--bg-sink); }
 .prose p { margin: 0 0 13px; }
 .prose h1, .prose h2, .prose h3, .prose h4 { font-weight: 600; line-height: 1.3; margin: 22px 0 10px; letter-spacing: -0.01em; }
 .prose h1 { font-size: 1.5em; } .prose h2 { font-size: 1.3em; } .prose h3 { font-size: 1.12em; }

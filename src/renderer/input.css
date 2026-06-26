@@ -1395,6 +1395,11 @@ body {
 /* result-size chip pushed to the right edge of the result summary */
 .tool-res-size { margin-left: auto; font-family: ui-monospace, monospace; font-size: 9.5px; font-weight: 600; color: var(--caption); background: var(--chip-bg); padding: 1px 6px; border-radius: 5px; }
 
+/* Collapsed session sidebar: only the expand button may occupy the 34px strip. Without this the import
+   (+) button stays in the flex row, overflows the narrow strip, and justify-center shoves the expand
+   button left under the primary nav — leaving an empty, unclickable strip. !important beats `flex`. */
+.conv-sidebar.collapsed .conv-search > :not(#btnCollapseConvList) { display: none !important; }
+
 .conv-sidebar {
   width: var(--conv-left-w, 248px); /* drag-resizable; JS sets the var, .collapsed overrides below */
   min-width: 200px;
@@ -1447,6 +1452,11 @@ body {
 .conv-search .tool-btn {
   flex-shrink: 0;
 }
+
+/* Collapse/expand morphs these buttons' size/border/radius. `.tool-btn` sets `transition: all`, so those
+   layout changes animate while the sidebar width snaps instantly → visible jitter in the search row.
+   Restrict the two collapse toggles to color transitions (id beats `.tool-btn`) so layout snaps cleanly. */
+#btnCollapseConvList, #btnCollapseConvNav { transition-property: color, background-color, border-color; }
 
 .search-field {
   flex: 1;
@@ -1668,6 +1678,25 @@ body {
   width: 100%;
 }
 
+/* GFM tables in rendered markdown (marked emits <table>; without this they look like raw text). */
+.conv-detail table {
+  border-collapse: collapse;
+  margin: 10px 0;
+  font-size: 12.5px;
+  display: block;            /* scroll wide tables instead of overflowing the message column */
+  width: fit-content;
+  max-width: 100%;
+  overflow-x: auto;
+}
+.conv-detail th, .conv-detail td {
+  border: 1px solid var(--border-strong);
+  padding: 5px 10px;
+  text-align: left;
+  vertical-align: top;
+}
+.conv-detail thead th { background: var(--chip-bg); font-weight: 600; color: var(--fg); white-space: nowrap; }
+.conv-detail tbody tr:nth-child(even) td { background: color-mix(in srgb, var(--fg) 3%, transparent); }
+
 .conv-detail > .conv-empty,
 .conv-detail > .state-empty {
   max-width: 360px;
@@ -1788,6 +1817,17 @@ pre {
 pre code { background: none !important; padding: 0 !important; font-size: inherit; color: inherit; }
 pre.wrap { white-space: pre-wrap; word-break: break-all; }
 pre.cmd { color: var(--green); }
+
+/* Code blocks force a dark bg globally (intended, looks right in dark theme). In LIGHT theme that dark
+   bg pairs with the ACTIVE light hljs token palette (dark token colors) → low contrast / hard to read.
+   Give light-theme conversation code blocks a light surface so those tokens read (mirrors .dr-pre).
+   Dark theme is deliberately left untouched. Specificity (0,2,1) + !important beats the global `pre`
+   !important and the inline Tailwind bg/text utilities; hljs token spans keep their own colors. */
+[data-theme="light"] .conv-detail pre {
+  background: #f6f8fa !important;
+  color: #24292e;
+  border-color: var(--border);
+}
 
 .thinking {
   background: rgba(255, 159, 10, 0.04);
