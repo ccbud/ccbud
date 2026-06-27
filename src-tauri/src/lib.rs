@@ -11,6 +11,7 @@
 #![allow(unused_variables)]
 
 mod claude;
+mod claudedesktop;
 mod counttokens;
 mod gateway;
 mod history;
@@ -124,9 +125,32 @@ async fn claude_disconnect(
     gw.emit("gateway:status", status);
     Ok(json!({ "ok": true }))
 }
-#[tauri::command] fn desktop_status() -> Value { json!({ "supported": true, "connected": false, "profileInstalled": false }) }
-#[tauri::command] fn desktop_connect() -> Value { Value::Null }
-#[tauri::command] fn desktop_disconnect() -> Value { Value::Null }
+#[tauri::command]
+async fn desktop_status(
+    gw: tauri::State<'_, std::sync::Arc<gateway::GatewayState>>,
+) -> Result<Value, String> {
+    let port = gw
+        .current_port()
+        .await
+        .unwrap_or_else(|| store::read_config().get("port").and_then(|v| v.as_u64()).unwrap_or(8788) as u16);
+    Ok(claudedesktop::status(port))
+}
+#[tauri::command]
+async fn desktop_connect(
+    gw: tauri::State<'_, std::sync::Arc<gateway::GatewayState>>,
+) -> Result<Value, String> {
+    let cfg = store::read_config();
+    let port = cfg.get("port").and_then(|v| v.as_u64()).unwrap_or(8788) as u16;
+    if cfg.get("providers").and_then(|v| v.as_array()).map(|a| a.is_empty()).unwrap_or(true) {
+        return Ok(json!({ "ok": false, "reason": "noProvider" }));
+    }
+    let _ = gw.start(port).await;
+    Ok(claudedesktop::connect(port, &claude::current_token(&cfg)))
+}
+#[tauri::command]
+fn desktop_disconnect() -> Value {
+    claudedesktop::disconnect()
+}
 #[tauri::command] fn desktop_replay(file: String) -> Value { Value::Null }
 
 // ---- server / usage / monitor / logs (Phase 2/3) ----
@@ -299,6 +323,17 @@ fn selfcheck_history() -> Value {
     history::history_selftest(&store::ccbud_home())
 }
 #[tauri::command]
+fn selfcheck_desktop() -> Value {
+    let p = claudedesktop::build_profile(18799, "tok");
+    json!({
+        "hasBaseUrl": p.contains("http://localhost:18799"),
+        "hasProvider": p.contains("inferenceProvider") && p.contains("gateway"),
+        "hasModels": p.contains("claude-sonnet-4-6") && p.contains("anthropicFamilyTier") && p.contains("isFamilyDefault"),
+        "hasBundleId": p.contains("com.anthropic.claudefordesktop"),
+        "validXml": p.starts_with("<?xml") && p.contains("</plist>"),
+    })
+}
+#[tauri::command]
 async fn selfcheck_gateway(
     gw: tauri::State<'_, std::sync::Arc<gateway::GatewayState>>,
 ) -> Result<Value, String> {
@@ -362,6 +397,7 @@ const SELFCHECK_JS: &str = r#"
       try{ var cc=await window.ccbud.connect(); var s1=await window.ccbud.serverStatus(); var dd=await window.ccbud.disconnect(); var s2=await window.ccbud.serverStatus(); o.claude={connOk:cc&&cc.ok,connected:s1.connected,discOk:dd&&dd.ok,afterDisc:s2.connected}; }catch(e){ o.claudeErr=String(e); }
       try{ o.copyOk=await window.ccbud.copy('selfcheck-clip'); }catch(e){ o.copyErr=String(e); }
       try{ o.histMeta=await window.__TAURI__.core.invoke('selfcheck_history'); }catch(e){ o.histMetaErr=String(e); }
+      try{ o.desktop=await window.__TAURI__.core.invoke('selfcheck_desktop'); }catch(e){ o.desktopErr=String(e); }
       o.errors=window.__ccbud_errors.slice(0,20);
     }catch(e){o.fatal=String((e&&e.stack)||e);}
     rep(o);
@@ -410,7 +446,7 @@ pub fn run() {
             history_import, history_import_paths, history_remove_import, history_set_meta, history_export_raw, history_export_html,
             util_copy, util_open_external,
             update_state, update_check, update_download, update_apply, update_set_auto,
-            selfcheck_report, selfcheck_routing, selfcheck_gateway, selfcheck_history
+            selfcheck_report, selfcheck_routing, selfcheck_gateway, selfcheck_history, selfcheck_desktop
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

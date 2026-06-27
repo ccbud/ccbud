@@ -34,6 +34,7 @@ regex = "1"
 chrono = { version = "0.4", features = ["clock"] }
 arboard = "3"
 tiktoken-rs = "0.6"
+sha1 = "0.10"
 
 # Size-optimized release build — critical for the <50MB goal.
 [profile.release]
