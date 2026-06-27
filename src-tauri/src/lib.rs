@@ -17,7 +17,7 @@ mod store;
 mod usage;
 
 use serde_json::{json, Value};
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 // ---- config / providers (real, store.rs) ----
 #[tauri::command]
@@ -160,14 +160,29 @@ fn usage_get(range: Option<String>) -> Value {
 #[tauri::command] fn logs_clear() -> Value { Value::Null }
 
 // ---- window / app lifecycle (Phase 4) ----
-#[tauri::command] fn app_open_main() -> Value { Value::Null }
+#[tauri::command]
+fn app_open_main(app: tauri::AppHandle) -> Value {
+    if let Some(win) = app.get_webview_window("main") {
+        let _ = win.show();
+        let _ = win.unminimize();
+        let _ = win.set_focus();
+    }
+    Value::Null
+}
 #[tauri::command]
 fn app_quit(app: tauri::AppHandle) -> Value {
     app.exit(0);
     Value::Null
 }
 #[tauri::command] fn window_settings_mode(on: bool) -> Value { Value::Null }
-#[tauri::command] fn window_view_min_width(w: i64) -> Value { Value::Null }
+#[tauri::command]
+fn window_view_min_width(app: tauri::AppHandle, w: i64) -> Value {
+    if let Some(win) = app.get_webview_window("main") {
+        let min_w = std::cmp::max(600, if w > 0 { w } else { 900 }) as f64;
+        let _ = win.set_min_size(Some(tauri::Size::Logical(tauri::LogicalSize::new(min_w, 600.0))));
+    }
+    Value::Null
+}
 
 // ---- conversation history (Phase 3) ----
 #[tauri::command]
@@ -193,11 +208,29 @@ fn history_dirs() -> Value {
     json!({ "dirs": history::dir_stats(&cfg), "active": active })
 }
 #[tauri::command] fn history_pick_dir() -> Value { Value::Null }
-#[tauri::command] fn history_set_active(id: String) -> Value { Value::Null }
+#[tauri::command]
+fn history_set_active(app: tauri::AppHandle, id: String) -> Value {
+    let mut cfg = store::read_config();
+    cfg["historyActive"] = json!(if id.is_empty() { "all".to_string() } else { id });
+    let saved = store::write_config(cfg);
+    let _ = app.emit(
+        "history:changed",
+        json!({ "files": [], "active": saved.get("historyActive").cloned().unwrap_or(json!("all")) }),
+    );
+    saved
+}
 #[tauri::command] fn history_import() -> Value { Value::Null }
 #[tauri::command] fn history_import_paths(paths: Value) -> Value { Value::Null }
 #[tauri::command] fn history_remove_import(file: String) -> Value { Value::Null }
-#[tauri::command] fn history_set_meta(file: String, patch: Value) -> Value { Value::Null }
+#[tauri::command]
+fn history_set_meta(app: tauri::AppHandle, file: String, patch: Value) -> Value {
+    let cfg = store::read_config();
+    let r = history::set_ccbud(&file, &patch, &cfg);
+    if r.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+        let _ = app.emit("history:changed", json!({ "files": [file] }));
+    }
+    r
+}
 #[tauri::command] fn history_export_raw(file: String) -> Value { json!("") }
 #[tauri::command] fn history_export_html(payload: Value) -> Value { json!("") }
 
@@ -246,6 +279,10 @@ fn selfcheck_report(report: Value) {
 #[tauri::command]
 fn selfcheck_routing() -> Value {
     gateway::routing_selftest()
+}
+#[tauri::command]
+fn selfcheck_history() -> Value {
+    history::history_selftest(&store::ccbud_home())
 }
 #[tauri::command]
 async fn selfcheck_gateway(
@@ -300,6 +337,7 @@ const SELFCHECK_JS: &str = r#"
       try{ var ug=await window.ccbud.usageGet('all'); o.usage={tokens:ug.tokens,requests:ug.requests,fav:ug.favoriteModel,heatmap:(ug.heatmap||[]).length,byModel:(ug.byModel||[]).length,activeDays:ug.activeDays}; }catch(e){ o.usageErr=String(e); }
       try{ var cc=await window.ccbud.connect(); var s1=await window.ccbud.serverStatus(); var dd=await window.ccbud.disconnect(); var s2=await window.ccbud.serverStatus(); o.claude={connOk:cc&&cc.ok,connected:s1.connected,discOk:dd&&dd.ok,afterDisc:s2.connected}; }catch(e){ o.claudeErr=String(e); }
       try{ o.copyOk=await window.ccbud.copy('selfcheck-clip'); }catch(e){ o.copyErr=String(e); }
+      try{ o.histMeta=await window.__TAURI__.core.invoke('selfcheck_history'); }catch(e){ o.histMetaErr=String(e); }
       o.errors=window.__ccbud_errors.slice(0,20);
     }catch(e){o.fatal=String((e&&e.stack)||e);}
     rep(o);
@@ -348,7 +386,7 @@ pub fn run() {
             history_import, history_import_paths, history_remove_import, history_set_meta, history_export_raw, history_export_html,
             util_copy, util_open_external,
             update_state, update_check, update_download, update_apply, update_set_auto,
-            selfcheck_report, selfcheck_routing, selfcheck_gateway
+            selfcheck_report, selfcheck_routing, selfcheck_gateway, selfcheck_history
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

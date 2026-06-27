@@ -461,3 +461,102 @@ pub fn get_session(file: &str) -> Value {
         "subagents": {},
     })
 }
+
+/// Write per-conversation customization (custom title + tags) onto the FIRST parseable line as a
+/// `__ccbud__` field. Atomic (tmp + rename). Guarded to the configured dirs (renderer can't drive
+/// an arbitrary-path write). Mirrors history.js setCcbud.
+pub fn set_ccbud(file: &str, patch: &Value, config: &Value) -> Value {
+    let target = Path::new(file);
+    let within = config_dirs(config).iter().any(|(_, _, pd)| target.starts_with(pd));
+    if !within {
+        return json!({ "ok": false, "reason": "out-of-scope" });
+    }
+    let raw = match fs::read_to_string(file) {
+        Ok(s) => s,
+        Err(_) => return json!({ "ok": false, "reason": "read" }),
+    };
+    let mut lines: Vec<String> = raw.split('\n').map(|s| s.to_string()).collect();
+    let mut found: Option<(usize, Value)> = None;
+    for (i, l) in lines.iter().enumerate() {
+        let s = l.trim();
+        if s.is_empty() {
+            continue;
+        }
+        if let Ok(v) = serde_json::from_str::<Value>(s) {
+            if v.is_object() {
+                found = Some((i, v));
+                break;
+            }
+        }
+    }
+    let (idx, mut obj) = match found {
+        Some(x) => x,
+        None => return json!({ "ok": false, "reason": "empty" }),
+    };
+    let mut next = obj.get("__ccbud__").and_then(|v| v.as_object()).cloned().unwrap_or_default();
+    if let Some(t) = patch.get("title") {
+        let t = t.as_str().unwrap_or("").trim().to_string();
+        if !t.is_empty() {
+            next.insert("title".into(), json!(t));
+        } else {
+            next.remove("title");
+        }
+    }
+    if let Some(tags) = patch.get("tags") {
+        let mut arr: Vec<String> = vec![];
+        if let Some(ta) = tags.as_array() {
+            for x in ta {
+                if let Some(s) = x.as_str() {
+                    let s = s.trim();
+                    if !s.is_empty() && !arr.iter().any(|y| y == s) {
+                        arr.push(s.to_string());
+                    }
+                }
+            }
+        }
+        if !arr.is_empty() {
+            next.insert("tagList".into(), json!(arr));
+        } else {
+            next.remove("tagList");
+        }
+    }
+    let o = obj.as_object_mut().unwrap();
+    if !next.is_empty() {
+        o.insert("__ccbud__".into(), Value::Object(next));
+    } else {
+        o.remove("__ccbud__");
+    }
+    lines[idx] = serde_json::to_string(&obj).unwrap_or_default();
+    let out = lines.join("\n");
+    let tmp = format!("{}.ccbud.tmp", file);
+    if fs::write(&tmp, &out).is_err() {
+        return json!({ "ok": false, "reason": "write" });
+    }
+    if fs::rename(&tmp, file).is_err() {
+        let _ = fs::remove_file(&tmp);
+        return json!({ "ok": false, "reason": "write" });
+    }
+    json!({ "ok": true })
+}
+
+/// Self-contained round-trip test of set_ccbud + get_session in a throwaway projects tree.
+pub fn history_selftest(base_dir: &Path) -> Value {
+    let proj = base_dir.join("test-claude").join("projects").join("-test-cwd");
+    let _ = fs::create_dir_all(&proj);
+    let file = proj.join("sess1.jsonl");
+    let content = "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"hello world from selfcheck\"},\"cwd\":\"/test/cwd\",\"sessionId\":\"sess1\",\"timestamp\":\"2025-01-01T10:00:00.000Z\"}\n";
+    let _ = fs::write(&file, content);
+    let config = json!({ "historyDirs": [ base_dir.join("test-claude").to_string_lossy() ] });
+    let fpath = file.to_string_lossy().to_string();
+    let set = set_ccbud(&fpath, &json!({ "title": "My Title", "tags": ["a", "b", "b"] }), &config);
+    let sess = get_session(&fpath);
+    let title = sess.get("meta").and_then(|m| m.get("title")).and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let tags = sess.get("meta").and_then(|m| m.get("tags")).and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0);
+    let auto = sess.get("meta").and_then(|m| m.get("autoTitle")).and_then(|v| v.as_str()).unwrap_or("").to_string();
+    json!({
+        "setOk": set.get("ok").and_then(|v| v.as_bool()).unwrap_or(false),
+        "title": title,
+        "tagCount": tags,
+        "autoTitle": auto,
+    })
+}
