@@ -144,10 +144,15 @@ function configDirs() {
     return { id: raw, label: dirLabel(raw), configDir: exp, projectsDir: path.join(exp, 'projects') };
   });
 }
+// All user settings + data live under ~/.ccbud so they survive an app uninstall/reinstall and are
+// trivial to back up or reuse. (The hot-update bundle stays under userData — it's tied to the
+// installed shell version, not portable.) Override with CCBUD_HOME for tests / custom locations.
+const CCBUD_HOME = process.env.CCBUD_HOME || path.join(os.homedir(), '.ccbud');
+
 // The app-managed import store, laid out exactly like a native config dir's projects/ tree so the
 // whole history pipeline (list/group/subagents/getSession/watch/count) handles imports unchanged.
 const IMPORTED_ID = '__imported__';
-function importsRoot() { return path.join(app.getPath('userData'), 'imports'); }
+function importsRoot() { return path.join(CCBUD_HOME, 'imports'); }
 function importedDir() {
   return { id: IMPORTED_ID, label: mt('conv.imported'), configDir: importsRoot(), projectsDir: path.join(importsRoot(), 'projects'), imported: true };
 }
@@ -814,21 +819,26 @@ function setSettingsWindowMode(_on) { /* no-op: settings no longer locks window 
 if (gotLock) {
   app.whenReady().then(async () => {
     const userData = app.getPath('userData');
-    // One-time migration: the app was renamed Clawdy → ccbud, which moves the userData dir. If the new
-    // dir has no config yet but the old "clawdy" dir does, carry the config (+ request log) across so
-    // existing providers/settings survive the rename.
+    // Settings + user data now live under ~/.ccbud (portable across uninstall/reinstall). On first run
+    // there, migrate from the legacy locations: the app's userData, and the older "clawdy"-named one —
+    // so existing providers/settings/imports survive the move.
     try {
-      const oldDir = path.join(path.dirname(userData), 'clawdy');
-      if (oldDir !== userData && fs.existsSync(path.join(oldDir, 'config.json')) && !fs.existsSync(path.join(userData, 'config.json'))) {
-        fs.mkdirSync(userData, { recursive: true });
-        for (const name of ['config.json', 'requests.log']) {
-          const from = path.join(oldDir, name);
-          if (fs.existsSync(from)) { try { fs.copyFileSync(from, path.join(userData, name)); } catch (_) {} }
+      fs.mkdirSync(CCBUD_HOME, { recursive: true, mode: 0o700 });
+      if (!fs.existsSync(path.join(CCBUD_HOME, 'config.json'))) {
+        for (const old of [userData, path.join(path.dirname(userData), 'clawdy')]) {
+          if (old === CCBUD_HOME || !fs.existsSync(path.join(old, 'config.json'))) continue;
+          for (const name of ['config.json', 'requests.log']) {
+            const from = path.join(old, name);
+            if (fs.existsSync(from)) { try { fs.copyFileSync(from, path.join(CCBUD_HOME, name)); } catch (_) {} }
+          }
+          const oldImports = path.join(old, 'imports');
+          if (fs.existsSync(oldImports)) { try { fs.cpSync(oldImports, path.join(CCBUD_HOME, 'imports'), { recursive: true }); } catch (_) {} }
+          break;
         }
       }
     } catch (_) {}
-    requestLogPath = path.join(userData, 'requests.log');
-    store = createStore(userData);
+    requestLogPath = path.join(CCBUD_HOME, 'requests.log');
+    store = createStore(CCBUD_HOME);
     // First run: pick the UI language from the system locale (then it's user-controlled).
     if (!store.get().language) {
       try { store.save(Object.assign({}, store.get(), { language: mapLocale(app.getLocale()) })); } catch (_) {}

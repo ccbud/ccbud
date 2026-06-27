@@ -34,7 +34,7 @@ const PROFILES_PANE = 'x-apple.systempreferences:com.apple.preferences.configura
 const isMac = () => process.platform === 'darwin';
 const endpoint = (port) => `http://localhost:${port || 8788}`;
 const profilePath = () =>
-  path.join(os.homedir(), 'Library', 'Application Support', 'ccbud', 'claude-desktop-inference.mobileconfig');
+  path.join(os.homedir(), '.ccbud', 'claude-desktop-inference.mobileconfig');
 
 function appInstalled() {
   if (!isMac()) return false;
