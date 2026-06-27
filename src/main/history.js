@@ -101,6 +101,20 @@ function firstUserText(messages) {
   return fallbackCmd.slice(0, 90);
 }
 
+// Optional per-conversation customization the app writes onto a session line as `__ccbud__`
+// (custom title + user tags). It's an extra field on a meta line — invisible to Claude Code itself.
+// See setCcbud for the writer. Returns { title|null, tags[] }.
+function readCcbud(recs) {
+  const r = recs.find((x) => x && typeof x === 'object' && x.__ccbud__);
+  const c = r ? r.__ccbud__ : null;
+  return {
+    title: c && typeof c.title === 'string' && c.title.trim() ? c.title.trim() : null,
+    tags: c && Array.isArray(c.tagList)
+      ? c.tagList.filter((t) => typeof t === 'string' && t.trim()).map((t) => t.trim())
+      : [],
+  };
+}
+
 function parseLines(buf) {
   const out = [];
   for (const line of buf.split('\n')) {
@@ -229,6 +243,8 @@ function createHistoryWatcher(opts) {
       const metaRec = recs.find((r) => r.cwd) || recs.find((r) => r.sessionId) || {};
       const agentRec = recs.find((r) => r.agentId) || {};
       const msgs = recs.map(lineToMessage).filter(Boolean);
+      const cc = readCcbud(recs);
+      const autoTitle = firstUserText(msgs);
       let model = null;
       for (const r of recs) { if (r.type === 'assistant' && r.message && r.message.model) model = r.message.model; }
       const subagent = isSub || !!agentRec.agentId;
@@ -248,7 +264,9 @@ function createHistoryWatcher(opts) {
           cwd,
           project: baseName(cwd),
           gitBranch: metaRec.gitBranch || null,
-          title: firstUserText(msgs),
+          title: cc.title || autoTitle,
+          autoTitle,
+          tags: cc.tags,
           model,
           isSubagent: subagent,
           imported: !!(dm && dm.imported),
@@ -311,9 +329,11 @@ function createHistoryWatcher(opts) {
     const metaRec = recs.find((r) => r.cwd) || recs.find((r) => r.sessionId) || {};
     const agentRec = recs.find((r) => r.agentId) || {};
     const summaryRec = recs.find((r) => r.type === 'summary' && r.summary);
+    const cc = readCcbud(recs);
 
     const shaped = shapeMessages(recs);
     const messages = shaped.messages;
+    const autoTitle = firstUserText(messages);
 
     const subagent = !!agentRec.agentId;
     // Imported transcripts carry a sidecar recording where they came from (see main.importOne).
@@ -330,7 +350,9 @@ function createHistoryWatcher(opts) {
         id: 'disk:' + path.basename(file, '.jsonl') + (subagent ? ':sub' : ''),
         file,
         source: 'disk',
-        title: firstUserText(messages),
+        title: cc.title || autoTitle,
+        autoTitle,
+        tags: cc.tags,
         summary: summaryRec ? summaryRec.summary : null,
         sessionId: sessId,
         cwd,
@@ -351,6 +373,42 @@ function createHistoryWatcher(opts) {
       messages,
       subagents,
     };
+  }
+
+  // Write per-conversation customization (custom title + tags) onto the FIRST parseable line of a
+  // session file as a `__ccbud__` field. patch: { title?, tags? } — empty title / empty tags removes
+  // that key (empty __ccbud__ is dropped entirely). Atomic (tmp + rename, mirrors store.js). Guarded
+  // to the configured projects dirs so a renderer can never drive an arbitrary-path write.
+  function setCcbud(file, patch) {
+    patch = patch || {};
+    const within = dirs().some((dm) => dm && dm.projectsDir &&
+      path.resolve(file).startsWith(path.resolve(dm.projectsDir) + path.sep));
+    if (!within) return { ok: false, reason: 'out-of-scope' };
+    let raw;
+    try { raw = fs.readFileSync(file, 'utf8'); } catch (_) { return { ok: false, reason: 'read' }; }
+    const lines = raw.split('\n');
+    let idx = -1, obj = null;
+    for (let i = 0; i < lines.length; i++) {
+      const s = lines[i].trim(); if (!s) continue;
+      try { obj = JSON.parse(s); idx = i; break; } catch (_) {}
+    }
+    if (idx < 0 || !obj || typeof obj !== 'object') return { ok: false, reason: 'empty' };
+    const next = Object.assign({}, obj.__ccbud__ || {});
+    if ('title' in patch) { const t = (patch.title || '').trim(); if (t) next.title = t; else delete next.title; }
+    if ('tags' in patch) {
+      const arr = [];
+      for (const x of (patch.tags || [])) { const t = typeof x === 'string' ? x.trim() : ''; if (t && arr.indexOf(t) < 0) arr.push(t); }
+      if (arr.length) next.tagList = arr; else delete next.tagList;
+    }
+    if (Object.keys(next).length) obj.__ccbud__ = next; else delete obj.__ccbud__;
+    lines[idx] = JSON.stringify(obj);
+    const out = lines.join('\n');
+    const tmp = file + '.ccbud.tmp';
+    try { fs.writeFileSync(tmp, out, 'utf8'); fs.renameSync(tmp, file); }
+    catch (e) { try { fs.unlinkSync(tmp); } catch (_) {} return { ok: false, reason: 'write' }; }
+    metaCache.delete(file);                                // next list re-reads the new title/tags
+    try { offsets.set(file, Buffer.byteLength(out)); } catch (_) {}  // don't let the watcher replay the rewrite as new records
+    return { ok: true };
   }
 
   /* ---------- watch / live tail ---------- */
@@ -444,6 +502,7 @@ function createHistoryWatcher(opts) {
     listProjects,
     dirStats,
     getSession,
+    setCcbud,
   };
 }
 
