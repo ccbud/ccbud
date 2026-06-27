@@ -432,9 +432,31 @@
     lastRender = { file: openFile, count: messages.length, contentLen, subCount };
   }
   function isNearBottom(el) { return el.scrollHeight - el.scrollTop - el.clientHeight < 120; }
+  // Add a GitHub-style line-number gutter to a code block (after highlighting, so token spans are
+  // intact). Skipped for plain blocks (terminal/JSON output) and once already applied.
+  function addGutter(pre) {
+    if (!pre || pre.dataset.gutter || pre.classList.contains('cb-plain')) return;
+    const code = pre.querySelector('code');
+    if (!code) return;
+    let n = (code.textContent || '').replace(/\n+$/, '').split('\n').length;
+    if (n < 1) n = 1;
+    let s = '';
+    for (let i = 1; i <= n; i++) s += i + (i < n ? '\n' : '');
+    const g = document.createElement('span');
+    g.className = 'cb-gutter';
+    g.setAttribute('aria-hidden', 'true');
+    g.textContent = s;
+    pre.insertBefore(g, code);
+    pre.classList.add('cb-has-gutter');
+    pre.dataset.gutter = '1';
+  }
   function highlight(root) {
     if (!window.hljs) return;
-    root.querySelectorAll('pre code').forEach((b) => { if (b.dataset.highlighted) return; try { window.hljs.highlightElement(b); } catch (_) {} });
+    root.querySelectorAll('pre code').forEach((code) => {
+      if (code.classList.contains('nohljs')) return; // plain output (terminal / JSON) — no highlight, no gutter
+      if (!code.dataset.highlighted) { try { window.hljs.highlightElement(code); } catch (_) {} }
+      addGutter(code.parentElement); // GitHub-style line-number gutter
+    });
   }
 
   function buildResults(messages) {
@@ -579,7 +601,48 @@
       return `<div class="todo text-[11.5px] flex gap-1.75 [&.completed]:text-muted [&.completed]:line-through [&.in_progress]:text-primary [&.in_progress]:font-semibold ${esc(t.status || '')}"><span class="todo-box w-3.25">${m}</span>${esc(t.content || t.activeForm || '')}</div>`;
     }).join('') + '</div>';
   }
-  function codePre(text, lang) { return `<pre class="pre bg-[#0c0e12] border border-white/7 rounded-[7px] p-2.5 overflow-x-auto font-mono text-[11px] leading-[1.48] text-[#e8edf4]"><code${lang ? ' class="language-' + esc(lang) + '"' : ''}>${esc(truncate(text, 12000))}</code></pre>`; }
+  // File extension → highlight.js language id (so code blocks get language-specific highlighting).
+  const EXT_LANG = {
+    js: 'javascript', mjs: 'javascript', cjs: 'javascript', jsx: 'javascript', ts: 'typescript', tsx: 'typescript',
+    py: 'python', rb: 'ruby', go: 'go', rs: 'rust', java: 'java', kt: 'kotlin', scala: 'scala', swift: 'swift',
+    c: 'c', h: 'c', cpp: 'cpp', cc: 'cpp', cxx: 'cpp', hpp: 'cpp', cs: 'csharp', m: 'objectivec', mm: 'objectivec',
+    php: 'php', pl: 'perl', lua: 'lua', r: 'r', dart: 'dart', ex: 'elixir', exs: 'elixir', erl: 'erlang', clj: 'clojure',
+    sh: 'bash', bash: 'bash', zsh: 'bash', fish: 'bash', ps1: 'powershell',
+    json: 'json', jsonc: 'json', yaml: 'yaml', yml: 'yaml', toml: 'ini', ini: 'ini', conf: 'ini', env: 'ini',
+    html: 'xml', htm: 'xml', xml: 'xml', svg: 'xml', vue: 'xml', xhtml: 'xml',
+    css: 'css', scss: 'scss', sass: 'scss', less: 'less', styl: 'stylus',
+    md: 'markdown', markdown: 'markdown', sql: 'sql', graphql: 'graphql', gql: 'graphql', proto: 'protobuf',
+    tf: 'terraform', tsv: 'plaintext', csv: 'plaintext',
+  };
+  function langFromPath(p) {
+    if (!p) return '';
+    const base = String(p).split(/[\\/]/).pop().toLowerCase();
+    if (base === 'dockerfile') return 'dockerfile';
+    if (base === 'makefile' || base === 'gnumakefile') return 'makefile';
+    const dot = base.lastIndexOf('.');
+    return (dot >= 0 ? EXT_LANG[base.slice(dot + 1)] : '') || '';
+  }
+  // Strip `cat -n` prefixes ("␠␠␠12\t…", as Claude Code's Read returns) so we render our own gutter.
+  function stripCatN(text) {
+    return /^\s*\d+\t/.test(text) ? text.replace(/^\s*\d+\t/gm, '') : text;
+  }
+  // A styled code block. lang='' → plain (no syntax highlight, no gutter). highlight()+gutter are
+  // applied after insertion (see highlight()). Shared by tool cards and (indirectly) the renderer.
+  function codeBlock(text, lang) {
+    const cls = lang ? 'language-' + esc(lang) : 'nohljs';
+    return `<pre class="cb${lang ? '' : ' cb-plain'}"><code class="${cls}">${esc(text)}</code></pre>`;
+  }
+  function codePre(text, lang) { return codeBlock(truncate(text, 12000), lang || ''); }
+  // Markdown file: rendered preview (default) ↔ highlighted source, toggled by tabs. marked renders the
+  // preview; highlight() lights up code blocks inside both panes (source is highlighted even while hidden).
+  function mdDoc(text) {
+    return '<div class="md-doc">'
+      + `<div class="md-tabs"><button type="button" class="md-tab active" data-md-tab="preview">${esc(L('conv.mdPreview'))}</button><button type="button" class="md-tab" data-md-tab="source">${esc(L('conv.mdSource'))}</button></div>`
+      + `<div class="md-pane md-preview blk-text">${md(text)}</div>`
+      + `<div class="md-pane md-source hidden">${codeBlock(text, 'markdown')}</div>`
+      + '</div>';
+  }
+  const isMdPath = (p) => langFromPath(p) === 'markdown';
 
   function shortPath(p) { if (!p) return ''; const s = String(p).split('/'); return s.length > 3 ? '…/' + s.slice(-2).join('/') : p; }
   function resultSummary(txt) { const b = txt ? txt.length : 0; if (!b) return ''; return b < 1024 ? b + ' B' : (b / 1024).toFixed(1) + ' KB'; }
@@ -590,26 +653,35 @@
     const input = (tu.input && typeof tu.input === 'object') ? tu.input : {};
     const cls = /^mcp__/.test(name) ? 'mcp' : (TOOL_CLS[name] || 'default');
     let icon = '🔧', label = name, target = '', bodyInput = '';
-    if (name === 'Bash') { icon = '⌘'; label = 'Bash'; target = input.description || ''; bodyInput = `<pre class="pre bg-[#0c0e12] border border-white/7 rounded-[7px] p-2.5 overflow-x-auto font-mono text-[11px] leading-[1.48] text-green">$ ${esc(input.command || '')}</pre>`; }
+    if (name === 'Bash') { icon = '⌘'; label = 'Bash'; target = input.description || ''; bodyInput = codeBlock(input.command || '', 'bash'); }
     else if (name === 'Read') { icon = '📖'; label = 'Read'; target = shortPath(input.file_path); }
     else if (name === 'Edit') { icon = '✏️'; label = 'Edit'; target = shortPath(input.file_path); bodyInput = diff(input.old_string, input.new_string); }
     else if (name === 'MultiEdit') { icon = '✏️'; label = 'MultiEdit'; target = shortPath(input.file_path); bodyInput = Array.isArray(input.edits) && input.edits.length ? input.edits.map((e) => diff(e.old_string, e.new_string)).join('') : `<div class="text-muted text-[11px]">${esc(L('conv.noEdits'))}</div>`; }
-    else if (name === 'Write') { icon = '📝'; label = 'Write'; target = shortPath(input.file_path); bodyInput = codePre(input.content || ''); }
+    else if (name === 'Write') { icon = '📝'; label = 'Write'; target = shortPath(input.file_path); const c = truncate(input.content || '', 12000); bodyInput = isMdPath(input.file_path) ? mdDoc(c) : codeBlock(c, langFromPath(input.file_path)); }
     else if (name === 'Grep') { icon = '🔎'; label = 'Grep'; target = input.pattern || ''; if (input.path) bodyInput = `<div class="text-muted text-[11px]">in ${esc(input.path)}</div>`; }
     else if (name === 'Glob') { icon = '🔎'; label = 'Glob'; target = input.pattern || ''; }
     else if (name === 'TodoWrite') { icon = '✅'; label = 'Todos'; bodyInput = todos(input.todos); }
     else if (name === 'Task') { icon = '🤖'; label = 'Task'; target = '→ ' + (input.subagent_type || 'agent'); bodyInput = (input.description ? `<div class="text-muted text-[11px] mb-1">${esc(input.description)}</div>` : '') + (input.prompt ? `<pre class="${PRE}">${esc(truncate(input.prompt, 4000))}</pre>` : ''); }
     else if (name === 'WebSearch') { icon = '🌐'; label = 'WebSearch'; target = input.query || ''; }
     else if (name === 'WebFetch') { icon = '🌐'; label = 'WebFetch'; target = input.url || ''; }
-    else if (/^mcp__/.test(name)) { icon = '🧩'; label = 'MCP · ' + name.replace(/^mcp__/, ''); bodyInput = Object.keys(input).length ? `<pre class="${PRE}">${esc(JSON.stringify(input, null, 2))}</pre>` : ''; }
-    else { bodyInput = Object.keys(input).length ? `<pre class="${PRE}">${esc(JSON.stringify(input, null, 2))}</pre>` : ''; }
+    else if (/^mcp__/.test(name)) { icon = '🧩'; label = 'MCP · ' + name.replace(/^mcp__/, ''); bodyInput = Object.keys(input).length ? codeBlock(JSON.stringify(input, null, 2), 'json') : ''; }
+    else { bodyInput = Object.keys(input).length ? codeBlock(JSON.stringify(input, null, 2), 'json') : ''; }
 
     let resHtml;
     if (resBlock) {
       const isErr = !!resBlock.is_error;
       const txt = toolResultText(resBlock);
       const size = resultSummary(txt);
-      resHtml = `<details class="tool-result border-t border-border-custom ${isErr ? 'err' : ''}"${isErr ? ' open' : ''}><summary class="cursor-pointer py-1.25 px-2.5 text-[10.5px] font-semibold ${isErr ? 'text-red' : 'text-green'} outline-none list-none [&::-webkit-details-marker]:hidden flex items-center gap-1.5"><span>${isErr ? '✗ ' + esc(L('conv.errResult')) : '✓ ' + esc(L('conv.result'))}</span>${size ? `<span class="tool-res-size">${esc(size)}</span>` : ''}</summary><pre class="pre bg-[#0c0e12] border border-white/7 rounded-[7px] p-2.5 overflow-x-auto font-mono text-[11px] leading-[1.48] text-[#e8edf4] whitespace-pre-wrap break-all mx-2.5 mb-2">${esc(truncate(txt, 8000))}</pre></details>`;
+      // Read shows the file's content → highlight by extension (+ our own gutter, stripping cat -n);
+      // other results stay plain text.
+      const resBody = name === 'Read'
+        ? (isMdPath(input.file_path)
+          ? mdDoc(stripCatN(truncate(txt, 8000)))
+          : codeBlock(stripCatN(truncate(txt, 8000)), langFromPath(input.file_path)))
+        : name === 'Bash'
+          ? codeBlock(truncate(txt, 8000), 'bash')
+          : codeBlock(truncate(txt, 8000), '');
+      resHtml = `<details class="tool-result border-t border-border-custom ${isErr ? 'err' : ''}"${isErr ? ' open' : ''}><summary class="cursor-pointer py-1.25 px-2.5 text-[10.5px] font-semibold ${isErr ? 'text-red' : 'text-green'} outline-none list-none [&::-webkit-details-marker]:hidden flex items-center gap-1.5"><span>${isErr ? '✗ ' + esc(L('conv.errResult')) : '✓ ' + esc(L('conv.result'))}</span>${size ? `<span class="tool-res-size">${esc(size)}</span>` : ''}</summary><div class="tool-result-body mx-2.5 mb-2">${resBody}</div></details>`;
     } else {
       resHtml = `<div class="tool-pending py-1.25 px-2.5 text-[10.5px] text-muted border-t border-border-custom">— ${esc(L('conv.noResult'))}</div>`;
     }
@@ -1195,6 +1267,18 @@
     // Load-earlier / load-later (delegated; #convDetail is stable, its innerHTML isn't).
     const detailHost = $('convDetail');
     if (detailHost) detailHost.addEventListener('click', (e) => {
+      // Markdown preview ↔ source toggle (Read/Write of .md files).
+      const mdTab = e.target.closest('.md-tab');
+      if (mdTab) {
+        const doc = mdTab.closest('.md-doc');
+        if (doc) {
+          const which = mdTab.dataset.mdTab;
+          doc.querySelectorAll('.md-tab').forEach((t) => t.classList.toggle('active', t === mdTab));
+          const prev = doc.querySelector('.md-preview'); if (prev) prev.classList.toggle('hidden', which !== 'preview');
+          const src = doc.querySelector('.md-source'); if (src) src.classList.toggle('hidden', which !== 'source');
+        }
+        return;
+      }
       if (e.target.closest('[data-load-earlier]')) { loadEarlier(); return; }
       if (e.target.closest('[data-load-later]')) { loadLater(); return; }
       // Lazily render an inline subagent transcript the first time its disclosure is opened (its
