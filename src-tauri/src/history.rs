@@ -269,9 +269,20 @@ fn mtime_ms(file: &Path) -> f64 {
         .unwrap_or(0.0)
 }
 
-/// Walk every session .jsonl across the configured dirs, invoking `cb(file, dir_name, dir_id, dir_label)`.
+fn imports_root() -> PathBuf {
+    crate::store::ccbud_home().join("imports")
+}
+/// Configured dirs + the synthetic imported-transcripts store (id `__imported__`).
+fn all_dirs(config: &Value) -> Vec<(String, String, PathBuf)> {
+    let mut dirs = config_dirs(config);
+    dirs.push(("__imported__".to_string(), "导入".to_string(), imports_root().join("projects")));
+    dirs
+}
+
+/// Walk every session .jsonl across the configured dirs (+ imports), invoking
+/// `cb(file, dir_name, dir_id, dir_label)`.
 fn each_session_file<F: FnMut(PathBuf, String, &str, &str)>(config: &Value, mut cb: F) {
-    for (id, label, root) in config_dirs(config) {
+    for (id, label, root) in all_dirs(config) {
         let entries = match fs::read_dir(&root) {
             Ok(e) => e,
             Err(_) => continue,
@@ -339,7 +350,7 @@ fn session_meta(file: &Path, dir_name: &str, dir_id: &str, dir_label: &str) -> O
         "tags": cc_tags,
         "model": model,
         "isSubagent": subagent,
-        "imported": false,
+        "imported": dir_id == "__imported__",
         "lastActivity": mt,
         "sizeKB": (size as f64 / 1024.0).round() as i64,
     }))
@@ -399,13 +410,14 @@ pub fn dir_stats(config: &Value) -> Vec<Value> {
     each_session_file(config, |_file, _dn, id, _label| {
         *counts.entry(id.to_string()).or_insert(0) += 1;
     });
-    config_dirs(config)
+    all_dirs(config)
         .into_iter()
         .map(|(id, label, pd)| {
             let exists = pd.is_dir();
+            let imported = id == "__imported__";
             json!({
                 "id": id.clone(), "label": label, "projectsDir": pd.to_string_lossy(),
-                "sessions": counts.get(&id).copied().unwrap_or(0), "exists": exists, "imported": false,
+                "sessions": counts.get(&id).copied().unwrap_or(0), "exists": exists, "imported": imported,
             })
         })
         .collect()
@@ -558,5 +570,144 @@ pub fn history_selftest(base_dir: &Path) -> Value {
         "title": title,
         "tagCount": tags,
         "autoTitle": auto,
+    })
+}
+
+// ---- import (copy someone else's .jsonl into the app-managed store) ----
+
+fn encode_cwd(cwd: Option<&str>) -> String {
+    match cwd {
+        Some(c) if !c.is_empty() => c.replace(['/', '\\'], "-"),
+        _ => "-imported".to_string(),
+    }
+}
+
+fn copy_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
+    fs::create_dir_all(dst)?;
+    for e in fs::read_dir(src)? {
+        let e = e?;
+        let s = e.path();
+        let d = dst.join(e.file_name());
+        if s.is_dir() {
+            copy_dir(&s, &d)?;
+        } else {
+            fs::copy(&s, &d)?;
+        }
+    }
+    Ok(())
+}
+
+/// Import one transcript: validates it's a real Claude Code session, then snapshots it into the
+/// import store laid out like a native projects/ tree + a sidecar provenance file. Returns
+/// 1 = imported, 2 = skipped (already present), 0 = failed/not-a-transcript.
+fn import_one(src: &str) -> i32 {
+    let raw = match fs::read_to_string(src) {
+        Ok(s) => s,
+        Err(_) => return 0,
+    };
+    let recs = parse_lines(&raw);
+    let has_msg = recs.iter().any(|r| {
+        let t = r.get("type").and_then(|v| v.as_str());
+        (t == Some("user") || t == Some("assistant")) && r.get("message").is_some()
+    });
+    if !has_msg {
+        return 0;
+    }
+    let meta_rec = recs.iter().find(|r| r.get("cwd").is_some()).or_else(|| recs.iter().find(|r| r.get("sessionId").is_some()));
+    let cwd = meta_rec.and_then(|r| r.get("cwd")).and_then(|v| v.as_str());
+    let base_id = meta_rec
+        .and_then(|r| r.get("sessionId"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| Path::new(src).file_stem().and_then(|s| s.to_str()).unwrap_or("import").to_string());
+    let dest_dir = imports_root().join("projects").join(encode_cwd(cwd));
+    let dest_file = dest_dir.join(format!("{}.jsonl", base_id));
+    if dest_file.exists() {
+        return 2;
+    }
+    if fs::create_dir_all(&dest_dir).is_err() || fs::copy(src, &dest_file).is_err() {
+        return 0;
+    }
+    // bring along subagents if present next to the source
+    let src_stem = Path::new(src).file_stem().and_then(|s| s.to_str()).unwrap_or("");
+    if let Some(parent) = Path::new(src).parent() {
+        let src_sub = parent.join(src_stem).join("subagents");
+        if src_sub.is_dir() {
+            let _ = copy_dir(&src_sub, &dest_dir.join(&base_id).join("subagents"));
+        }
+    }
+    let imported_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+    let sidecar = dest_dir.join(format!("{}.import.json", base_id));
+    let _ = fs::write(
+        &sidecar,
+        serde_json::to_vec_pretty(&json!({
+            "originalPath": src,
+            "originalName": Path::new(src).file_name().and_then(|n| n.to_str()).unwrap_or(""),
+            "sessionId": base_id,
+            "importedAt": imported_at,
+        }))
+        .unwrap_or_default(),
+    );
+    1
+}
+
+pub fn import_paths(paths: &[String]) -> Value {
+    let (mut imported, mut skipped, mut failed) = (0, 0, 0);
+    for src in paths {
+        if src.to_lowercase().ends_with(".jsonl") {
+            match import_one(src) {
+                1 => imported += 1,
+                2 => skipped += 1,
+                _ => failed += 1,
+            }
+        } else {
+            failed += 1;
+        }
+    }
+    json!({ "imported": imported, "skipped": skipped, "failed": failed })
+}
+
+pub fn remove_import(file: &str) -> Value {
+    let root = imports_root();
+    let f = Path::new(file);
+    // Hard safety: only ever delete inside our own import store.
+    if !f.starts_with(&root) {
+        return json!({ "ok": false, "error": "outside import store" });
+    }
+    let dir = f.parent().unwrap_or(Path::new("."));
+    let base = f.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+    let _ = fs::remove_file(f);
+    let _ = fs::remove_file(dir.join(format!("{}.import.json", base)));
+    let _ = fs::remove_dir_all(dir.join(base)); // subagents/
+    json!({ "ok": true })
+}
+
+/// Self-contained test of import → list-as-imported → re-import-skip → remove.
+pub fn import_selftest(base_dir: &Path) -> Value {
+    std::env::set_var("CCBUD_HOME", base_dir); // imports_root() honors CCBUD_HOME
+    let src_dir = base_dir.join("import-src");
+    let _ = fs::create_dir_all(&src_dir);
+    let src = src_dir.join("foreign.jsonl");
+    let _ = fs::write(&src, "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"imported hello\"},\"cwd\":\"/imp/cwd\",\"sessionId\":\"impsess\",\"timestamp\":\"2025-01-01T10:00:00.000Z\"}\n");
+    let srcs = vec![src.to_string_lossy().to_string()];
+    let r = import_paths(&srcs);
+    let r2 = import_paths(&srcs);
+    let config = json!({ "historyDirs": ["~/.claude"] });
+    let sessions = list_sessions(&config, "__imported__", 50);
+    let found = sessions.iter().any(|s| {
+        s.get("imported").and_then(|v| v.as_bool()).unwrap_or(false)
+            && s.get("title").and_then(|v| v.as_str()) == Some("imported hello")
+    });
+    let dest = imports_root().join("projects").join("-imp-cwd").join("impsess.jsonl");
+    let rm = remove_import(&dest.to_string_lossy());
+    json!({
+        "imported": r.get("imported"),
+        "reskipped": r2.get("skipped"),
+        "appearsImported": found,
+        "removed": rm.get("ok"),
+        "gone": !dest.exists(),
     })
 }

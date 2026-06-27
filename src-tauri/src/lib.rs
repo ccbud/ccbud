@@ -282,9 +282,36 @@ fn history_set_active(app: tauri::AppHandle, id: String) -> Value {
     );
     saved
 }
-#[tauri::command] fn history_import() -> Value { Value::Null }
-#[tauri::command] fn history_import_paths(paths: Value) -> Value { Value::Null }
-#[tauri::command] fn history_remove_import(file: String) -> Value { Value::Null }
+#[tauri::command]
+async fn history_import(app: tauri::AppHandle) -> Result<Value, String> {
+    match rfd::AsyncFileDialog::new().add_filter("JSONL", &["jsonl"]).set_title("导入对话记录").pick_files().await {
+        Some(files) => {
+            let paths: Vec<String> = files.iter().map(|f| f.path().to_string_lossy().to_string()).collect();
+            let r = history::import_paths(&paths);
+            let _ = app.emit("history:changed", json!({ "files": [] }));
+            Ok(r)
+        }
+        None => Ok(json!({ "canceled": true })),
+    }
+}
+#[tauri::command]
+fn history_import_paths(app: tauri::AppHandle, paths: Value) -> Value {
+    let list: Vec<String> = paths
+        .as_array()
+        .map(|a| a.iter().filter_map(|p| p.as_str().map(|s| s.to_string())).collect())
+        .unwrap_or_default();
+    let r = history::import_paths(&list);
+    let _ = app.emit("history:changed", json!({ "files": [] }));
+    r
+}
+#[tauri::command]
+fn history_remove_import(app: tauri::AppHandle, file: String) -> Value {
+    let r = history::remove_import(&file);
+    if r.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+        let _ = app.emit("history:changed", json!({ "files": [] }));
+    }
+    r
+}
 #[tauri::command]
 fn history_set_meta(app: tauri::AppHandle, file: String, patch: Value) -> Value {
     let cfg = store::read_config();
@@ -438,6 +465,10 @@ fn selfcheck_desktop() -> Value {
     })
 }
 #[tauri::command]
+fn selfcheck_import() -> Value {
+    history::import_selftest(&store::ccbud_home())
+}
+#[tauri::command]
 fn selfcheck_export() -> Value {
     let base = store::ccbud_home();
     let _ = history::history_selftest(&base);
@@ -518,6 +549,7 @@ const SELFCHECK_JS: &str = r#"
       try{ o.histMeta=await window.__TAURI__.core.invoke('selfcheck_history'); }catch(e){ o.histMetaErr=String(e); }
       try{ o.desktop=await window.__TAURI__.core.invoke('selfcheck_desktop'); }catch(e){ o.desktopErr=String(e); }
       try{ o.export=await window.__TAURI__.core.invoke('selfcheck_export'); }catch(e){ o.exportErr=String(e); }
+      try{ o.import=await window.__TAURI__.core.invoke('selfcheck_import'); }catch(e){ o.importErr=String(e); }
       try{ var us=await window.ccbud.updateState(); var sa=await window.ccbud.updateSetAuto({check:false}); o.update={current:us.current,status:us.status,setAutoCheck:sa.check}; }catch(e){ o.updateErr=String(e); }
       o.errors=window.__ccbud_errors.slice(0,20);
     }catch(e){o.fatal=String((e&&e.stack)||e);}
@@ -621,7 +653,7 @@ pub fn run() {
             history_import, history_import_paths, history_remove_import, history_set_meta, history_export_raw, history_export_html,
             util_copy, util_open_external,
             update_state, update_check, update_download, update_apply, update_set_auto,
-            selfcheck_report, selfcheck_routing, selfcheck_gateway, selfcheck_history, selfcheck_desktop, selfcheck_export
+            selfcheck_report, selfcheck_routing, selfcheck_gateway, selfcheck_history, selfcheck_desktop, selfcheck_export, selfcheck_import
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
