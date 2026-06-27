@@ -21,7 +21,7 @@
     "start": "npm run build:css && electron .",
     "dev": "npm run build:css && electron . --user-data-dir=.devdata",
     "test": "node test/selftest.js",
-    "prepare:presidio": "bash scripts/prepare-presidio.sh",
+    "prepare:presidio": "node scripts/prepare-presidio.js",
     "build:hotupdate": "node scripts/build-hotupdate.js",
     "gen:updatekeys": "node scripts/gen-update-keys.js",
     "update:cask": "node scripts/update-cask.js",

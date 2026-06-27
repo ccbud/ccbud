@@ -21,6 +21,8 @@ const ROOT = path.join(os.homedir(), 'Library', 'Application Support', 'ccbud', 
 const USER_VENV = path.join(ROOT, 'venv');
 const NLP_CONF = path.join(ROOT, 'nlp-sm.yaml');
 const SETUP_LOG = path.join(ROOT, 'setup.log');
+// Repo root (src/main → ..) so dev can use the prepare:presidio output under vendor/ with no packaging.
+const REPO_ROOT = path.join(__dirname, '..', '..');
 
 const IS_WIN = process.platform === 'win32';
 // venv layout differs by OS: POSIX → venv/bin/python, Windows → venv\Scripts\python.exe.
@@ -29,9 +31,14 @@ function venvPy(venv) { return IS_WIN ? path.join(venv, 'Scripts', 'python.exe')
 // shipped under resourcesPath/presidio-env/python, with Presidio installed into its OWN
 // site-packages (no venv → no pyvenv.cfg / symlink-to-host problems). This is the shipping path.
 function bundledPy() {
-  const roots = [process.env.CCBUD_PRESIDIO_ENV, process.resourcesPath && path.join(process.resourcesPath, 'presidio-env')].filter(Boolean);
+  const roots = [
+    process.env.CCBUD_PRESIDIO_ENV,
+    process.resourcesPath && path.join(process.resourcesPath, 'presidio-env'),
+    path.join(REPO_ROOT, 'vendor', 'presidio-env'), // dev: `npm run prepare:presidio` output
+  ].filter(Boolean);
   for (const r of roots) {
-    const py = path.join(r, 'python', 'bin', IS_WIN ? 'python.exe' : 'python3.12');
+    // standalone Python layout: POSIX → python/bin/python3.12 ; Windows → python\python.exe
+    const py = IS_WIN ? path.join(r, 'python', 'python.exe') : path.join(r, 'python', 'bin', 'python3.12');
     try { if (fs.existsSync(py)) return py; } catch (_) {}
   }
   return null;
@@ -101,7 +108,9 @@ function sourceDir() {
   const c = [
     process.env.CCBUD_PRESIDIO_SRC,
     process.resourcesPath && path.join(process.resourcesPath, 'presidio'),
-    path.join(os.homedir(), 'code', 'presidio'),
+    path.join(REPO_ROOT, 'vendor', 'presidio-src'),   // dev: prepare:presidio output
+    path.join(REPO_ROOT, 'assets', 'presidio-src'),   // dev: official entry points bundled in-repo
+    path.join(os.homedir(), 'code', 'presidio'),       // legacy: external checkout
   ].filter(Boolean);
   return c.find((p) => { try { return fs.existsSync(path.join(p, 'presidio-analyzer', 'app.py')); } catch (_) { return false; } }) || null;
 }
@@ -173,7 +182,12 @@ function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
 // Force-free a TCP port — kills any lingering listener (e.g. an orphaned service from a crash/-9).
 function killPort(port) {
   return new Promise((resolve) => {
-    if (IS_WIN) return resolve();
+    if (IS_WIN) {
+      // Free the port on Windows: find the PID LISTENING on it (netstat) and force-kill it.
+      const cmd = `for /f "tokens=5" %a in ('netstat -ano ^| findstr :${port} ^| findstr LISTENING') do taskkill /PID %a /F`;
+      try { execFile('cmd.exe', ['/c', cmd], { timeout: 5000 }, () => resolve()); } catch (_) { resolve(); }
+      return;
+    }
     const cmd = `PATH="/usr/sbin:/usr/bin:/bin:/sbin:$PATH" lsof -ti tcp:${port} | xargs kill -9 2>/dev/null || true`;
     try { execFile('/bin/sh', ['-c', cmd], { timeout: 4000 }, () => resolve()); } catch (_) { resolve(); }
   });
@@ -383,7 +397,8 @@ function postJsonAbs(urlStr, body, timeoutMs) {
 
 async function status() {
   return {
-    supported: isMac(),
+    // Bundled Python ships per-platform (extraResources), so any OS with the env can run it.
+    supported: true,
     setup: setupState(),
     running: processesAlive() && (await healthy()),
     error: lastError,

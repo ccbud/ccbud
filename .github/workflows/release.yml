@@ -43,6 +43,15 @@ jobs:
         # optional deps (e.g. electron-builder-squirrel-windows on Windows).
         run: npm install --no-audit --no-fund
 
+      # Presidio runs as a bundled local service, so ship a self-contained Python with it. uv builds a
+      # relocatable standalone Python and installs presidio[server] from PyPI into vendor/presidio-env;
+      # electron-builder then packs it as extraResources. Native + per-arch, so it runs on each OS here.
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Bundle Presidio runtime
+        run: node scripts/prepare-presidio.js
+
       - name: Build installers
         shell: bash
         env:
