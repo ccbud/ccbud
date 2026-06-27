@@ -13,6 +13,7 @@
 mod gateway;
 mod history;
 mod store;
+mod usage;
 
 use serde_json::{json, Value};
 use tauri::Manager;
@@ -113,7 +114,12 @@ async fn server_status(
     }
     Ok(s)
 }
-#[tauri::command] fn usage_get(range: Option<String>) -> Value { json!({ "tokens": 0, "requests": 0, "favoriteModel": "—", "heatmap": [], "days": [], "models": [] }) }
+#[tauri::command]
+fn usage_get(range: Option<String>) -> Value {
+    let cfg = store::read_config();
+    let active = cfg.get("historyActive").and_then(|v| v.as_str()).unwrap_or("all").to_string();
+    usage::usage_get(&cfg, &active, range.as_deref().unwrap_or("7d"))
+}
 #[tauri::command] fn monitor_get(id: Value) -> Value { Value::Null }
 #[tauri::command] fn monitor_clear() -> Value { Value::Null }
 #[tauri::command] fn logs_get() -> Value { json!([]) }
@@ -227,6 +233,7 @@ const SELFCHECK_JS: &str = r#"
         o.histSample=hl&&hl[0]?{title:String(hl[0].title||'').slice(0,40),project:hl[0].project,hasCwd:!!hl[0].cwd,hasFile:!!hl[0].file}:null;
         if(hl&&hl[0]){ var ss=await window.ccbud.historyGet(hl[0].file); o.histMsgs=ss&&ss.messages?ss.messages.length:-1; o.histTotals=ss&&ss.meta?ss.meta.totals:null; }
       }catch(e){ o.histErr=String(e); }
+      try{ var ug=await window.ccbud.usageGet('all'); o.usage={tokens:ug.tokens,requests:ug.requests,fav:ug.favoriteModel,heatmap:(ug.heatmap||[]).length,byModel:(ug.byModel||[]).length,activeDays:ug.activeDays}; }catch(e){ o.usageErr=String(e); }
       o.errors=window.__ccbud_errors.slice(0,20);
     }catch(e){o.fatal=String((e&&e.stack)||e);}
     rep(o);

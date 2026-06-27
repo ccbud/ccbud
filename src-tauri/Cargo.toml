@@ -31,6 +31,7 @@ futures-util = "0.3"
 bytes = "1"
 async-stream = "0.3"
 regex = "1"
+chrono = { version = "0.4", features = ["clock"] }
 
 # Size-optimized release build — critical for the <50MB goal.
 [profile.release]
