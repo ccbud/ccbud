@@ -9,3 +9,5 @@ src/renderer/preview.html
 src/renderer/shared/
 src-tauri/target/
 src-tauri/gen/schemas/
+src-tauri/.tauri-updater.key
+src-tauri/.tauri-updater.key.pub

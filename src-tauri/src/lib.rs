@@ -304,11 +304,60 @@ fn util_open_external(url: String) -> bool {
 }
 
 // ---- in-app updates (Phase 5) ----
-#[tauri::command] fn update_state() -> Value { json!({ "current": "1.0.18", "status": "idle", "available": null }) }
-#[tauri::command] fn update_check() -> Value { Value::Null }
-#[tauri::command] fn update_download() -> Value { Value::Null }
-#[tauri::command] fn update_apply() -> Value { Value::Null }
-#[tauri::command] fn update_set_auto(patch: Value) -> Value { json!({ "check": true, "autoDownload": false }) }
+#[tauri::command]
+fn update_state(app: tauri::AppHandle) -> Value {
+    let cfg = store::read_config();
+    json!({
+        "current": app.package_info().version.to_string(),
+        "status": "idle",
+        "available": Value::Null,
+        "autoUpdate": cfg.get("autoUpdate").cloned().unwrap_or(json!({ "check": true, "autoDownload": true })),
+    })
+}
+#[tauri::command]
+async fn update_check(app: tauri::AppHandle) -> Result<Value, String> {
+    use tauri_plugin_updater::UpdaterExt;
+    match app.updater() {
+        Ok(updater) => match updater.check().await {
+            Ok(Some(u)) => Ok(json!({ "available": true, "version": u.version, "notes": u.body })),
+            Ok(None) => Ok(json!({ "available": false })),
+            Err(e) => Ok(json!({ "available": false, "error": e.to_string() })),
+        },
+        Err(e) => Ok(json!({ "available": false, "error": e.to_string() })),
+    }
+}
+#[tauri::command]
+async fn update_download(app: tauri::AppHandle) -> Result<Value, String> {
+    use tauri_plugin_updater::UpdaterExt;
+    let updater = app.updater().map_err(|e| e.to_string())?;
+    match updater.check().await.map_err(|e| e.to_string())? {
+        Some(u) => {
+            u.download_and_install(|_chunk, _total| {}, || {}).await.map_err(|e| e.to_string())?;
+            Ok(json!({ "ok": true, "staged": true }))
+        }
+        None => Ok(json!({ "ok": false, "reason": "no update" })),
+    }
+}
+#[tauri::command]
+fn update_apply(app: tauri::AppHandle) -> Value {
+    app.restart();
+}
+#[tauri::command]
+fn update_set_auto(patch: Value) -> Value {
+    let mut cfg = store::read_config();
+    let mut au = cfg.get("autoUpdate").cloned().unwrap_or(json!({ "check": true, "autoDownload": true }));
+    if let Some(o) = au.as_object_mut() {
+        if let Some(c) = patch.get("check") {
+            o.insert("check".into(), c.clone());
+        }
+        if let Some(d) = patch.get("autoDownload") {
+            o.insert("autoDownload".into(), d.clone());
+        }
+    }
+    cfg["autoUpdate"] = au.clone();
+    store::write_config(cfg);
+    au
+}
 
 // ---- debug self-check (gated by CCBUD_SELFCHECK env; injected via on_page_load) ----
 #[tauri::command]
@@ -415,6 +464,7 @@ const SELFCHECK_JS: &str = r#"
       try{ o.histMeta=await window.__TAURI__.core.invoke('selfcheck_history'); }catch(e){ o.histMetaErr=String(e); }
       try{ o.desktop=await window.__TAURI__.core.invoke('selfcheck_desktop'); }catch(e){ o.desktopErr=String(e); }
       try{ o.export=await window.__TAURI__.core.invoke('selfcheck_export'); }catch(e){ o.exportErr=String(e); }
+      try{ var us=await window.ccbud.updateState(); var sa=await window.ccbud.updateSetAuto({check:false}); o.update={current:us.current,status:us.status,setAutoCheck:sa.check}; }catch(e){ o.updateErr=String(e); }
       o.errors=window.__ccbud_errors.slice(0,20);
     }catch(e){o.fatal=String((e&&e.stack)||e);}
     rep(o);
@@ -425,6 +475,7 @@ const SELFCHECK_JS: &str = r#"
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .on_page_load(|webview, payload| {
             if matches!(payload.event(), tauri::webview::PageLoadEvent::Finished)
                 && std::env::var("CCBUD_SELFCHECK").is_ok()
