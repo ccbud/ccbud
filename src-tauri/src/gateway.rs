@@ -195,6 +195,10 @@ impl GatewayState {
         self.running.lock().await.as_ref().map(|r| r.port)
     }
 
+    pub fn emit(&self, event: &str, payload: Value) {
+        let _ = self.app.emit(event, payload);
+    }
+
     pub async fn start(self: &Arc<Self>, port: u16) -> Result<u16, String> {
         if let Some(rs) = self.running.lock().await.as_ref() {
             return Ok(rs.port);

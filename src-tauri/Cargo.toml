@@ -32,6 +32,7 @@ bytes = "1"
 async-stream = "0.3"
 regex = "1"
 chrono = { version = "0.4", features = ["clock"] }
+arboard = "3"
 
 # Size-optimized release build — critical for the <50MB goal.
 [profile.release]

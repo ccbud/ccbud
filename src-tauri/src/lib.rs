@@ -10,6 +10,7 @@
 // warnings are suppressed crate-wide until the bodies are filled in.
 #![allow(unused_variables)]
 
+mod claude;
 mod gateway;
 mod history;
 mod store;
@@ -94,25 +95,58 @@ fn provider_test(p: Value) -> Value {
 }
 
 // ---- claude code / desktop integration (Phase 4) ----
-#[tauri::command] fn claude_connect() -> Value { Value::Null }
-#[tauri::command] fn claude_disconnect() -> Value { Value::Null }
+#[tauri::command]
+async fn claude_connect(
+    gw: tauri::State<'_, std::sync::Arc<gateway::GatewayState>>,
+) -> Result<Value, String> {
+    let cfg = store::read_config();
+    let n = cfg.get("providers").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0);
+    if n == 0 {
+        return Ok(json!({ "ok": false, "message": "no provider configured" }));
+    }
+    let port = cfg.get("port").and_then(|v| v.as_u64()).unwrap_or(8788) as u16;
+    if let Err(e) = gw.start(port).await {
+        return Ok(json!({ "ok": false, "message": format!("port {} failed: {}", port, e) }));
+    }
+    claude::connect(port, &claude::current_token(&cfg));
+    let status = full_status(&gw).await;
+    gw.emit("gateway:status", status);
+    Ok(json!({ "ok": true }))
+}
+#[tauri::command]
+async fn claude_disconnect(
+    gw: tauri::State<'_, std::sync::Arc<gateway::GatewayState>>,
+) -> Result<Value, String> {
+    claude::disconnect();
+    gw.stop().await;
+    let status = full_status(&gw).await;
+    gw.emit("gateway:status", status);
+    Ok(json!({ "ok": true }))
+}
 #[tauri::command] fn desktop_status() -> Value { json!({ "supported": true, "connected": false, "profileInstalled": false }) }
 #[tauri::command] fn desktop_connect() -> Value { Value::Null }
 #[tauri::command] fn desktop_disconnect() -> Value { Value::Null }
 #[tauri::command] fn desktop_replay(file: String) -> Value { Value::Null }
 
 // ---- server / usage / monitor / logs (Phase 2/3) ----
+async fn full_status(gw: &std::sync::Arc<gateway::GatewayState>) -> Value {
+    let mut s = gw.status().await;
+    let port = gw
+        .current_port()
+        .await
+        .unwrap_or_else(|| store::read_config().get("port").and_then(|v| v.as_u64()).unwrap_or(8788) as u16);
+    if let Some(o) = s.as_object_mut() {
+        o.insert("connected".into(), json!(claude::is_connected(port)));
+        o.insert("lastStartError".into(), Value::Null);
+        o.insert("claudePath".into(), json!(claude::settings_path().to_string_lossy()));
+    }
+    s
+}
 #[tauri::command]
 async fn server_status(
     gw: tauri::State<'_, std::sync::Arc<gateway::GatewayState>>,
 ) -> Result<Value, String> {
-    let mut s = gw.status().await;
-    if let Some(o) = s.as_object_mut() {
-        o.insert("connected".into(), json!(false));
-        o.insert("lastStartError".into(), Value::Null);
-        o.insert("claudePath".into(), json!(""));
-    }
-    Ok(s)
+    Ok(full_status(&gw).await)
 }
 #[tauri::command]
 fn usage_get(range: Option<String>) -> Value {
@@ -127,7 +161,11 @@ fn usage_get(range: Option<String>) -> Value {
 
 // ---- window / app lifecycle (Phase 4) ----
 #[tauri::command] fn app_open_main() -> Value { Value::Null }
-#[tauri::command] fn app_quit() -> Value { Value::Null }
+#[tauri::command]
+fn app_quit(app: tauri::AppHandle) -> Value {
+    app.exit(0);
+    Value::Null
+}
 #[tauri::command] fn window_settings_mode(on: bool) -> Value { Value::Null }
 #[tauri::command] fn window_view_min_width(w: i64) -> Value { Value::Null }
 
@@ -164,8 +202,34 @@ fn history_dirs() -> Value {
 #[tauri::command] fn history_export_html(payload: Value) -> Value { json!("") }
 
 // ---- utilities (Phase 4) ----
-#[tauri::command] fn util_copy(text: String) -> Value { Value::Null }
-#[tauri::command] fn util_open_external(url: String) -> Value { Value::Null }
+#[tauri::command]
+fn util_copy(text: String) -> bool {
+    match arboard::Clipboard::new() {
+        Ok(mut cb) => cb.set_text(text).is_ok(),
+        Err(_) => false,
+    }
+}
+#[tauri::command]
+fn util_open_external(url: String) -> bool {
+    if !(url.starts_with("http://") || url.starts_with("https://")) {
+        return false;
+    }
+    let spawned = {
+        #[cfg(target_os = "macos")]
+        {
+            std::process::Command::new("open").arg(&url).spawn()
+        }
+        #[cfg(target_os = "windows")]
+        {
+            std::process::Command::new("cmd").args(["/C", "start", "", &url]).spawn()
+        }
+        #[cfg(target_os = "linux")]
+        {
+            std::process::Command::new("xdg-open").arg(&url).spawn()
+        }
+    };
+    spawned.is_ok()
+}
 
 // ---- in-app updates (Phase 5) ----
 #[tauri::command] fn update_state() -> Value { json!({ "current": "1.0.18", "status": "idle", "available": null }) }
@@ -234,6 +298,8 @@ const SELFCHECK_JS: &str = r#"
         if(hl&&hl[0]){ var ss=await window.ccbud.historyGet(hl[0].file); o.histMsgs=ss&&ss.messages?ss.messages.length:-1; o.histTotals=ss&&ss.meta?ss.meta.totals:null; }
       }catch(e){ o.histErr=String(e); }
       try{ var ug=await window.ccbud.usageGet('all'); o.usage={tokens:ug.tokens,requests:ug.requests,fav:ug.favoriteModel,heatmap:(ug.heatmap||[]).length,byModel:(ug.byModel||[]).length,activeDays:ug.activeDays}; }catch(e){ o.usageErr=String(e); }
+      try{ var cc=await window.ccbud.connect(); var s1=await window.ccbud.serverStatus(); var dd=await window.ccbud.disconnect(); var s2=await window.ccbud.serverStatus(); o.claude={connOk:cc&&cc.ok,connected:s1.connected,discOk:dd&&dd.ok,afterDisc:s2.connected}; }catch(e){ o.claudeErr=String(e); }
+      try{ o.copyOk=await window.ccbud.copy('selfcheck-clip'); }catch(e){ o.copyErr=String(e); }
       o.errors=window.__ccbud_errors.slice(0,20);
     }catch(e){o.fatal=String((e&&e.stack)||e);}
     rep(o);
