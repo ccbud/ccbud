@@ -225,7 +225,7 @@ body {
   transition: width 0.2s var(--ease);
 }
 /* Keep each item on one line — during the expand animation the sub-nav is briefly narrow, and without
-   this the labels (e.g. 内容过滤) wrap to two lines until it finishes. */
+   this the labels wrap to two lines until it finishes. */
 .settings-subnav-item { white-space: nowrap; }
 .settings-subnav.collapsed {
   width: 52px;
@@ -1049,52 +1049,6 @@ body {
 /* Request/response body search highlight */
 .dr-mark { background: rgba(255, 213, 0, 0.34); color: inherit; border-radius: 2px; }
 .dr-mark.cur { background: #ff9f0a; color: #1a1a1a; }
-
-/* Acceptance-threshold slider */
-.presidio-range {
-  -webkit-appearance: none;
-  appearance: none;
-  height: 4px;
-  border-radius: 3px;
-  background: var(--border-strong);
-  outline: none;
-  cursor: pointer;
-}
-.presidio-range::-webkit-slider-thumb {
-  -webkit-appearance: none;
-  appearance: none;
-  width: 14px;
-  height: 14px;
-  border-radius: 50%;
-  background: var(--primary);
-  border: 2px solid var(--bg-elev);
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.22);
-  cursor: pointer;
-}
-
-/* Presidio Findings table (inside the dark console panel) */
-#presidioFindings table { width: 100%; border-collapse: collapse; font-size: 11px; }
-#presidioFindings thead th {
-  position: sticky; top: 0;
-  background: #121521;
-  color: #8b93a5;
-  font-weight: 600;
-  text-align: left;
-  padding: 7px 12px;
-  white-space: nowrap;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-}
-#presidioFindings tbody td {
-  padding: 6px 12px;
-  color: #c5ccd6;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
-  vertical-align: top;
-}
-#presidioFindings tbody tr:hover td { background: rgba(255, 255, 255, 0.03); }
-#presidioFindings .fd-entity { color: #9d9bff; font-weight: 600; font-family: var(--mono); white-space: nowrap; }
-#presidioFindings .fd-text { font-family: var(--mono); word-break: break-all; }
-#presidioFindings .fd-score { font-family: var(--mono); color: #8b93a5; text-align: right; white-space: nowrap; }
-#presidioFindings .fd-empty { padding: 28px 12px; text-align: center; color: #6b7280; font-size: 11.5px; }
 
 .switch {
   display: inline-flex;

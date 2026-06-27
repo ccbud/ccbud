@@ -25,6 +25,7 @@ const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
 const { exec, execFile, execFileSync } = require('child_process');
+const { CLAUDE_TIER_MODELS } = require('./claudeModels');
 
 const BUNDLE_ID = 'com.anthropic.claudefordesktop';
 const PROFILE_IDENTIFIER = 'dev.ccbud.gateway.claude-desktop-inference';
@@ -53,12 +54,19 @@ function uuidFrom(seed) {
 const xmlEsc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
 function buildProfile(port, token) {
+  // Claude Desktop's Gateway picker needs an explicit model list, stored as a SINGLE JSON string.
+  // Names carry Anthropic keywords so its client-side validation accepts them, and they match what
+  // ccbud returns from /v1/models; the gateway then tier-maps each onto the active provider.
+  const inferenceModels = JSON.stringify(CLAUDE_TIER_MODELS.map((m) => Object.assign(
+    { name: m.name, anthropicFamilyTier: m.tier }, m.familyDefault ? { isFamilyDefault: true } : {},
+  )));
   const settings = {
     inferenceProvider: 'gateway',
     inferenceCredentialKind: 'static',
     inferenceGatewayBaseUrl: endpoint(port),
     inferenceGatewayApiKey: token || 'ccbud-local',
     inferenceGatewayAuthScheme: 'bearer',
+    inferenceModels,
   };
   const body = Object.entries(settings)
     .map(([k, v]) => `      <key>${k}</key>\n      <string>${xmlEsc(v)}</string>`).join('\n');

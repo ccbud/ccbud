@@ -7,7 +7,6 @@ const { createStore } = require('./store');
 const { createGateway } = require('./proxy');
 const claude = require('./claude');
 const claudeDesktop = require('./claudeDesktop');
-const presidio = require('./presidio');
 const updater = require('./updater');
 const os = require('os');
 const { formatTokens } = require('./usage');
@@ -407,39 +406,6 @@ function registerIpc() {
     const url = `claude://cowork/new?q=${encodeURIComponent(prompt)}&file=${encodeURIComponent(file)}`;
     try { await shell.openExternal(url); return { ok: true }; }
     catch (e) { return { ok: false, reason: 'failed', message: e && e.message }; }
-  });
-
-  // Presidio — bundled local PII filter. The toggle persists config.presidio.enabled and
-  // starts/stops the local services; the gateway redacts outbound text when enabled.
-  // Stream Presidio's service console output to the renderer so users can see it's working.
-  presidio.setLogSink((line) => broadcast('presidio:log', line));
-  presidio.setFindingsSink((f) => broadcast('presidio:finding', f));
-  ipcMain.handle('presidio:status', async () => presidio.status());
-  ipcMain.handle('presidio:setup', () => presidio.setup());
-  ipcMain.handle('presidio:logs', () => presidio.getLogs());
-  ipcMain.handle('presidio:logs:clear', () => { presidio.clearLogs(); return true; });
-  ipcMain.handle('presidio:findings', () => presidio.getFindings());
-  ipcMain.handle('presidio:findings:clear', () => { presidio.clearFindings(); return true; });
-  ipcMain.handle('presidio:enable', async (_e, on) => {
-    const cfg = JSON.parse(JSON.stringify(store.get()));
-    cfg.presidio = Object.assign({}, cfg.presidio, { enabled: !!on });
-    store.save(cfg);
-    if (!on) { presidio.stop(); return Object.assign({ ok: true }, await presidio.status()); }
-    if (!presidio.envReady()) {
-      presidio.setup();
-      // Auto-start once the first-run env install finishes (if still enabled).
-      const poll = setInterval(async () => {
-        const st = presidio.setupState();
-        if (st === 'ready') {
-          clearInterval(poll);
-          if ((store.get().presidio || {}).enabled) { try { await presidio.start(); } catch (_) {} broadcast('gateway:status', statusPayload()); }
-        } else if (st === 'idle' || st === 'missing-source') clearInterval(poll);
-      }, 3000);
-      return Object.assign({ ok: false, reason: 'installing' }, await presidio.status());
-    }
-    const r = await presidio.start();
-    broadcast('gateway:status', statusPayload());
-    return Object.assign({ ok: r.ok, reason: r.reason }, await presidio.status());
   });
 
   ipcMain.handle('server:status', () => statusPayload());
@@ -913,11 +879,6 @@ if (gotLock) {
       catch (e) { lastStartError = mt('err.portFailed', { port: store.get().port, msg: e.message }); }
     }
 
-    // If Presidio content filtering was left on, bring its local services back up in the background.
-    if ((store.get().presidio || {}).enabled && presidio.envReady()) {
-      presidio.start().catch(() => {});
-    }
-
     try {
       let img;
       if (process.platform === 'darwin') {
@@ -967,6 +928,5 @@ app.on('before-quit', (e) => {
   e.preventDefault();
   if (historyTimer) { clearTimeout(historyTimer); historyTimer = null; }
   try { if (history) history.stop(); } catch (_) {}
-  try { presidio.stop(); } catch (_) {}
   Promise.resolve(gateway.stop()).finally(() => app.exit(0));
 });

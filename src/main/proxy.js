@@ -18,8 +18,8 @@
 const http = require('http');
 const https = require('https');
 const zlib = require('zlib');
-const presidio = require('./presidio');
 const { estimateInputTokens } = require('./countTokens');
+const { CLAUDE_TIER_MODELS } = require('./claudeModels');
 const { URL } = require('url');
 const { Transform, Writable, pipeline } = require('stream');
 const { EventEmitter } = require('events');
@@ -180,12 +180,19 @@ function aliasModelEntries(config) {
   }
   return out;
 }
+// Standard claude-* tier names, so Claude Desktop's Gateway picker has Anthropic-keyword names that
+// also appear in /v1/models; the gateway tier-maps them onto the active provider. Harmless to other
+// clients (Claude Code routes by tier; these names aren't fed to provider routing — see recordModels,
+// which only learns from the provider's OWN /v1/models, not this synthesized list).
+function claudeTierEntries() { return CLAUDE_TIER_MODELS.map((m) => modelEntry(m.name)); }
 function mergeModels(upstream, config) {
   const data = Array.isArray(upstream && upstream.data) ? upstream.data.slice() : [];
   const have = new Set(data.map((m) => m && m.id));
-  const adds = aliasModelEntries(config).filter((a) => !have.has(a.id));
+  const adds = aliasModelEntries(config).concat(claudeTierEntries()).filter((a) => {
+    if (have.has(a.id)) return false; have.add(a.id); return true;
+  });
   const merged = Object.assign({}, upstream || {});
-  merged.data = adds.concat(data); // aliases first so they stand out
+  merged.data = adds.concat(data); // aliases + claude tiers first so they stand out
   return merged;
 }
 function synthesizeModels(config) {
@@ -199,6 +206,9 @@ function synthesizeModels(config) {
       if (id && !seen.has(id)) { seen.add(id); out.push(modelEntry(id)); }
     }
   }
+  // Always advertise the standard claude-* tier names (for Claude Desktop's gateway picker).
+  const have = new Set(out.map((m) => m.id));
+  for (const e of claudeTierEntries()) if (!have.has(e.id)) { have.add(e.id); out.push(e); }
   return { data: out, has_more: false, first_id: out[0] ? out[0].id : null, last_id: out.length ? out[out.length - 1].id : null };
 }
 
@@ -274,38 +284,6 @@ function createSseTransform(model, opts) {
   });
 }
 
-// Redact PII from an Anthropic /v1/messages request body (system prompt + each message's text and
-// tool_result text), mutating it in place. All text fields go through Presidio concurrently.
-async function redactRequestBody(parsed, px) {
-  const opts = {
-    language: px.language || 'en',
-    ner: !!px.ner,                              // NER tier (opt-in)
-    llm: !!(px.llm && px.ollamaUrl),            // LLM tier (opt-in, needs Ollama)
-    ollamaUrl: px.ollamaUrl,
-    ollamaModel: px.ollamaModel,
-    threshold: typeof px.threshold === 'number' ? px.threshold : undefined,  // acceptance threshold
-    deidentify: px.deidentify || 'replace',     // replace | redact | mask | hash
-  };
-  const tasks = [];
-  const red = (s) => presidio.redactText(s, opts);
-  const onText = (obj, key) => {
-    const v = obj[key];
-    if (typeof v === 'string') { if (v.trim()) tasks.push(red(v).then((r) => { obj[key] = r; })); return; }
-    if (!Array.isArray(v)) return;
-    for (const b of v) {
-      if (!b || typeof b !== 'object') continue;
-      if (b.type === 'text' && typeof b.text === 'string') tasks.push(red(b.text).then((r) => { b.text = r; }));
-      else if (b.type === 'tool_result') {
-        if (typeof b.content === 'string') tasks.push(red(b.content).then((r) => { b.content = r; }));
-        else if (Array.isArray(b.content)) for (const c of b.content) if (c && c.type === 'text' && typeof c.text === 'string') tasks.push(red(c.text).then((r) => { c.text = r; }));
-      }
-    }
-  };
-  if (parsed.system != null) onText(parsed, 'system');
-  if (Array.isArray(parsed.messages)) for (const m of parsed.messages) if (m && m.content != null) onText(m, 'content');
-  await Promise.all(tasks);
-}
-
 function createGateway({ getConfig }) {
   const emitter = new EventEmitter();
   let server = null;
@@ -366,26 +344,9 @@ function createGateway({ getConfig }) {
     }
     const provider = routing.provider;
 
-    // Presidio: redact PII from the outbound request body before it leaves the machine.
-    let redactedBody = false;
-    const px = config.presidio || {};
-    if (px.enabled && parsed && (Array.isArray(parsed.messages) || parsed.system != null)) {
-      try {
-        await redactRequestBody(parsed, px);
-        redactedBody = true;
-      } catch (e) {
-        if (!px.failOpen) {
-          respondJson(res, 503, JSON.parse(errorBody('ccbud: Presidio content filter not ready — request blocked to prevent leaks. Check Presidio in Settings or turn it off.', 'api_error')));
-          log('warn', 'presidio redact failed (fail-closed): ' + (e && e.message));
-          return;
-        }
-        log('warn', 'presidio redact failed (fail-open, forwarding raw): ' + (e && e.message));
-      }
-    }
-
     let outBody = req.body || Buffer.alloc(0);
-    if (parsed && (redactedBody || (routing.outgoingModel && routing.outgoingModel !== requestedModel))) {
-      if (routing.outgoingModel && routing.outgoingModel !== requestedModel) parsed.model = routing.outgoingModel;
+    if (parsed && routing.outgoingModel && routing.outgoingModel !== requestedModel) {
+      parsed.model = routing.outgoingModel;
       outBody = Buffer.from(JSON.stringify(parsed), 'utf8');
     }
     const needRewriteResponse =

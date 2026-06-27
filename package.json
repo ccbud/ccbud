@@ -1,6 +1,6 @@
 {
   "name": "ccbud",
-  "version": "1.0.15",
+  "version": "1.0.16",
   "description": "ccbud — Claude Code Gateway. A cross-platform desktop app that proxies Claude Code to any Anthropic-compatible provider, with one-click switching and model name mapping.",
   "main": "src/main/bootstrap.js",
   "author": {
@@ -14,22 +14,21 @@
   },
   "hotUpdate": {
     "//": "Hot-update gate: installs whose native SHELL version is >= minShellVersion can apply this release as a JS-only hot update. Bump this to the current version ONLY in releases that change the native layer (Electron, bundled binaries, new native deps) to force a full reinstall.",
-    "minShellVersion": "1.0.15"
+    "minShellVersion": "1.0.16"
   },
   "scripts": {
     "build:css": "tailwindcss -i src/renderer/input.css -o src/renderer/styles.css",
     "start": "npm run build:css && electron .",
     "dev": "npm run build:css && electron . --user-data-dir=.devdata",
     "test": "node test/selftest.js",
-    "prepare:presidio": "node scripts/prepare-presidio.js",
     "build:hotupdate": "node scripts/build-hotupdate.js",
     "gen:updatekeys": "node scripts/gen-update-keys.js",
     "update:cask": "node scripts/update-cask.js",
     "pack": "electron-builder --dir",
-    "dist": "npm run prepare:presidio && electron-builder",
-    "dist:mac": "npm run prepare:presidio && electron-builder --mac",
-    "dist:win": "npm run prepare:presidio && electron-builder --win",
-    "dist:linux": "npm run prepare:presidio && electron-builder --linux"
+    "dist": "electron-builder",
+    "dist:mac": "electron-builder --mac",
+    "dist:win": "electron-builder --win",
+    "dist:linux": "electron-builder --linux"
   },
   "devDependencies": {
     "@highlightjs/cdn-assets": "^11.11.1",
@@ -49,16 +48,6 @@
     "files": [
       "src/**/*",
       "!**/*.map"
-    ],
-    "extraResources": [
-      {
-        "from": "vendor/presidio-env",
-        "to": "presidio-env"
-      },
-      {
-        "from": "vendor/presidio-src",
-        "to": "presidio"
-      }
     ],
     "mac": {
       "category": "public.app-category.developer-tools",

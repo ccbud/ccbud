@@ -21,17 +21,6 @@ contextBridge.exposeInMainWorld('ccbud', {
   desktopDisconnect: () => ipcRenderer.invoke('claudeDesktop:disconnect'),
   desktopReplay: (file) => ipcRenderer.invoke('claudeDesktop:replay', file),
 
-  // Presidio local PII content filter
-  presidioStatus: () => ipcRenderer.invoke('presidio:status'),
-  presidioSetup: () => ipcRenderer.invoke('presidio:setup'),
-  presidioEnable: (on) => ipcRenderer.invoke('presidio:enable', on),
-  presidioLogs: () => ipcRenderer.invoke('presidio:logs'),
-  presidioLogsClear: () => ipcRenderer.invoke('presidio:logs:clear'),
-  onPresidioLog: (cb) => ipcRenderer.on('presidio:log', (_e, l) => cb(l)),
-  presidioFindings: () => ipcRenderer.invoke('presidio:findings'),
-  presidioFindingsClear: () => ipcRenderer.invoke('presidio:findings:clear'),
-  onPresidioFinding: (cb) => ipcRenderer.on('presidio:finding', (_e, f) => cb(f)),
-
   serverStatus: () => ipcRenderer.invoke('server:status'),
 
   // usage panel

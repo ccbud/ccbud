@@ -130,10 +130,6 @@
                 <span class="w-4 h-4 flex items-center justify-center opacity-80 [.active_&]:opacity-100" data-icon="desktop"></span>
                 <span class="settings-subnav-label" data-i18n="settings.nav.desktop">桌面版</span>
               </button>
-              <button type="button" data-settings="privacy" class="settings-subnav-item flex items-center gap-2.5 w-full px-2.5 py-2 rounded-[9px] border-none bg-transparent text-muted font-medium text-[13px] leading-tight cursor-pointer text-left transition-all duration-150 hover:bg-chip-bg hover:text-fg active:scale-[0.985] [&.active]:bg-brand-soft [&.active]:text-brand [&.active]:font-semibold">
-                <span class="w-4 h-4 flex items-center justify-center opacity-80 [.active_&]:opacity-100" data-icon="shield"></span>
-                <span class="settings-subnav-label" data-i18n="settings.nav.privacy">内容过滤</span>
-              </button>
               <button type="button" data-settings="general" class="settings-subnav-item flex items-center gap-2.5 w-full px-2.5 py-2 rounded-[9px] border-none bg-transparent text-muted font-medium text-[13px] leading-tight cursor-pointer text-left transition-all duration-150 hover:bg-chip-bg hover:text-fg active:scale-[0.985] [&.active]:bg-brand-soft [&.active]:text-brand [&.active]:font-semibold">
                 <span class="w-4 h-4 flex items-center justify-center opacity-80 [.active_&]:opacity-100" data-icon="sliders"></span>
                 <span class="settings-subnav-label" data-i18n="settings.nav.general">常规</span>
@@ -188,76 +184,6 @@
               </div>
               <p class="caption text-[12px] text-caption" data-i18n="settings.desktopDesc">把 Claude 桌面版的模型推理也指向本地网关，和 Claude Code 共用同一套服务与模型映射。</p>
               <p class="caption text-[12px] text-caption leading-[1.5] [&_b]:text-fg [&_b]:font-medium" id="desktopNote" data-i18n="settings.desktopNote">macOS 要求你在「系统设置 › 描述文件」里手动批准一次（输管理员密码）。这不是高危操作 —— 只是把推理指向本地网关，系统出于安全要求必须你亲自确认。还原同理。</p>
-            </div>
-            </div>
-            <div data-pane="privacy" class="hidden">
-            <div class="settings-card bg-bg-elev border border-border-custom rounded-xl shadow-card p-7 flex flex-col gap-6 transition-all duration-300" id="presidioCard">
-              <div class="settings-card-header flex justify-between items-center gap-3">
-                <h3 class="settings-card-title text-[13px] font-semibold text-fg flex items-center gap-2"><span data-i18n="settings.presidio">内容过滤（Presidio）</span><span id="presidioStatusChip" class="text-[10.5px] font-semibold rounded-full px-2 py-0.25 bg-chip-bg text-muted"></span></h3>
-                <label class="switch inline-flex items-center gap-1.75 cursor-pointer text-[12.5px] no-drag shrink-0">
-                  <input id="fPresidio" type="checkbox" class="hidden peer" />
-                  <span class="track w-8 h-[17px] rounded-full bg-border-strong relative transition-colors duration-180 ease-[cubic-bezier(0.23,1,0.32,1)] shrink-0 peer-checked:bg-primary after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:w-[13px] after:h-[13px] after:rounded-full after:bg-white after:shadow-[0_1px_2px_rgba(0,0,0,0.18)] after:transition-transform after:duration-180 after:ease-[cubic-bezier(0.23,1,0.32,1)] peer-checked:after:translate-x-[15px]"></span>
-                </label>
-              </div>
-              <p class="caption text-[12px] text-caption" data-i18n="settings.presidioDesc">在请求离开你机器前，自动检测并脱敏 PII，对你无感。本地运行，内容不外传。</p>
-
-              <div id="presidioTiers" class="flex flex-col gap-4 pt-4 border-t border-border-custom hidden">
-                <div class="flex items-center justify-between gap-3">
-                  <div class="min-w-0"><div class="text-[12.5px] font-medium text-fg" data-i18n="settings.presidioRegex">规则识别器</div><div class="text-[11.5px] text-caption mt-0.5" data-i18n="settings.presidioRegexDesc">跨语言：信用卡 / 邮箱 / IP / 加密钱包 / 电话等</div></div>
-                  <span class="text-[10.5px] font-semibold rounded-full px-2 py-0.25 bg-green-soft text-green shrink-0" data-i18n="settings.presidioRegexBadge">默认开</span>
-                </div>
-                <div class="flex items-center justify-between gap-3">
-                  <div class="min-w-0"><div class="text-[12.5px] font-medium text-fg" data-i18n="settings.presidioNer">NER 识别器</div><div class="text-[11.5px] text-caption mt-0.5" data-i18n="settings.presidioNerDesc">人名 / 地点（NLP 模型）· 占用内存与 CPU</div></div>
-                  <label class="switch inline-flex items-center cursor-pointer no-drag shrink-0"><input id="fPresidioNer" type="checkbox" class="hidden peer" /><span class="track w-8 h-[17px] rounded-full bg-border-strong relative transition-colors duration-180 ease-[cubic-bezier(0.23,1,0.32,1)] shrink-0 peer-checked:bg-primary after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:w-[13px] after:h-[13px] after:rounded-full after:bg-white after:shadow-[0_1px_2px_rgba(0,0,0,0.18)] after:transition-transform after:duration-180 after:ease-[cubic-bezier(0.23,1,0.32,1)] peer-checked:after:translate-x-[15px]"></span></label>
-                </div>
-                <div class="flex flex-col gap-2.5">
-                  <div class="flex items-center justify-between gap-3">
-                    <div class="min-w-0"><div class="text-[12.5px] font-medium text-fg" data-i18n="settings.presidioLlm">LLM 识别器</div><div class="text-[11.5px] text-caption mt-0.5" data-i18n="settings.presidioLlmDesc">上下文级、最适合中文 · 需本地 Ollama 服务</div></div>
-                    <label class="switch inline-flex items-center cursor-pointer no-drag shrink-0"><input id="fPresidioLlm" type="checkbox" class="hidden peer" /><span class="track w-8 h-[17px] rounded-full bg-border-strong relative transition-colors duration-180 ease-[cubic-bezier(0.23,1,0.32,1)] shrink-0 peer-checked:bg-primary after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:w-[13px] after:h-[13px] after:rounded-full after:bg-white after:shadow-[0_1px_2px_rgba(0,0,0,0.18)] after:transition-transform after:duration-180 after:ease-[cubic-bezier(0.23,1,0.32,1)] peer-checked:after:translate-x-[15px]"></span></label>
-                  </div>
-                  <input id="fOllamaUrl" type="text" placeholder="http://localhost:11434" class="hidden bg-bg-input border border-border-custom rounded-md px-2 py-1.25 text-fg font-mono text-[12px] outline-none transition-colors duration-120 focus:border-primary" />
-                </div>
-
-                <div class="flex items-center justify-between gap-3 pt-3.5 border-t border-border-custom">
-                  <div class="min-w-0"><div class="text-[12.5px] font-medium text-fg" data-i18n="settings.presidioDeid">脱敏方式</div><div class="text-[11.5px] text-caption mt-0.5" data-i18n="settings.presidioDeidDesc">检测到的 PII 如何处理</div></div>
-                  <select id="fPresidioDeid" class="mini-select bg-bg-input border border-border-custom rounded-md text-fg text-[12px] outline-none no-drag shrink-0 max-w-[150px]">
-                    <option value="replace" data-i18n="settings.deidReplace">替换 &lt;类型&gt;</option>
-                    <option value="redact" data-i18n="settings.deidRedact">删除</option>
-                    <option value="mask" data-i18n="settings.deidMask">掩码 ***</option>
-                    <option value="hash" data-i18n="settings.deidHash">哈希</option>
-                  </select>
-                </div>
-                <div class="flex items-center justify-between gap-3">
-                  <div class="min-w-0"><div class="text-[12.5px] font-medium text-fg" data-i18n="settings.presidioThreshold">置信度阈值</div><div class="text-[11.5px] text-caption mt-0.5" data-i18n="settings.presidioThresholdDesc">低于此分数的检测会被忽略</div></div>
-                  <div class="flex items-center gap-2.5 shrink-0">
-                    <input id="fPresidioThreshold" type="range" min="0" max="1" step="0.05" class="presidio-range w-[110px] no-drag" />
-                    <span id="fPresidioThresholdVal" class="text-[11.5px] font-mono text-fg w-[30px] text-right">0.40</span>
-                  </div>
-                </div>
-                <div class="flex items-center justify-between gap-3">
-                  <div class="min-w-0"><div class="text-[12.5px] font-medium text-fg" data-i18n="settings.presidioNerModel">NER 模型</div><div class="text-[11.5px] text-caption mt-0.5" data-i18n="settings.presidioNerModelDesc">NER 识别器使用的 NLP 模型</div></div>
-                  <select id="fPresidioNerModel" class="mini-select bg-bg-input border border-border-custom rounded-md text-fg text-[12px] outline-none no-drag shrink-0 max-w-[160px]">
-                    <option value="en_core_web_sm">en_core_web_sm</option>
-                  </select>
-                </div>
-              </div>
-
-              <p class="caption text-[12px] text-caption leading-[1.5]" id="presidioNote" data-i18n="settings.presidioNote">本地引擎已内置、开箱即用。规则类（跨语言）随开关自动开启；NER 需 NLP 模型，LLM 需配置 Ollama。</p>
-            </div>
-
-            <div id="presidioConsole" class="mt-6 rounded-xl border border-border-custom overflow-hidden flex flex-col bg-[#0c0e12] shadow-card">
-              <div class="flex items-center justify-between gap-2 px-3 py-2 border-b border-white/8">
-                <div class="flex items-center gap-2 min-w-0">
-                  <span id="presidioLogDot" class="w-1.5 h-1.5 rounded-full bg-[#3a3f4b] shrink-0"></span>
-                  <div class="inline-flex gap-0.5 p-0.5 bg-white/5 rounded-[7px]" id="presidioConsoleTabs">
-                    <button type="button" class="ptab text-[10.5px] font-medium px-2 py-0.75 rounded-[5px] text-[#7b8494] hover:text-[#c5ccd6] [.active]:bg-white/10 [.active]:text-[#e8edf4] transition-colors active" data-ptab="console" data-i18n="settings.presidioConsole">控制台输出</button>
-                    <button type="button" class="ptab text-[10.5px] font-medium px-2 py-0.75 rounded-[5px] text-[#7b8494] hover:text-[#c5ccd6] [.active]:bg-white/10 [.active]:text-[#e8edf4] transition-colors inline-flex items-center gap-1" data-ptab="findings"><span data-i18n="settings.presidioFindings">Findings</span><span id="presidioFindCount" class="hidden text-[9px] font-bold leading-none bg-white/12 rounded-full px-1.25 py-0.5 min-w-[14px] text-center">0</span></button>
-                  </div>
-                </div>
-                <button id="btnPresidioLogClear" type="button" class="text-[10.5px] text-[#7b8494] hover:text-[#c5ccd6] transition-colors no-drag shrink-0" data-i18n="settings.presidioConsoleClear">清空</button>
-              </div>
-              <pre id="presidioLog" data-ptab-panel="console" class="m-0 px-4 py-3 font-mono text-[11px] leading-[1.6] text-[#c5ccd6] h-[260px] overflow-y-auto overflow-x-hidden whitespace-pre-wrap break-words"></pre>
-              <div id="presidioFindings" data-ptab-panel="findings" class="hidden h-[260px] overflow-auto"></div>
             </div>
             </div>
             <div data-pane="general" class="hidden">

@@ -201,7 +201,6 @@ function renderConnect() {
   else se.classList.add('hidden');
   renderHistoryDirs();
   renderDesktopCard();
-  renderPresidioCard();
 }
 
 /* ---------- Claude Desktop ("Third-Party Inference") integration ---------- */
@@ -241,108 +240,11 @@ async function renderDesktopCard() {
 let desktopPollTimer = null;
 function startDesktopPoll() {
   stopDesktopPoll();
-  renderDesktopCard(); renderPresidioCard();
-  desktopPollTimer = setInterval(() => { renderDesktopCard(); renderPresidioCard(); }, 4000);
+  renderDesktopCard();
+  desktopPollTimer = setInterval(() => { renderDesktopCard(); }, 4000);
 }
 function stopDesktopPoll() {
   if (desktopPollTimer) { clearInterval(desktopPollTimer); desktopPollTimer = null; }
-}
-
-/* ---------- Presidio (local PII content filter) ---------- */
-async function renderPresidioCard() {
-  const card = $('presidioCard');
-  if (!card || !api.presidioStatus) return;
-  let st;
-  try { st = await api.presidioStatus(); } catch (_) { return; }
-  const chip = $('presidioStatusChip');
-  const sw = $('fPresidio');
-  const note = $('presidioNote');
-  if (!chip || !sw || !note) return;
-  const enabled = !!(config.presidio && config.presidio.enabled);
-  if (document.activeElement !== sw) sw.checked = enabled;
-  // Tier sub-options (regex auto-on; NER / LLM opt-in).
-  const tiers = $('presidioTiers');
-  if (tiers) tiers.classList.toggle('hidden', !enabled);
-  const px = config.presidio || {};
-  const nerSw = $('fPresidioNer'), llmSw = $('fPresidioLlm'), ollama = $('fOllamaUrl');
-  if (nerSw && document.activeElement !== nerSw) nerSw.checked = !!px.ner;
-  if (llmSw && document.activeElement !== llmSw) llmSw.checked = !!px.llm;
-  if (ollama) { ollama.classList.toggle('hidden', !px.llm); if (document.activeElement !== ollama) ollama.value = px.ollamaUrl || ''; }
-  // advanced controls
-  const deid = $('fPresidioDeid'); if (deid && document.activeElement !== deid) deid.value = px.deidentify || 'replace';
-  const thr = $('fPresidioThreshold'), thrVal = $('fPresidioThresholdVal');
-  const tv = (typeof px.threshold === 'number') ? px.threshold : 0.4;
-  if (thr && document.activeElement !== thr) thr.value = tv;
-  if (thrVal) thrVal.textContent = tv.toFixed(2);
-  const nerM = $('fPresidioNerModel'); if (nerM && document.activeElement !== nerM) nerM.value = px.nerModel || 'en_core_web_sm';
-  let txt, cls = 'bg-chip-bg text-muted';
-  // Bundled per-platform → always supported; just reflect the runtime state.
-  sw.disabled = false;
-  if (!enabled) txt = 'settings.presidioOff';
-  else if (st.setup === 'installing') { txt = 'settings.presidioInstalling'; cls = 'bg-amber-soft text-amber'; }
-  else if (st.setup === 'missing-source') { txt = 'settings.presidioNoSource'; cls = 'bg-amber-soft text-amber'; }
-  else if (st.running) { txt = 'settings.presidioRunning'; cls = 'bg-green-soft text-green'; }
-  else { txt = 'settings.presidioStarting'; cls = 'bg-amber-soft text-amber'; }
-  chip.className = 'text-[10.5px] font-semibold rounded-full px-2 py-0.25 ' + cls;
-  chip.textContent = I18n.t(txt);
-  const dot = $('presidioLogDot');
-  if (dot) dot.style.background = (enabled && st.running) ? '#34c759' : (enabled ? '#ff9f0a' : '#3a3f4b');
-  if (enabled && st.running) { delete note.dataset.transient; note.textContent = I18n.t('settings.presidioRunningNote'); }
-  else if (!note.dataset.transient) note.textContent = I18n.t(enabled && st.setup === 'installing' ? 'settings.presidioInstallingNote' : 'settings.presidioNote');
-}
-
-// Presidio console — live service output, so "启动中" is never a mystery.
-function appendPresidioLog(line) {
-  const pre = $('presidioLog');
-  if (!pre) return;
-  const nearBottom = pre.scrollHeight - pre.scrollTop - pre.clientHeight < 40;
-  pre.textContent += (pre.textContent ? '\n' : '') + line;
-  if (nearBottom) pre.scrollTop = pre.scrollHeight;
-}
-function renderPresidioLog() {
-  const pre = $('presidioLog');
-  if (!pre || !api.presidioLogs) return;
-  api.presidioLogs().then((lines) => {
-    pre.textContent = (lines || []).join('\n');
-    pre.scrollTop = pre.scrollHeight;
-  }).catch(() => {});
-}
-// Presidio console tabs: console output ↔ Findings table (detected PII).
-let presidioTab = 'console';
-function setPresidioTab(t) {
-  presidioTab = t;
-  document.querySelectorAll('#presidioConsoleTabs .ptab').forEach((b) => b.classList.toggle('active', b.dataset.ptab === t));
-  document.querySelectorAll('#presidioConsole [data-ptab-panel]').forEach((p) => p.classList.toggle('hidden', p.dataset.ptabPanel !== t));
-  if (t === 'findings') renderPresidioFindings();
-}
-function updateFindCount(n) {
-  const c = $('presidioFindCount');
-  if (!c) return;
-  c.textContent = n > 99 ? '99+' : String(n);
-  c.classList.toggle('hidden', !n);
-}
-function findingsTableHTML(rows) {
-  if (!rows || !rows.length) return `<div class="fd-empty">${escapeHtml(I18n.t('settings.presidioFindNone'))}</div>`;
-  const head = `<thead><tr><th>${escapeHtml(I18n.t('settings.findEntity'))}</th><th>${escapeHtml(I18n.t('settings.findText'))}</th><th style="text-align:right">${escapeHtml(I18n.t('settings.findScore'))}</th></tr></thead>`;
-  const body = rows.slice().reverse().map((f) => `<tr><td class="fd-entity">${escapeHtml(f.entity || '')}</td><td class="fd-text">${escapeHtml(f.text || '')}</td><td class="fd-score">${f.score != null ? f.score : ''}</td></tr>`).join('');
-  return `<table>${head}<tbody>${body}</tbody></table>`;
-}
-function renderPresidioFindings() {
-  const host = $('presidioFindings');
-  if (!host || !api.presidioFindings) return;
-  api.presidioFindings().then((rows) => {
-    host.innerHTML = findingsTableHTML(rows || []);
-    updateFindCount((rows || []).length);
-  }).catch(() => {});
-}
-function refreshFindCount() {
-  if (!api.presidioFindings) return;
-  api.presidioFindings().then((rows) => updateFindCount((rows || []).length)).catch(() => {});
-}
-function appendFinding() {
-  const c = $('presidioFindCount');
-  if (c) updateFindCount((parseInt(c.textContent, 10) || 0) + 1);
-  if (presidioTab === 'findings') renderPresidioFindings();
 }
 
 async function renderHistoryDirs() {
@@ -1050,7 +952,6 @@ function switchSettings(pane) {
   if (panes) panes.querySelectorAll('[data-pane]').forEach((p) => p.classList.toggle('hidden', p.dataset.pane !== pane));
   // Refresh the live cards the moment their section is revealed.
   if (pane === 'desktop') renderDesktopCard();
-  if (pane === 'privacy') { renderPresidioCard(); renderPresidioLog(); refreshFindCount(); if (presidioTab === 'findings') renderPresidioFindings(); }
   if (pane === 'about') loadUpdateState();
 }
 
@@ -1209,65 +1110,7 @@ function bind() {
   });
   // Re-check the moment the window regains focus (e.g. right after approving in System Settings),
   // in case the background poll was throttled while ccbud was in the background.
-  window.addEventListener('focus', () => { if (desktopPollTimer) { renderDesktopCard(); renderPresidioCard(); } });
-
-  const fPresidio = $('fPresidio');
-  if (fPresidio) fPresidio.addEventListener('change', async (e) => {
-    const on = e.target.checked;
-    const note = $('presidioNote');
-    config.presidio = Object.assign({}, config.presidio, { enabled: on });
-    if (note) {
-      if (on) { note.dataset.transient = '1'; note.textContent = I18n.t('settings.presidioInstallingNote'); }
-      else delete note.dataset.transient;
-    }
-    let res;
-    try { res = await api.presidioEnable(on); } catch (_) { res = null; }
-    if (note && on) {
-      if (res && res.reason === 'installing') note.textContent = I18n.t('settings.presidioInstallingNote');
-      else if (res && res.ok) note.textContent = I18n.t('settings.presidioRunningNote');
-      else if (res && res.reason === 'missing-source') note.textContent = I18n.t('settings.presidioNoSource');
-      else note.textContent = I18n.t('settings.presidioStartFail');
-    }
-    renderPresidioCard();
-  });
-  // Tier sub-options are config-only (no service restart) — persist and let the proxy read them.
-  const persistPresidio = (patch) => persist({ presidio: Object.assign({}, config.presidio, patch) });
-  const fPresidioNer = $('fPresidioNer');
-  if (fPresidioNer) fPresidioNer.addEventListener('change', (e) => persistPresidio({ ner: e.target.checked }));
-  const fPresidioLlm = $('fPresidioLlm');
-  if (fPresidioLlm) fPresidioLlm.addEventListener('change', (e) => {
-    const on = e.target.checked;
-    const ollama = $('fOllamaUrl');
-    if (ollama) { ollama.classList.toggle('hidden', !on); if (on && !ollama.value) ollama.value = 'http://localhost:11434'; }
-    persistPresidio({ llm: on, ollamaUrl: (ollama && ollama.value) || 'http://localhost:11434' });
-  });
-  const fOllamaUrl = $('fOllamaUrl');
-  if (fOllamaUrl) fOllamaUrl.addEventListener('change', (e) => persistPresidio({ ollamaUrl: e.target.value.trim() }));
-  const fPresidioDeid = $('fPresidioDeid');
-  if (fPresidioDeid) fPresidioDeid.addEventListener('change', (e) => persistPresidio({ deidentify: e.target.value }));
-  const fPresidioThreshold = $('fPresidioThreshold');
-  if (fPresidioThreshold) {
-    fPresidioThreshold.addEventListener('input', (e) => { const el = $('fPresidioThresholdVal'); if (el) el.textContent = parseFloat(e.target.value).toFixed(2); });
-    fPresidioThreshold.addEventListener('change', (e) => persistPresidio({ threshold: parseFloat(e.target.value) }));
-  }
-  const fPresidioNerModel = $('fPresidioNerModel');
-  if (fPresidioNerModel) fPresidioNerModel.addEventListener('change', (e) => persistPresidio({ nerModel: e.target.value }));
-  // Presidio console tabs + live append/findings + clear.
-  const pTabs = $('presidioConsoleTabs');
-  if (pTabs) pTabs.addEventListener('click', (e) => { const b = e.target.closest('.ptab'); if (b) setPresidioTab(b.dataset.ptab); });
-  if (api.onPresidioLog) api.onPresidioLog(appendPresidioLog);
-  if (api.onPresidioFinding) api.onPresidioFinding(appendFinding);
-  const btnPresidioLogClear = $('btnPresidioLogClear');
-  if (btnPresidioLogClear) btnPresidioLogClear.addEventListener('click', () => {
-    if (presidioTab === 'findings') {
-      if (api.presidioFindingsClear) api.presidioFindingsClear().catch(() => {});
-      const h = $('presidioFindings'); if (h) h.innerHTML = findingsTableHTML([]);
-      updateFindCount(0);
-    } else {
-      if (api.presidioLogsClear) api.presidioLogsClear().catch(() => {});
-      const pre = $('presidioLog'); if (pre) pre.textContent = '';
-    }
-  });
+  window.addEventListener('focus', () => { if (desktopPollTimer) { renderDesktopCard(); } });
 
   $('btnAdd').addEventListener('click', () => openModal(null));
   const btnAddEmpty = $('btnAddEmpty');

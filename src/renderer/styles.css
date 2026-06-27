@@ -337,9 +337,6 @@
   .mt-4 {
     margin-top: calc(var(--spacing) * 4);
   }
-  .mt-6 {
-    margin-top: calc(var(--spacing) * 6);
-  }
   .mt-\[2\.5px\] {
     margin-top: 2.5px;
   }
@@ -396,9 +393,6 @@
   }
   .inline-flex {
     display: inline-flex;
-  }
-  .table {
-    display: table;
   }
   .h-1\.5 {
     height: calc(var(--spacing) * 1.5);
@@ -462,9 +456,6 @@
   }
   .h-\[52px\] {
     height: 52px;
-  }
-  .h-\[260px\] {
-    height: 260px;
   }
   .h-full {
     height: 100%;
@@ -568,9 +559,6 @@
   .w-\[72px\] {
     width: 72px;
   }
-  .w-\[110px\] {
-    width: 110px;
-  }
   .w-\[120px\] {
     width: 120px;
   }
@@ -604,12 +592,6 @@
   .max-w-\[120px\] {
     max-width: 120px;
   }
-  .max-w-\[150px\] {
-    max-width: 150px;
-  }
-  .max-w-\[160px\] {
-    max-width: 160px;
-  }
   .max-w-\[200px\] {
     max-width: 200px;
   }
@@ -633,9 +615,6 @@
   }
   .min-w-8 {
     min-width: calc(var(--spacing) * 8);
-  }
-  .min-w-\[14px\] {
-    min-width: 14px;
   }
   .min-w-\[36px\] {
     min-width: 36px;
@@ -1005,9 +984,6 @@
   .bg-\[\#0c0e12\] {
     background-color: #0c0e12;
   }
-  .bg-\[\#3a3f4b\] {
-    background-color: #3a3f4b;
-  }
   .bg-\[\#5856d6\]\/34 {
     background-color: color-mix(in oklab, #5856d6 34%, transparent);
   }
@@ -1028,9 +1004,6 @@
   }
   .bg-\[\#ff9f0a\]\/4 {
     background-color: color-mix(in oklab, #ff9f0a 4%, transparent);
-  }
-  .bg-amber-soft {
-    background-color: var(--color-amber-soft);
   }
   .bg-bg-app {
     background-color: var(--color-bg-app);
@@ -1124,18 +1097,6 @@
   }
   .bg-transparent {
     background-color: transparent;
-  }
-  .bg-white\/5 {
-    background-color: color-mix(in srgb, #fff 5%, transparent);
-    @supports (color: color-mix(in lab, red, red)) {
-      background-color: color-mix(in oklab, var(--color-white) 5%, transparent);
-    }
-  }
-  .bg-white\/12 {
-    background-color: color-mix(in srgb, #fff 12%, transparent);
-    @supports (color: color-mix(in lab, red, red)) {
-      background-color: color-mix(in oklab, var(--color-white) 12%, transparent);
-    }
   }
   .bg-gradient-to-b {
     --tw-gradient-position: to bottom in oklab;
@@ -1390,9 +1351,6 @@
   .pt-3 {
     padding-top: calc(var(--spacing) * 3);
   }
-  .pt-3\.5 {
-    padding-top: calc(var(--spacing) * 3.5);
-  }
   .pt-4 {
     padding-top: calc(var(--spacing) * 4);
   }
@@ -1641,14 +1599,8 @@
   .\!text-\[\#e8edf4\] {
     color: #e8edf4 !important;
   }
-  .text-\[\#7b8494\] {
-    color: #7b8494;
-  }
   .text-\[\#24292e\] {
     color: #24292e;
-  }
-  .text-\[\#c5ccd6\] {
-    color: #c5ccd6;
   }
   .text-\[\#e8edf4\] {
     color: #e8edf4;
@@ -2274,13 +2226,6 @@
       }
     }
   }
-  .hover\:text-\[\#c5ccd6\] {
-    &:hover {
-      @media (hover: hover) {
-        color: #c5ccd6;
-      }
-    }
-  }
   .hover\:text-brand {
     &:hover {
       @media (hover: hover) {
@@ -2767,19 +2712,6 @@
   .\[\.active\]\:bg-bg-elev {
     &:is(.active) {
       background-color: var(--color-bg-elev);
-    }
-  }
-  .\[\.active\]\:bg-white\/10 {
-    &:is(.active) {
-      background-color: color-mix(in srgb, #fff 10%, transparent);
-      @supports (color: color-mix(in lab, red, red)) {
-        background-color: color-mix(in oklab, var(--color-white) 10%, transparent);
-      }
-    }
-  }
-  .\[\.active\]\:text-\[\#e8edf4\] {
-    &:is(.active) {
-      color: #e8edf4;
     }
   }
   .\[\.active\]\:text-fg {
@@ -3821,73 +3753,6 @@ body {
 .dr-mark.cur {
   background: #ff9f0a;
   color: #1a1a1a;
-}
-.presidio-range {
-  -webkit-appearance: none;
-  appearance: none;
-  height: 4px;
-  border-radius: 3px;
-  background: var(--border-strong);
-  outline: none;
-  cursor: pointer;
-}
-.presidio-range::-webkit-slider-thumb {
-  -webkit-appearance: none;
-  appearance: none;
-  width: 14px;
-  height: 14px;
-  border-radius: 50%;
-  background: var(--primary);
-  border: 2px solid var(--bg-elev);
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.22);
-  cursor: pointer;
-}
-#presidioFindings table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 11px;
-}
-#presidioFindings thead th {
-  position: sticky;
-  top: 0;
-  background: #121521;
-  color: #8b93a5;
-  font-weight: 600;
-  text-align: left;
-  padding: 7px 12px;
-  white-space: nowrap;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-}
-#presidioFindings tbody td {
-  padding: 6px 12px;
-  color: #c5ccd6;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
-  vertical-align: top;
-}
-#presidioFindings tbody tr:hover td {
-  background: rgba(255, 255, 255, 0.03);
-}
-#presidioFindings .fd-entity {
-  color: #9d9bff;
-  font-weight: 600;
-  font-family: var(--mono);
-  white-space: nowrap;
-}
-#presidioFindings .fd-text {
-  font-family: var(--mono);
-  word-break: break-all;
-}
-#presidioFindings .fd-score {
-  font-family: var(--mono);
-  color: #8b93a5;
-  text-align: right;
-  white-space: nowrap;
-}
-#presidioFindings .fd-empty {
-  padding: 28px 12px;
-  text-align: center;
-  color: #6b7280;
-  font-size: 11.5px;
 }
 .switch {
   display: inline-flex;
