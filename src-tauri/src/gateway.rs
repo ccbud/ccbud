@@ -19,7 +19,7 @@ use axum::{
 use bytes::Bytes;
 use futures_util::StreamExt;
 use serde_json::{json, Value};
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tauri::Emitter;
@@ -151,6 +151,7 @@ pub struct GatewayState {
     known: Mutex<HashMap<String, HashSet<String>>>,
     seq: AtomicU64,
     running: Mutex<Option<RunningServer>>,
+    exchanges: Mutex<VecDeque<Value>>,
     client: reqwest::Client,
     client_insecure: reqwest::Client,
 }
@@ -173,6 +174,7 @@ impl GatewayState {
             known: Mutex::new(HashMap::new()),
             seq: AtomicU64::new(0),
             running: Mutex::new(None),
+            exchanges: Mutex::new(VecDeque::new()),
             client,
             client_insecure,
         })
@@ -233,11 +235,35 @@ impl GatewayState {
         let _ = self.app.emit("gateway:status", status);
     }
 
-    fn emit_request(&self, method: &Method, path: &str, provider: &str, routing: &Routing, status: u16, usage: Option<&UsageAcc>) {
+    fn next_id(&self) -> u64 {
+        self.seq.fetch_add(1, Ordering::Relaxed) + 1
+    }
+    pub async fn record_exchange(&self, ex: Value) {
+        let mut buf = self.exchanges.lock().await;
+        buf.push_back(ex);
+        while buf.len() > 50 {
+            buf.pop_front();
+        }
+    }
+    pub async fn monitor_get(&self, id: i64) -> Value {
+        let buf = self.exchanges.lock().await;
+        buf.iter()
+            .rev()
+            .find(|e| e.get("id").and_then(|v| v.as_i64()) == Some(id))
+            .cloned()
+            .unwrap_or(Value::Null)
+    }
+    pub async fn monitor_clear(&self) {
+        self.exchanges.lock().await.clear();
+    }
+    pub async fn monitor_recent(&self) -> Value {
+        self.exchanges.lock().await.back().cloned().unwrap_or(Value::Null)
+    }
+
+    fn emit_request(&self, id: u64, method: &Method, path: &str, provider: &str, routing: &Routing, status: u16, usage: Option<&UsageAcc>) {
         let (it, ot, cr, cc) = usage
             .map(|u| (u.input, u.output, u.cache_read, u.cache_creation))
             .unwrap_or((0, 0, 0, 0));
-        let id = self.seq.fetch_add(1, Ordering::Relaxed) + 1;
         let _ = self.app.emit(
             "gateway:request",
             json!({
@@ -420,6 +446,34 @@ fn synthesize_models(config: &Value) -> Value {
     json!({ "data": out, "has_more": false, "first_id": first, "last_id": last })
 }
 
+fn redact_value(key: &str, val: &str) -> String {
+    let k = key.to_ascii_lowercase();
+    if matches!(k.as_str(), "authorization" | "x-api-key" | "cookie" | "set-cookie" | "proxy-authorization" | "x-goog-api-key") {
+        "••••••（已隐藏）".to_string()
+    } else {
+        val.to_string()
+    }
+}
+fn redact_headers(h: &HeaderMap) -> Value {
+    let mut o = serde_json::Map::new();
+    for (k, v) in h.iter() {
+        o.insert(k.as_str().to_string(), Value::String(redact_value(k.as_str(), v.to_str().unwrap_or(""))));
+    }
+    Value::Object(o)
+}
+fn vec_headers(pairs: &[(String, String)]) -> Value {
+    let mut o = serde_json::Map::new();
+    for (k, v) in pairs {
+        o.insert(k.clone(), Value::String(redact_value(k, v)));
+    }
+    Value::Object(o)
+}
+fn cap_text(bytes: &[u8], cap: usize) -> Value {
+    let total = bytes.len();
+    let end = total.min(cap);
+    json!({ "text": String::from_utf8_lossy(&bytes[..end]), "bytes": total, "truncated": total.saturating_sub(cap) })
+}
+
 const HOP_BY_HOP_REQ: &[&str] = &[
     "host", "content-length", "authorization", "x-api-key", "accept-encoding", "cookie",
     "proxy-authorization", "connection", "proxy-connection", "transfer-encoding",
@@ -546,6 +600,11 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
         }
     }
 
+    let ex_id = st.next_id();
+    let ex_req_headers = redact_headers(&up_headers);
+    let ex_req_body = cap_text(&out_body, 4 * 1024 * 1024);
+    let ex_url = target.clone();
+
     let insecure = config.get("insecureSkipVerify").and_then(|v| v.as_bool()).unwrap_or(false)
         && target.starts_with("https:");
     let client = if insecure { &st.client_insecure } else { &st.client };
@@ -578,12 +637,12 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
             }
             Err(e) => {
                 if is_models_list {
-                    st.emit_request(&method, &req_path, &provider_name, &routing, 200, None);
+                    st.emit_request(ex_id, &method, &req_path, &provider_name, &routing, 200, None);
                     return json_response(StatusCode::OK, &synthesize_models(&config));
                 }
                 if is_count_tokens {
                     let est = crate::counttokens::estimate_input_tokens(parsed.as_ref().unwrap_or(&Value::Null));
-                    st.emit_request(&method, &req_path, &provider_name, &routing, 200, None);
+                    st.emit_request(ex_id, &method, &req_path, &provider_name, &routing, 200, None);
                     return Response::builder()
                         .status(200)
                         .header("content-type", "application/json")
@@ -593,7 +652,7 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
                         .unwrap();
                 }
                 st.log("error", format!("upstream error: {}", e));
-                st.emit_request(&method, &req_path, &provider_name, &routing, 502, None);
+                st.emit_request(ex_id, &method, &req_path, &provider_name, &routing, 502, None);
                 return error_response(StatusCode::BAD_GATEWAY, &format!("ccbud upstream error: {}", e), "api_error");
             }
         }
@@ -604,7 +663,7 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
 
     if is_head_root && status.as_u16() == 404 {
         st.log("info", format!("HEAD / fallback: upstream 404 → gateway 200 ({})", provider_name));
-        st.emit_request(&method, &req_path, &provider_name, &routing, 200, None);
+        st.emit_request(ex_id, &method, &req_path, &provider_name, &routing, 200, None);
         return Response::builder()
             .status(200)
             .header("x-ccbud-fallback", "head-root-404-to-200")
@@ -633,9 +692,15 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
         let pname2 = provider_name.clone();
         let routing2 = routing.clone();
         let status_code = status.as_u16();
+        let ex_id2 = ex_id;
+        let ex_url2 = ex_url.clone();
+        let ex_rh = ex_req_headers.clone();
+        let ex_rb = ex_req_body.clone();
+        let res_headers = vec_headers(&out_headers);
         let body_stream = async_stream::stream! {
             let mut s = resp.bytes_stream();
             let mut buf = String::new();
+            let mut res_cap = String::new();
             let mut usage = UsageAcc::default();
             while let Some(chunk) = s.next().await {
                 match chunk {
@@ -647,6 +712,9 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
                             out.push_str(&process_sse_line(&line, rewrite_model.as_deref(), &mut usage));
                         }
                         if !out.is_empty() {
+                            if res_cap.len() < 2 * 1024 * 1024 {
+                                res_cap.push_str(&out);
+                            }
                             yield Ok::<Bytes, std::io::Error>(Bytes::from(out));
                         }
                     }
@@ -655,9 +723,21 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
             }
             if !buf.is_empty() {
                 let line = process_sse_line(&buf, rewrite_model.as_deref(), &mut usage);
+                if res_cap.len() < 2 * 1024 * 1024 {
+                    res_cap.push_str(&line);
+                }
                 yield Ok(Bytes::from(line));
             }
-            st2.emit_request(&method2, &path2, &pname2, &routing2, status_code, Some(&usage));
+            st2.emit_request(ex_id2, &method2, &path2, &pname2, &routing2, status_code, Some(&usage));
+            st2.record_exchange(json!({
+                "id": ex_id2, "method": method2.as_str(), "path": path2, "url": ex_url2,
+                "provider": pname2, "requestedModel": routing2.client_facing_model,
+                "outgoingModel": routing2.outgoing_model, "clientFacingModel": routing2.client_facing_model,
+                "status": status_code, "reqHeaders": ex_rh, "reqBody": ex_rb,
+                "resHeaders": res_headers,
+                "resBody": json!({ "text": res_cap.clone(), "bytes": res_cap.len(), "truncated": 0 }),
+            }))
+            .await;
         };
         let mut builder = Response::builder().status(status.as_u16());
         for (k, v) in &out_headers {
@@ -682,11 +762,11 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
             for (k, v) in &out_headers {
                 builder = builder.header(k, v);
             }
-            st.emit_request(&method, &req_path, &provider_name, &routing, 200, None);
+            st.emit_request(ex_id, &method, &req_path, &provider_name, &routing, 200, None);
             return builder.body(Body::from(buf)).unwrap();
         }
         let est = crate::counttokens::estimate_input_tokens(parsed.as_ref().unwrap_or(&Value::Null));
-        st.emit_request(&method, &req_path, &provider_name, &routing, 200, None);
+        st.emit_request(ex_id, &method, &req_path, &provider_name, &routing, 200, None);
         return Response::builder()
             .status(200)
             .header("content-type", "application/json")
@@ -715,7 +795,7 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
             }
         }
         let result = merged.unwrap_or_else(|| synthesize_models(&config));
-        st.emit_request(&method, &req_path, &provider_name, &routing, 200, None);
+        st.emit_request(ex_id, &method, &req_path, &provider_name, &routing, 200, None);
         return json_response(StatusCode::OK, &result);
     }
 
@@ -742,7 +822,15 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
             }
         }
     }
-    st.emit_request(&method, &req_path, &provider_name, &routing, status.as_u16(), Some(&usage));
+    st.emit_request(ex_id, &method, &req_path, &provider_name, &routing, status.as_u16(), Some(&usage));
+    st.record_exchange(json!({
+        "id": ex_id, "method": method.as_str(), "path": req_path, "url": ex_url,
+        "provider": provider_name, "requestedModel": routing.client_facing_model,
+        "outgoingModel": routing.outgoing_model, "clientFacingModel": routing.client_facing_model,
+        "status": status.as_u16(), "reqHeaders": ex_req_headers, "reqBody": ex_req_body,
+        "resHeaders": vec_headers(&out_headers), "resBody": cap_text(&out_buf, 2 * 1024 * 1024),
+    }))
+    .await;
 
     let mut builder = Response::builder().status(status.as_u16());
     for (k, v) in &out_headers {

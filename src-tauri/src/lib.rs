@@ -155,8 +155,21 @@ fn usage_get(range: Option<String>) -> Value {
     let active = cfg.get("historyActive").and_then(|v| v.as_str()).unwrap_or("all").to_string();
     usage::usage_get(&cfg, &active, range.as_deref().unwrap_or("7d"))
 }
-#[tauri::command] fn monitor_get(id: Value) -> Value { Value::Null }
-#[tauri::command] fn monitor_clear() -> Value { Value::Null }
+#[tauri::command]
+async fn monitor_get(
+    gw: tauri::State<'_, std::sync::Arc<gateway::GatewayState>>,
+    id: Value,
+) -> Result<Value, String> {
+    let idn = id.as_i64().or_else(|| id.as_str().and_then(|s| s.parse().ok())).unwrap_or(-1);
+    Ok(gw.monitor_get(idn).await)
+}
+#[tauri::command]
+async fn monitor_clear(
+    gw: tauri::State<'_, std::sync::Arc<gateway::GatewayState>>,
+) -> Result<Value, String> {
+    gw.monitor_clear().await;
+    Ok(json!(true))
+}
 #[tauri::command] fn logs_get() -> Value { json!([]) }
 #[tauri::command] fn logs_clear() -> Value { Value::Null }
 
@@ -294,7 +307,17 @@ async fn selfcheck_gateway(
         return Err("selfcheck disabled".into());
     }
     let port = gw.current_port().await.unwrap_or(0);
-    Ok(gateway::gateway_selftest(port).await)
+    let mut r = gateway::gateway_selftest(port).await;
+    let recent = gw.monitor_recent().await;
+    if let Some(o) = r.as_object_mut() {
+        let req_ok = recent.get("reqBody").and_then(|b| b.get("text")).and_then(|t| t.as_str()).map(|s| !s.is_empty()).unwrap_or(false);
+        let res_ok = recent.get("resBody").and_then(|b| b.get("text")).and_then(|t| t.as_str()).map(|s| s.contains("test-alias")).unwrap_or(false);
+        let redacted = recent.get("reqHeaders").map(|h| h.to_string().contains("已隐藏")).unwrap_or(false);
+        o.insert("monitorReqBody".into(), json!(req_ok));
+        o.insert("monitorResBody".into(), json!(res_ok));
+        o.insert("monitorRedacted".into(), json!(redacted));
+    }
+    Ok(r)
 }
 const SELFCHECK_JS: &str = r#"
 (function(){
