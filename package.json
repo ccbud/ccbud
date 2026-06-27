@@ -18,6 +18,7 @@
   },
   "scripts": {
     "build:css": "tailwindcss -i src/renderer/input.css -o src/renderer/styles.css",
+    "sync:shared": "node -e \"require('fs').cpSync('src/shared','src/renderer/shared',{recursive:true})\"",
     "start": "npm run build:css && electron .",
     "dev": "npm run build:css && electron . --user-data-dir=.devdata",
     "test": "node test/selftest.js",
@@ -33,6 +34,7 @@
   "devDependencies": {
     "@highlightjs/cdn-assets": "^11.11.1",
     "@tailwindcss/cli": "^4.3.1",
+    "@tauri-apps/cli": "^2.11.3",
     "electron": "^33.2.1",
     "electron-builder": "^25.1.8",
     "marked": "^18.0.5",
