@@ -28,8 +28,14 @@ fn config_get() -> Value {
     store::read_config()
 }
 #[tauri::command]
-fn config_save(cfg: Value) -> Value {
-    store::write_config(cfg)
+fn config_save(app: tauri::AppHandle, cfg: Value) -> Value {
+    let saved = store::write_config(cfg);
+    // Apply the open-at-login preference via the autostart plugin.
+    use tauri_plugin_autostart::ManagerExt;
+    let want = saved.get("openAtLogin").and_then(|v| v.as_bool()).unwrap_or(false);
+    let mgr = app.autolaunch();
+    let _ = if want { mgr.enable() } else { mgr.disable() };
+    saved
 }
 #[tauri::command]
 fn provider_upsert(p: Value) -> Value {
@@ -523,6 +529,18 @@ const SELFCHECK_JS: &str = r#"
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // single-instance MUST be the first plugin registered.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.show();
+                let _ = w.unminimize();
+                let _ = w.set_focus();
+            }
+        }))
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ))
         .plugin(tauri_plugin_updater::Builder::new().build())
         .on_page_load(|webview, payload| {
             if matches!(payload.event(), tauri::webview::PageLoadEvent::Finished)

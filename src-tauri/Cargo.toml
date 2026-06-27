@@ -36,6 +36,8 @@ arboard = "3"
 tiktoken-rs = "0.6"
 sha1 = "0.10"
 tauri-plugin-updater = "2"
+tauri-plugin-single-instance = "2"
+tauri-plugin-autostart = "2"
 rfd = "0.15"
 
 # Size-optimized release build — critical for the <50MB goal.
