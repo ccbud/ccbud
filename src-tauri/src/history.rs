@@ -278,6 +278,10 @@ fn all_dirs(config: &Value) -> Vec<(String, String, PathBuf)> {
     dirs.push(("__imported__".to_string(), "导入".to_string(), imports_root().join("projects")));
     dirs
 }
+/// Projects dirs to watch for live history changes.
+pub fn watch_roots(config: &Value) -> Vec<PathBuf> {
+    all_dirs(config).into_iter().map(|(_, _, r)| r).collect()
+}
 
 /// Walk every session .jsonl across the configured dirs (+ imports), invoking
 /// `cb(file, dir_name, dir_id, dir_label)`.

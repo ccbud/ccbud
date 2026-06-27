@@ -39,6 +39,7 @@ tauri-plugin-updater = "2"
 tauri-plugin-single-instance = "2"
 tauri-plugin-autostart = "2"
 rfd = "0.15"
+notify-debouncer-mini = "0.4"
 
 # Size-optimized release build — critical for the <50MB goal.
 [profile.release]

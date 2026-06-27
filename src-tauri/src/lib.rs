@@ -642,6 +642,28 @@ pub fn run() {
                     .build(app)?;
             }
 
+            // History live-watch: fs events on the projects dirs → history:changed.
+            {
+                use notify_debouncer_mini::{new_debouncer, notify::RecursiveMode, DebounceEventResult};
+                let app_w = app.handle().clone();
+                if let Ok(mut deb) = new_debouncer(
+                    std::time::Duration::from_millis(250),
+                    move |res: DebounceEventResult| {
+                        if let Ok(events) = res {
+                            let files: Vec<String> = events.iter().map(|e| e.path.to_string_lossy().to_string()).collect();
+                            let _ = app_w.emit("history:changed", json!({ "files": files }));
+                        }
+                    },
+                ) {
+                    for root in history::watch_roots(&store::read_config()) {
+                        if root.is_dir() {
+                            let _ = deb.watcher().watch(&root, RecursiveMode::Recursive);
+                        }
+                    }
+                    std::mem::forget(deb); // keep watching for the app's lifetime
+                }
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
