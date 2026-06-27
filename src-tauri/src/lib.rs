@@ -575,7 +575,8 @@ pub fn run() {
         ))
         .plugin(tauri_plugin_updater::Builder::new().build())
         .on_page_load(|webview, payload| {
-            if matches!(payload.event(), tauri::webview::PageLoadEvent::Finished)
+            if webview.label() == "main"
+                && matches!(payload.event(), tauri::webview::PageLoadEvent::Finished)
                 && std::env::var("CCBUD_SELFCHECK").is_ok()
             {
                 let _ = webview.eval(SELFCHECK_JS);
@@ -629,13 +630,22 @@ pub fn run() {
                         if let TrayIconEvent::Click {
                             button: MouseButton::Left,
                             button_state: MouseButtonState::Up,
+                            position,
                             ..
                         } = event
                         {
                             let app = tray.app_handle();
-                            if let Some(w) = app.get_webview_window("main") {
-                                let _ = w.show();
-                                let _ = w.set_focus();
+                            if let Some(pop) = app.get_webview_window("popover") {
+                                if pop.is_visible().unwrap_or(false) {
+                                    let _ = pop.hide();
+                                } else {
+                                    let x = (position.x as i32 - 150).max(0);
+                                    let y = position.y as i32 + 8;
+                                    let _ = pop.set_position(tauri::PhysicalPosition::new(x, y));
+                                    let _ = pop.show();
+                                    let _ = pop.set_focus();
+                                    let _ = app.emit("popover:show", ());
+                                }
                             }
                         }
                     })

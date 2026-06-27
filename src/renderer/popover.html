@@ -2,7 +2,7 @@
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src 'self' ipc: http://ipc.localhost; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data: asset: http://asset.localhost" />
     <title>ccbud</title>
     <link rel="stylesheet" href="styles.css" />
   </head>
@@ -51,7 +51,8 @@
         <button class="bg-transparent border-transparent text-muted rounded-[6px] px-2.25 py-1 text-[11px] font-medium cursor-pointer transition-all duration-150 hover:bg-chip-bg hover:text-fg active:scale-[0.98]" id="popQuit" data-i18n="pop.quit">退出</button>
       </footer>
     </div>
-    <script src="../shared/i18n-dict.js"></script>
+    <script src="tauri-bridge.js"></script>
+    <script src="shared/i18n-dict.js"></script>
     <script src="i18n.js"></script>
     <script src="popover.js"></script>
   </body>
