@@ -246,7 +246,25 @@ fn history_dirs() -> Value {
     let active = cfg.get("historyActive").and_then(|v| v.as_str()).unwrap_or("all").to_string();
     json!({ "dirs": history::dir_stats(&cfg), "active": active })
 }
-#[tauri::command] fn history_pick_dir() -> Value { Value::Null }
+#[tauri::command]
+async fn history_pick_dir(app: tauri::AppHandle) -> Result<Value, String> {
+    let folder = rfd::AsyncFileDialog::new().set_title("选择 Claude 配置目录").pick_folder().await;
+    match folder {
+        Some(f) => {
+            let dir = f.path().to_string_lossy().to_string();
+            let mut cfg = store::read_config();
+            let mut dirs: Vec<Value> = cfg.get("historyDirs").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+            if !dirs.iter().any(|d| d.as_str() == Some(dir.as_str())) {
+                dirs.push(json!(dir));
+            }
+            cfg["historyDirs"] = json!(dirs);
+            let saved = store::write_config(cfg);
+            let _ = app.emit("history:changed", json!({ "files": [] }));
+            Ok(json!({ "ok": true, "dir": dir, "config": saved }))
+        }
+        None => Ok(json!({ "ok": false, "canceled": true })),
+    }
+}
 #[tauri::command]
 fn history_set_active(app: tauri::AppHandle, id: String) -> Value {
     let mut cfg = store::read_config();
@@ -270,8 +288,38 @@ fn history_set_meta(app: tauri::AppHandle, file: String, patch: Value) -> Value 
     }
     r
 }
-#[tauri::command] fn history_export_raw(file: String) -> Value { json!("") }
-#[tauri::command] fn history_export_html(payload: Value) -> Value { json!("") }
+#[tauri::command]
+async fn history_export_raw(file: String) -> Result<Value, String> {
+    let data = std::fs::read_to_string(&file).map_err(|e| e.to_string())?;
+    let base = std::path::Path::new(&file).file_stem().and_then(|s| s.to_str()).unwrap_or("export").to_string();
+    match rfd::AsyncFileDialog::new().set_file_name(format!("{}.jsonl", base)).save_file().await {
+        Some(d) => {
+            let p = d.path().to_path_buf();
+            std::fs::write(&p, data).map_err(|e| e.to_string())?;
+            Ok(json!({ "canceled": false, "filePath": p.to_string_lossy() }))
+        }
+        None => Ok(json!({ "canceled": true })),
+    }
+}
+#[tauri::command]
+async fn history_export_html(payload: Value) -> Result<Value, String> {
+    let file = payload
+        .get("file")
+        .and_then(|v| v.as_str())
+        .or_else(|| payload.as_str())
+        .ok_or("no file")?
+        .to_string();
+    let html = exporthtml::build_export_html(&file);
+    let base = std::path::Path::new(&file).file_stem().and_then(|s| s.to_str()).unwrap_or("export").to_string();
+    match rfd::AsyncFileDialog::new().set_file_name(format!("{}.html", base)).save_file().await {
+        Some(d) => {
+            let p = d.path().to_path_buf();
+            std::fs::write(&p, html).map_err(|e| e.to_string())?;
+            Ok(json!({ "canceled": false, "filePath": p.to_string_lossy() }))
+        }
+        None => Ok(json!({ "canceled": true })),
+    }
+}
 
 // ---- utilities (Phase 4) ----
 #[tauri::command]
