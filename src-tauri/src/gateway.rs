@@ -524,6 +524,8 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
     };
     let is_models_list = method == Method::GET && (req_path.ends_with("/v1/models") || req_path.ends_with("/v1/models/"));
     let is_head_root = method == Method::HEAD && req_path == "/";
+    let is_count_tokens = method == Method::POST
+        && (req_path.ends_with("/v1/messages/count_tokens") || req_path.ends_with("/v1/messages/count_tokens/"));
 
     // upstream headers (sanitized + provider token swapped in)
     let mut up_headers = HeaderMap::new();
@@ -578,6 +580,17 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
                 if is_models_list {
                     st.emit_request(&method, &req_path, &provider_name, &routing, 200, None);
                     return json_response(StatusCode::OK, &synthesize_models(&config));
+                }
+                if is_count_tokens {
+                    let est = crate::counttokens::estimate_input_tokens(parsed.as_ref().unwrap_or(&Value::Null));
+                    st.emit_request(&method, &req_path, &provider_name, &routing, 200, None);
+                    return Response::builder()
+                        .status(200)
+                        .header("content-type", "application/json")
+                        .header("x-ccbud-tokens", "estimated")
+                        .header("x-ccbud-upstream-status", "error")
+                        .body(Body::from(serde_json::to_vec(&json!({ "input_tokens": est })).unwrap_or_default()))
+                        .unwrap();
                 }
                 st.log("error", format!("upstream error: {}", e));
                 st.emit_request(&method, &req_path, &provider_name, &routing, 502, None);
@@ -656,6 +669,33 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
     // buffered (reqwest auto-decoded gzip/br/deflate)
     let buf = resp.bytes().await.unwrap_or_default();
 
+    // count_tokens: pass the upstream's real number when it implements the endpoint; otherwise
+    // (404 / non-JSON / missing input_tokens) estimate locally so Claude Code's sizing keeps working.
+    if is_count_tokens {
+        let upstream_ok = status.is_success()
+            && serde_json::from_slice::<Value>(&buf)
+                .ok()
+                .and_then(|o| o.get("input_tokens").and_then(|v| v.as_i64()))
+                .is_some();
+        if upstream_ok {
+            let mut builder = Response::builder().status(200).header("x-ccbud-tokens", "upstream");
+            for (k, v) in &out_headers {
+                builder = builder.header(k, v);
+            }
+            st.emit_request(&method, &req_path, &provider_name, &routing, 200, None);
+            return builder.body(Body::from(buf)).unwrap();
+        }
+        let est = crate::counttokens::estimate_input_tokens(parsed.as_ref().unwrap_or(&Value::Null));
+        st.emit_request(&method, &req_path, &provider_name, &routing, 200, None);
+        return Response::builder()
+            .status(200)
+            .header("content-type", "application/json")
+            .header("x-ccbud-tokens", "estimated")
+            .header("x-ccbud-upstream-status", status.as_u16().to_string())
+            .body(Body::from(serde_json::to_vec(&json!({ "input_tokens": est })).unwrap_or_default()))
+            .unwrap();
+    }
+
     if is_models_list {
         let mut merged = None;
         if status.is_success() {
@@ -726,8 +766,17 @@ pub async fn start_mock_upstream() -> Option<u16> {
 }
 
 async fn mock_handler(req: axum::extract::Request) -> Response {
-    let (_p, body) = req.into_parts();
+    let (parts, body) = req.into_parts();
+    let path = parts.uri.path().to_string();
     let bytes = to_bytes(body, 1024 * 1024).await.unwrap_or_default();
+    if path.ends_with("/count_tokens") {
+        // Simulate a provider that doesn't implement count_tokens → gateway estimates locally.
+        return Response::builder()
+            .status(404)
+            .header("content-type", "application/json")
+            .body(Body::from("{\"error\":\"not found\"}"))
+            .unwrap();
+    }
     let v: Value = serde_json::from_slice(&bytes).unwrap_or_else(|_| json!({}));
     let stream = v.get("stream").and_then(|s| s.as_bool()).unwrap_or(false);
     let model = v.get("model").and_then(|m| m.as_str()).unwrap_or("upstream-model").to_string();
@@ -792,6 +841,22 @@ pub async fn gateway_selftest(gport: u16) -> Value {
         Err(e) => (0, format!("ERR:{}", e)),
     };
 
+    // count_tokens — mock 404s, so the gateway must estimate locally
+    let ct = client
+        .post(format!("http://127.0.0.1:{}/v1/messages/count_tokens", gport))
+        .json(&json!({ "model":"test-alias","messages":[{"role":"user","content":"hello world this is a token counting test"}] }))
+        .send()
+        .await;
+    let (ct_status, ct_tokens, ct_estimated) = match ct {
+        Ok(r) => {
+            let s = r.status().as_u16();
+            let estimated = r.headers().get("x-ccbud-tokens").and_then(|v| v.to_str().ok()) == Some("estimated");
+            let j: Value = r.json().await.unwrap_or_else(|_| json!({}));
+            (s, j.get("input_tokens").and_then(|v| v.as_i64()).unwrap_or(-1), estimated)
+        }
+        Err(_) => (0, -1, false),
+    };
+
     json!({
         "nonStreamStatus": ns_status,
         "nonStreamModel": ns_model,
@@ -799,6 +864,9 @@ pub async fn gateway_selftest(gport: u16) -> Value {
         "streamStatus": st_status,
         "streamHasStart": st_text.contains("message_start"),
         "streamRewritten": st_text.contains("\"test-alias\"") && !st_text.contains("upstream-model"),
+        "countTokensStatus": ct_status,
+        "countTokensEstimated": ct_estimated,
+        "countTokens": ct_tokens,
     })
 }
 

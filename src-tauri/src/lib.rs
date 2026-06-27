@@ -11,6 +11,7 @@
 #![allow(unused_variables)]
 
 mod claude;
+mod counttokens;
 mod gateway;
 mod history;
 mod store;
