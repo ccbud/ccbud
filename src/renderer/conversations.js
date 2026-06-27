@@ -9,12 +9,15 @@
   if (!api) return;
   const $ = (id) => document.getElementById(id);
   const L = (k, p) => (window.I18n ? window.I18n.t(k, p) : k); // translate (t/$ already taken)
+  const ICN = window.ccbudIcons || {}; // SVG icon set (icons.js loads before this script)
   const localeTag = () => (window.I18n ? window.I18n.localeTag : 'en-US');
 
   let projects = [];      // [{ cwd, name, sessions:[...], lastActivity }]
   let openId = null;
   let openFile = null;
   let search = '';
+  let tagFilter = null;   // when set, the list shows only conversations carrying this exact tag
+  let tagClickTimer = null; // debounces a tag's single-click (filter) so a double-click (edit) can cancel it
   let listTimer = null;
   let collapsed = new Set(); // collapsed project cwds
   let lastRender = { file: null, count: -1 };
@@ -87,6 +90,12 @@
     for (const p of projects) for (const s of p.sessions) if (s.id === openId) return isLive(s.lastActivity);
     return false;
   }
+  // Locate a loaded session by file (unique) or id — used by the rename/tag handlers to read its
+  // current title/tags before writing an updated set back.
+  function findSession(id, file) {
+    for (const p of projects) for (const s of p.sessions) if ((file && s.file === file) || (id && s.id === id)) return s;
+    return null;
+  }
 
   function relTime(ts) {
     if (!ts) return '';
@@ -97,6 +106,44 @@
     if (d < 7 * 86400000) return L('time.daysAgo', { n: Math.floor(d / 86400000) });
     return new Date(ts).toLocaleDateString(localeTag());
   }
+
+  // Lightweight hover tooltip for truncated fields (overview stats, session titles, project names).
+  // Shows the FULL value instantly in an app-styled bubble — replaces the slow, system-default native
+  // `title` tooltip on these. Any element carrying a [data-tip] attribute gets it; event-delegated on
+  // document so it keeps working across the list's frequent re-renders.
+  (function initTip() {
+    let tipEl = null, cur = null;
+    const place = (el) => {
+      const txt = el.getAttribute('data-tip');
+      if (!txt) return;
+      if (!tipEl) { tipEl = document.createElement('div'); tipEl.className = 'cc-tip'; document.body.appendChild(tipEl); }
+      tipEl.textContent = txt;
+      tipEl.classList.add('show');
+      const r = el.getBoundingClientRect();
+      const tw = tipEl.offsetWidth, th = tipEl.offsetHeight;
+      const left = Math.max(6, Math.min(r.left + r.width / 2 - tw / 2, window.innerWidth - tw - 6));
+      let top = r.top - th - 7;                 // prefer above the field
+      if (top < 6) top = r.bottom + 7;          // flip below when there's no room
+      tipEl.style.left = left + 'px';
+      tipEl.style.top = top + 'px';
+    };
+    const hide = () => { cur = null; if (tipEl) tipEl.classList.remove('show'); };
+    // Only show the tooltip when the field is actually clipped (has the ellipsis); a fully-visible
+    // value like "glm-5.2" or "HEAD" needs no bubble.
+    const clipped = (el) => el.scrollWidth > el.clientWidth + 1;
+    document.addEventListener('mouseover', (e) => {
+      const el = e.target.closest && e.target.closest('[data-tip]');
+      if (el === cur) return;
+      cur = el || null;
+      if (el && el.getAttribute('data-tip') && clipped(el)) place(el); else hide();
+    });
+    document.addEventListener('mouseout', (e) => {
+      const el = e.target.closest && e.target.closest('[data-tip]');
+      if (el && !el.contains(e.relatedTarget)) hide();
+    });
+    document.addEventListener('scroll', hide, true);
+    window.addEventListener('blur', hide);
+  })();
 
   function escapeRegExp(str) { return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
 
@@ -227,20 +274,24 @@
     const dirs = (data.dirs || []).filter((d) => !(d.imported && !d.sessions));
     if (dirs.length <= 1) { host.classList.add('hidden'); host.innerHTML = ''; return; }
     const active = data.active || 'all';
-    const opts = [{ id: 'all', label: L('conv.all') }].concat(dirs.map((d) => ({ id: d.id, label: d.imported ? '📥 ' + d.label : d.label, sessions: d.sessions })));
+    const opts = [{ id: 'all', label: L('conv.all') }].concat(dirs.map((d) => ({ id: d.id, label: d.label, imported: d.imported, sessions: d.sessions })));
     host.classList.remove('hidden');
-    host.innerHTML = opts.map((o) => `<button class="dir-chip inline-flex items-center gap-1.25 border border-border-custom bg-transparent text-muted font-medium text-[11.5px] px-2.5 py-1 rounded-full cursor-pointer transition-all duration-150 hover:text-fg hover:bg-chip-bg ${o.id === active ? 'active' : ''}" data-dir="${esc(o.id)}" title="${esc(o.label)}">${esc(o.label)}${o.sessions != null ? ' <span class="dir-chip-n text-[10px] px-1.25 py-0 rounded-full bg-black/12">' + o.sessions + '</span>' : ''}</button>`).join('');
+    host.innerHTML = opts.map((o) => `<button class="dir-chip inline-flex items-center gap-1.25 border border-border-custom bg-transparent text-muted font-medium text-[11.5px] px-2.5 py-1 rounded-full cursor-pointer transition-all duration-150 hover:text-fg hover:bg-chip-bg ${o.id === active ? 'active' : ''}" data-dir="${esc(o.id)}" title="${esc(o.label)}">${o.imported ? '<span class="dir-chip-ico">' + (ICN.download || '') + '</span>' : ''}${esc(o.label)}${o.sessions != null ? ' <span class="dir-chip-n text-[10px] px-1.25 py-0 rounded-full bg-black/12">' + o.sessions + '</span>' : ''}</button>`).join('');
   }
 
   function filteredProjects() {
-    if (!search) return projects;
+    if (!search && !tagFilter) return projects;
     const q = search.toLowerCase();
     return projects
       .map((p) => {
-        const sessions = p.sessions.filter((s) =>
-          (s.title || '').toLowerCase().includes(q) ||
-          (s.model || '').toLowerCase().includes(q) ||
-          (p.name || '').toLowerCase().includes(q));
+        const sessions = p.sessions.filter((s) => {
+          if (tagFilter && (s.tags || []).indexOf(tagFilter) < 0) return false;
+          if (!q) return true;
+          return (s.title || '').toLowerCase().includes(q) ||
+            (s.model || '').toLowerCase().includes(q) ||
+            (p.name || '').toLowerCase().includes(q) ||
+            (s.tags || []).some((t) => t.toLowerCase().includes(q));
+        });
         return sessions.length ? Object.assign({}, p, { sessions }) : null;
       })
       .filter(Boolean);
@@ -251,17 +302,20 @@
     if (!el) return;
     const list = filteredProjects();
     const total = list.reduce((n, p) => n + p.sessions.length, 0);
+    const fbar = tagFilter
+      ? `<div class="conv-tagfilter">🏷 <span class="conv-tag active"><span class="conv-tag-label">${esc(tagFilter)}</span><button type="button" class="conv-tag-x" data-clear-tagfilter title="${esc(L('conv.clearTagFilter'))}">×</button></span></div>`
+      : '';
     if (!total) {
-      el.innerHTML = `<div class="state-inline py-6 px-3 text-center text-[11.5px] text-caption" style="padding:24px 12px">${search ? esc(L('conv.noMatch')) : esc(L('conv.noLocal')) + '<br><span class="text-muted text-[11px]">~/.claude/projects</span>'}</div>`;
+      el.innerHTML = fbar + `<div class="state-inline py-6 px-3 text-center text-[11.5px] text-caption" style="padding:24px 12px">${(search || tagFilter) ? esc(L('conv.noMatch')) : esc(L('conv.noLocal')) + '<br><span class="text-muted text-[11px]">~/.claude/projects</span>'}</div>`;
       return;
     }
-    el.innerHTML = list.map((p) => {
+    el.innerHTML = fbar + list.map((p) => {
       const isCol = collapsed.has(p.cwd || p.name) && !search;
       const items = isCol ? '' : `<div class="conv-proj-sessions">${p.sessions.map(sessionItem).join('')}</div>`;
       return `<div class="conv-proj border-b border-border-custom">
-        <div class="conv-proj-head flex items-center gap-1.5 px-3 py-2 cursor-pointer sticky top-0 z-10 bg-bg-sidebar/90 backdrop-blur-md select-none hover:bg-chip-bg transition-colors duration-150" data-proj="${esc(p.cwd || p.name)}" title="${esc(p.cwd || '')}">
+        <div class="conv-proj-head flex items-center gap-1.5 px-3 py-2 cursor-pointer sticky top-0 z-10 bg-bg-sidebar/90 backdrop-blur-md select-none hover:bg-chip-bg transition-colors duration-150" data-proj="${esc(p.cwd || p.name)}">
           <span class="conv-proj-caret text-[10px] text-caption w-2.5 shrink-0">${isCol ? '▸' : '▾'}</span>
-          <span class="conv-proj-name text-[12.5px] font-bold text-fg tracking-tight truncate flex-1">${esc(p.name || L('conv.unknownProject'))}</span>
+          <span class="conv-proj-name text-[12.5px] font-bold text-fg tracking-tight truncate flex-1" data-tip="${esc(p.cwd || p.name || '')}">${esc(p.name || L('conv.unknownProject'))}</span>
           <span class="conv-proj-count text-[10.5px] font-semibold text-muted bg-chip-bg px-1.75 py-0.25 rounded-full shrink-0">${p.sessions.length}</span>
         </div>${items}
       </div>`;
@@ -271,13 +325,22 @@
   function sessionItem(c) {
     const live = isLive(c.lastActivity) ? '<span class="conv-live w-1.25 h-1.25 rounded-full bg-green animate-[pulse_1.6s_infinite] shrink-0"></span>' : '';
     const sub = c.isSubagent ? `<span class="conv-badge text-[10.5px] px-1.5 py-0.25 rounded-full bg-chip-bg text-fg font-sans">${esc(L('conv.subagent'))}</span>` : '';
-    const imp = c.imported ? `<span class="conv-badge text-[10.5px] px-1.5 py-0.25 rounded-full bg-brand-soft text-brand font-sans">📥 ${esc(L('conv.imported'))}</span>` : '';
+    const imp = c.imported ? `<span class="conv-badge conv-badge-import inline-flex items-center gap-1 text-[10.5px] px-1.5 py-0.25 rounded-full bg-brand-soft text-brand font-sans">${ICN.download || ''}${esc(L('conv.imported'))}</span>` : '';
     // Imported copies live only in the app store, so they get a remove affordance (deletes the copy).
     const rm = c.imported ? `<button class="conv-remove-import ml-auto shrink-0 opacity-55 group-hover:opacity-100 text-caption hover:text-red hover:bg-chip-bg rounded text-[12px] leading-none w-[18px] h-[18px] flex items-center justify-center transition-all" data-remove-import="${esc(c.file || '')}" title="${esc(L('conv.removeImport'))}">✕</button>` : '';
     const model = c.model ? `<span class="conv-model text-brand">${esc(c.model)}</span>` : '';
+    // User tags (deletable: x; double-click to edit; click to filter). The import badge stays
+    // separate and non-deletable. Empty when the conversation has no custom tags.
+    const tags = (c.tags || []).map((t) =>
+      `<span class="conv-tag ${t === tagFilter ? 'active' : ''}" data-tag="${esc(t)}" data-file="${esc(c.file || '')}"><span class="conv-tag-label">${esc(t)}</span><button type="button" class="conv-tag-x" data-del-tag="${esc(t)}" data-file="${esc(c.file || '')}" title="${esc(L('conv.delTag'))}">×</button></span>`).join('');
+    const tagsRow = tags ? `<div class="conv-item-tags" data-file="${esc(c.file || '')}">${tags}</div>` : '';
+    // Full title on hover; when a custom title overrides the auto one, also surface the original first line.
+    const fullTitle = c.title || L('conv.untitled');
+    const tip = (c.autoTitle && c.title && c.autoTitle !== c.title) ? (fullTitle + ' · ' + c.autoTitle) : fullTitle;
     return `<div class="conv-item group cursor-pointer flex flex-col gap-0.75 py-2.5 pr-3 pl-[22px] transition-colors duration-150 hover:bg-chip-bg border-0 ${c.id === openId ? 'active' : ''}" data-id="${esc(c.id)}" data-file="${esc(c.file || '')}">
-      <div class="conv-item-top flex items-center gap-1.25">${live}<span class="conv-title text-[13.5px] font-semibold truncate min-w-0">${esc(c.title || L('conv.untitled'))}</span>${rm}</div>
+      <div class="conv-item-top flex items-center gap-1.25">${live}<span class="conv-title text-[13.5px] font-semibold truncate min-w-0" data-tip="${esc(tip)}">${esc(fullTitle)}</span>${rm}</div>
       <div class="conv-item-sub flex items-center gap-1.5 text-[11.5px] text-caption font-mono truncate">${model}${sub}${imp}</div>
+      ${tagsRow}
       <div class="conv-item-meta flex items-center gap-1.5 text-[11px] text-caption"><span>${esc(relTime(c.lastActivity))}</span>${c.sizeKB ? '<span>' + c.sizeKB + ' KB</span>' : ''}</div>
     </div>`;
   }
@@ -339,11 +402,21 @@
     const wasBottom = isNearBottom(host);
     buildDetailTexts();
     if (force) {
-      // open at the newest turns (trailing window), scrolled to the bottom
       clearDetailSearchHighlights();
-      vEnd = total; vStart = Math.max(0, total - DETAIL_WIN);
-      paintWindow();
-      host.scrollTop = host.scrollHeight;
+      // A still-running session opens at the newest turns (trailing window, pinned to the bottom) so
+      // it live-follows. A finished history conversation opens at the START — leading window scrolled
+      // to the top — so the first human message is what you see, not the tail. (Subagent threads, which
+      // have no live-follow semantics, also read top-down.)
+      const followTail = activeAgent === 'main' && openSessionLive();
+      if (followTail) {
+        vEnd = total; vStart = Math.max(0, total - DETAIL_WIN);
+        paintWindow();
+        host.scrollTop = host.scrollHeight;
+      } else {
+        vStart = 0; vEnd = Math.min(total, DETAIL_WIN);
+        paintWindow();
+        host.scrollTop = 0;
+      }
     } else if (wasBottom) {
       // live-follow at the bottom: extend the window to the newest and stay pinned to the bottom
       vEnd = total; vStart = Math.max(0, total - DETAIL_WIN);
@@ -708,7 +781,7 @@
       [L('conv.stat.cacheRead'), t.cacheRead ? fmtTok(t.cacheRead) : null],
       [L('conv.stat.version'), m.version],
     ].filter((r) => r[1] != null && r[1] !== '');
-    $('convStats').innerHTML = rows.map((r) => `<div class="stat-row flex justify-between gap-2 text-xs py-1.25 border-b border-border-custom last:border-b-0"><span class="k text-caption">${esc(r[0])}</span><span class="v font-mono text-[11.5px] text-fg truncate max-w-[120px]" title="${esc(r[1])}">${esc(r[1])}</span></div>`).join('');
+    $('convStats').innerHTML = rows.map((r) => `<div class="stat-row flex justify-between gap-2 text-xs py-1.25 border-b border-border-custom last:border-b-0"><span class="k text-caption">${esc(r[0])}</span><span class="v font-mono text-[11.5px] text-fg truncate max-w-[120px]" data-tip="${esc(r[1])}">${esc(r[1])}</span></div>`).join('');
 
     // TOC is built from the message DATA (global indices) so it spans the WHOLE thread even though only
     // a window is rendered; clicking jumps the window to that message. Keyed on user turns — the natural
@@ -720,7 +793,7 @@
       const vis = normContent(m.content).filter((b) => b.type === 'text');
       const tv = vis.map((b) => b.text || '').join(' ').trim();
       if (!tv || tv.includes('<system-reminder>') || tv.includes('<command-name>') || tv.includes('<local-command')) return;
-      toc.push(`<div class="toc-item text-xs text-caption py-1 px-1.75 rounded-[5px] cursor-pointer truncate transition-all duration-100 hover:bg-chip-bg hover:text-fg" data-go="${i}" title="${esc(tv.slice(0, 90))}">👤 ${esc(tv.slice(0, 32) || '…')}</div>`);
+      toc.push(`<div class="toc-item text-xs text-caption py-1 px-1.75 rounded-[5px] cursor-pointer truncate transition-all duration-100 hover:bg-chip-bg hover:text-fg" data-go="${i}" data-tip="${esc(tv.slice(0, 200))}">👤 ${esc(tv.slice(0, 32) || '…')}</div>`);
     });
     $('convToc').innerHTML = toc.join('');
   }
@@ -807,10 +880,145 @@
     } catch (_) { toast(L('conv.exportFail'), false); }
   }
 
+  /* ---------- import (file-picker button + drag-drop share this) ---------- */
+  // r = { imported, skipped, failed } | { canceled } from history:import / history:importPaths.
+  // Toast a summary, jump to the imports dir on success, refresh the list.
+  async function applyImportResult(r) {
+    if (!r || r.canceled) return;
+    if (!r.imported) {
+      toast(r.skipped ? L('conv.importSkip', { n: r.skipped }) : L('conv.importNone'), r.failed ? false : undefined);
+    } else {
+      const parts = [L('conv.importDone', { n: r.imported })];
+      if (r.skipped) parts.push(L('conv.importSkip', { n: r.skipped }));
+      if (r.failed) parts.push(L('conv.importFail', { n: r.failed }));
+      toast(parts.join(' · '));
+      try { if (api.historySetActive) await api.historySetActive('__imported__'); } catch (_) {}
+    }
+    await refresh();
+  }
+
+  /* ---------- rename + tags (right-click customization) ---------- */
+  // Persist a title/tags patch for one conversation, then refresh. Main also broadcasts
+  // history:changed (which refreshes too) — the explicit refresh just makes it feel instant.
+  async function applyMeta(file, patch) {
+    if (!file || !api.historySetMeta) return;
+    try { await api.historySetMeta(file, patch); } catch (_) {}
+    await refresh();
+  }
+  function itemEl(id, file) {
+    return document.querySelector(`.conv-item[data-id="${cssAttr(id)}"]`)
+      || (file ? document.querySelector(`.conv-item[data-file="${cssAttr(file)}"]`) : null);
+  }
+  // Swap a node for a single-line text input; commit on Enter/blur, cancel on Escape. The `done`
+  // guard makes Enter-then-blur (or Esc-then-blur) run the callback exactly once. onCommit(value|null):
+  // null = cancelled, '' = emptied (callers treat empty as clear/no-op), else the trimmed value.
+  function inlineEdit(node, opts) {
+    const inp = document.createElement('input');
+    inp.className = opts.cls;
+    inp.value = opts.value || '';
+    if (opts.placeholder) inp.setAttribute('placeholder', opts.placeholder);
+    node.replaceWith(inp);
+    inp.focus(); inp.select();
+    let done = false;
+    const finish = (save) => { if (done) return; done = true; opts.onCommit(save ? inp.value.trim() : null); };
+    inp.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); finish(true); }
+      else if (e.key === 'Escape') { e.preventDefault(); finish(false); }
+    });
+    inp.addEventListener('blur', () => finish(true));
+  }
+  function startRename(file, id) {
+    const item = itemEl(id, file); if (!item) return;
+    const titleEl = item.querySelector('.conv-title'); if (!titleEl) return;
+    const s = findSession(id, file);
+    inlineEdit(titleEl, {
+      cls: 'conv-title-edit', value: (s && s.title) || '', placeholder: L('conv.renamePlaceholder'),
+      onCommit: (v) => { if (v == null) { renderList(); return; } applyMeta(file, { title: v }); }, // '' clears → auto title
+    });
+  }
+  function startAddTag(file, id) {
+    const item = itemEl(id, file); if (!item) return;
+    let row = item.querySelector('.conv-item-tags');
+    if (!row) {
+      row = document.createElement('div');
+      row.className = 'conv-item-tags';
+      row.dataset.file = file;
+      const sub = item.querySelector('.conv-item-sub');
+      if (sub) sub.after(row); else item.appendChild(row);
+    }
+    const holder = document.createElement('span');
+    row.appendChild(holder);
+    inlineEdit(holder, {
+      cls: 'conv-tag-edit', value: '', placeholder: L('conv.tagPlaceholder'),
+      onCommit: (v) => {
+        if (!v) { renderList(); return; }
+        const s = findSession(id, file);
+        applyMeta(file, { tags: ((s && s.tags) || []).concat([v]) });
+      },
+    });
+  }
+  function startEditTag(file, oldTag, chip) {
+    if (!chip) return;
+    inlineEdit(chip, {
+      cls: 'conv-tag-edit', value: oldTag, placeholder: L('conv.tagPlaceholder'),
+      onCommit: (v) => {
+        if (v == null) { renderList(); return; }
+        const s = findSession(null, file);
+        const cur = (s && s.tags) || [];
+        const nextTags = v ? cur.map((t) => (t === oldTag ? v : t)) : cur.filter((t) => t !== oldTag); // empty = delete
+        if (tagFilter === oldTag) tagFilter = v || null;
+        applyMeta(file, { tags: nextTags });
+      },
+    });
+  }
+  async function deleteTag(file, tag) {
+    const s = findSession(null, file);
+    await applyMeta(file, { tags: ((s && s.tags) || []).filter((t) => t !== tag) });
+  }
+
+  // Right-click context menu on a conversation row: rename / add tag. A single body-level element,
+  // re-targeted per open (the list re-renders, so a list-child menu would be wiped out).
+  let ctxMenuEl = null;
+  function hideCtxMenu() { if (ctxMenuEl) ctxMenuEl.classList.add('hidden'); }
+  function showCtxMenu(x, y, file, id) {
+    if (!ctxMenuEl) {
+      ctxMenuEl = document.createElement('div');
+      ctxMenuEl.className = 'conv-ctx-menu hidden';
+      document.body.appendChild(ctxMenuEl);
+      ctxMenuEl.addEventListener('click', (e) => {
+        const it = e.target.closest('[data-ctx]'); if (!it) return;
+        const act = it.dataset.ctx, f = ctxMenuEl._file, i = ctxMenuEl._id;
+        hideCtxMenu();
+        if (act === 'rename') startRename(f, i);
+        else if (act === 'addtag') startAddTag(f, i);
+      });
+    }
+    ctxMenuEl._file = file; ctxMenuEl._id = id;
+    ctxMenuEl.innerHTML =
+      `<button type="button" class="conv-ctx-item" data-ctx="rename">✎ ${esc(L('conv.ctxRename'))}</button>` +
+      `<button type="button" class="conv-ctx-item" data-ctx="addtag"># ${esc(L('conv.ctxAddTag'))}</button>`;
+    ctxMenuEl.classList.remove('hidden');
+    ctxMenuEl.style.left = Math.min(x, window.innerWidth - 180) + 'px';
+    ctxMenuEl.style.top = Math.min(y, window.innerHeight - 80) + 'px';
+  }
+
   /* ---------- events ---------- */
   function bind() {
     const list = $('convList');
     if (list) list.addEventListener('click', async (e) => {
+      if (e.target.closest('[data-clear-tagfilter]')) { e.stopPropagation(); tagFilter = null; renderList(); return; }
+      const delTag = e.target.closest('[data-del-tag]');
+      if (delTag) { e.stopPropagation(); await deleteTag(delTag.dataset.file, delTag.dataset.delTag); return; }
+      const tagChip = e.target.closest('.conv-tag');
+      if (tagChip && tagChip.dataset.tag) {
+        e.stopPropagation();
+        // Defer the filter toggle so a double-click (edit) can cancel it — otherwise the first click
+        // of the dblclick would re-render the list and destroy the chip before dblclick fires.
+        const tag = tagChip.dataset.tag;
+        clearTimeout(tagClickTimer);
+        tagClickTimer = setTimeout(() => { tagFilter = (tagFilter === tag) ? null : tag; renderList(); }, 220);
+        return;
+      }
       const rm = e.target.closest('[data-remove-import]');
       if (rm) {
         e.stopPropagation();
@@ -833,6 +1041,25 @@
       const item = e.target.closest('.conv-item');
       if (item) openConversation(item.dataset.id, item.dataset.file);
     });
+    // Right-click a conversation → rename / add-tag menu.
+    if (list) list.addEventListener('contextmenu', (e) => {
+      const item = e.target.closest('.conv-item');
+      if (!item) return;
+      e.preventDefault();
+      showCtxMenu(e.clientX, e.clientY, item.dataset.file, item.dataset.id);
+    });
+    // Double-click a tag chip → edit it in place.
+    if (list) list.addEventListener('dblclick', (e) => {
+      const label = e.target.closest('.conv-tag-label');
+      if (!label) return;
+      e.preventDefault(); e.stopPropagation();
+      clearTimeout(tagClickTimer); // cancel the pending single-click filter toggle
+      const chip = label.closest('.conv-tag');
+      if (chip && chip.dataset.tag) startEditTag(chip.dataset.file, chip.dataset.tag, chip);
+    });
+    if (list) list.addEventListener('scroll', hideCtxMenu, true);
+    document.addEventListener('click', (e) => { if (!e.target.closest('.conv-ctx-menu')) hideCtxMenu(); });
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape') hideCtxMenu(); });
     const sb = $('convSearch');
     if (sb) sb.addEventListener('input', (e) => { search = e.target.value.trim(); renderList(); });
     const clr = $('convClear');
@@ -842,16 +1069,7 @@
       imp.disabled = true;
       let r; try { r = await api.historyImport(); } catch (_) { r = null; }
       imp.disabled = false;
-      if (!r || r.canceled) return;
-      if (!r.imported) { toast((r.skipped ? L('conv.importSkip', { n: r.skipped }) : L('conv.importNone')), r.failed ? false : undefined); }
-      else {
-        const parts = [L('conv.importDone', { n: r.imported })];
-        if (r.skipped) parts.push(L('conv.importSkip', { n: r.skipped }));
-        if (r.failed) parts.push(L('conv.importFail', { n: r.failed }));
-        toast(parts.join(' · '));
-        try { if (api.historySetActive) await api.historySetActive('__imported__'); } catch (_) {}
-      }
-      await refresh();
+      await applyImportResult(r);
     });
     const dirSwitch = $('convDirSwitch');
     if (dirSwitch) dirSwitch.addEventListener('click', async (e) => {
@@ -1039,6 +1257,39 @@
         clearTimeout(detailTimer);
         detailTimer = setTimeout(() => rerenderDetail(false), 300);
       }
+    });
+
+    // Drag a .jsonl (Claude Code transcript) anywhere onto the window → import it directly, same
+    // pipeline as the import button. preventDefault on dragover/drop is REQUIRED — otherwise Electron
+    // navigates the window to the dropped file:// URL. Non-.jsonl / non-transcript files are ignored
+    // (importOne validates each is a real transcript before copying it in).
+    const dragHasFiles = (e) => { try { return Array.from((e.dataTransfer && e.dataTransfer.types) || []).indexOf('Files') >= 0; } catch (_) { return false; } };
+    let dropOverlay = null, dropDepth = 0;
+    const showDropOverlay = () => {
+      if (!dropOverlay) {
+        dropOverlay = document.createElement('div');
+        dropOverlay.className = 'conv-drop-overlay';
+        dropOverlay.innerHTML = '<div class="conv-drop-card">' + (ICN.download || '') + '<span></span></div>';
+        document.body.appendChild(dropOverlay);
+      }
+      dropOverlay.querySelector('span').textContent = L('conv.dropHint');
+      dropOverlay.classList.add('show');
+    };
+    const hideDropOverlay = () => { dropDepth = 0; if (dropOverlay) dropOverlay.classList.remove('show'); };
+    document.addEventListener('dragenter', (e) => { if (!dragHasFiles(e)) return; e.preventDefault(); dropDepth++; showDropOverlay(); });
+    document.addEventListener('dragover', (e) => { if (!dragHasFiles(e)) return; e.preventDefault(); try { e.dataTransfer.dropEffect = 'copy'; } catch (_) {} });
+    document.addEventListener('dragleave', (e) => { if (!dragHasFiles(e)) return; dropDepth = Math.max(0, dropDepth - 1); if (!dropDepth) hideDropOverlay(); });
+    document.addEventListener('drop', async (e) => {
+      if (!dragHasFiles(e)) return;
+      e.preventDefault();
+      hideDropOverlay();
+      const files = Array.prototype.slice.call(e.dataTransfer.files || []);
+      const paths = files.map((f) => { try { return api.pathForFile ? api.pathForFile(f) : (f.path || ''); } catch (_) { return ''; } }).filter(Boolean);
+      const jsonl = paths.filter((p) => /\.jsonl$/i.test(p));
+      if (!jsonl.length) { toast(L('conv.dropNotJsonl'), false); return; }
+      if (!api.historyImportPaths) return;
+      let r; try { r = await api.historyImportPaths(jsonl); } catch (_) { r = null; }
+      await applyImportResult(r);
     });
 
     // Safety-net auto-refresh: while an in-progress (live) session is open, re-read it on a timer in

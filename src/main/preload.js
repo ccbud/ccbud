@@ -1,6 +1,6 @@
 'use strict';
 
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 contextBridge.exposeInMainWorld('ccbud', {
   getConfig: () => ipcRenderer.invoke('config:get'),
@@ -57,7 +57,11 @@ contextBridge.exposeInMainWorld('ccbud', {
   historyPickDir: () => ipcRenderer.invoke('history:pickDir'),
   historySetActive: (id) => ipcRenderer.invoke('history:setActive', id),
   historyImport: () => ipcRenderer.invoke('history:import'),
+  historyImportPaths: (paths) => ipcRenderer.invoke('history:importPaths', paths),
+  // Resolve a dragged File to its absolute path (Electron 32+ removed File.path → use webUtils).
+  pathForFile: (file) => { try { return webUtils.getPathForFile(file); } catch (_) { return (file && file.path) || ''; } },
   historyRemoveImport: (file) => ipcRenderer.invoke('history:removeImport', file),
+  historySetMeta: (file, patch) => ipcRenderer.invoke('history:setMeta', file, patch),
   historyExportRaw: (file) => ipcRenderer.invoke('history:exportRaw', file),
   historyExportHtml: (payload) => ipcRenderer.invoke('history:exportHtml', payload),
   onHistoryChanged: (cb) => ipcRenderer.on('history:changed', (_e, p) => cb(p)),

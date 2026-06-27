@@ -548,6 +548,18 @@ function registerIpc() {
     broadcast('history:changed', { files: [], active: store.get().historyActive });
     return out;
   });
+  // Import by absolute path(s) — drives the drag-and-drop entry point. importOne validates each file
+  // is a real Claude Code transcript (has user/assistant message records) before copying it in, so a
+  // non-transcript .jsonl just lands in `failed`. Mirrors history:import (which uses a file picker).
+  ipcMain.handle('history:importPaths', (_e, paths) => {
+    const out = { imported: 0, skipped: 0, failed: 0 };
+    for (const src of (Array.isArray(paths) ? paths : [])) {
+      if (typeof src === 'string' && /\.jsonl$/i.test(src)) importOne(src, out);
+      else out.failed++;
+    }
+    if (out.imported || out.skipped || out.failed) broadcast('history:changed', { files: [], active: store.get().historyActive });
+    return out;
+  });
   ipcMain.handle('history:removeImport', async (_e, file) => {
     if (!file) return { ok: false };
     const root = path.resolve(importsRoot());
@@ -573,6 +585,15 @@ function registerIpc() {
     } catch (e) { return { ok: false, error: e && e.message }; }
     broadcast('history:changed', { files: [], active: store.get().historyActive });
     return { ok: true };
+  });
+
+  // Set per-conversation customization (custom title + user tags) — persisted as a `__ccbud__`
+  // field on the session file's first line. Broadcast so the open list refreshes immediately.
+  ipcMain.handle('history:setMeta', (_e, file, patch) => {
+    if (!history || !file) return { ok: false };
+    const r = history.setCcbud(file, patch || {});
+    if (r && r.ok) broadcast('history:changed', { files: [file] });
+    return r;
   });
 
   // Export a conversation: raw .jsonl (verbatim source) or a self-contained .html the
