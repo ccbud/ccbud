@@ -1,6 +1,6 @@
 {
   "name": "ccbud",
-  "version": "1.0.14",
+  "version": "1.0.15",
   "description": "ccbud — Claude Code Gateway. A cross-platform desktop app that proxies Claude Code to any Anthropic-compatible provider, with one-click switching and model name mapping.",
   "main": "src/main/bootstrap.js",
   "author": {
@@ -14,7 +14,7 @@
   },
   "hotUpdate": {
     "//": "Hot-update gate: installs whose native SHELL version is >= minShellVersion can apply this release as a JS-only hot update. Bump this to the current version ONLY in releases that change the native layer (Electron, bundled binaries, new native deps) to force a full reinstall.",
-    "minShellVersion": "1.0.6"
+    "minShellVersion": "1.0.15"
   },
   "scripts": {
     "build:css": "tailwindcss -i src/renderer/input.css -o src/renderer/styles.css",

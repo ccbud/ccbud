@@ -65,20 +65,30 @@ if (!/cpython|uv[\\/]+python/i.test(pyRoot)) {
 }
 console.log('[prepare-presidio] standalone python root:', pyRoot);
 
-// 2) Copy the self-contained Python into vendor/, then install Presidio (server extras) + the model
-//    into ITS site-packages — so the shipped tree is fully self-contained and relocatable.
+// 2) Install Presidio (server extras) + models INTO the uv-managed standalone Python FIRST, then copy
+//    the whole tree dereferencing symlinks. Two cross-platform reasons:
+//    · installing into a freshly-COPIED tree makes uv resolve a bogus relocated path → fails on Linux;
+//    · macOS `codesign --deep --strict` rejects bundle-internal symlinks ("invalid destination for
+//      symbolic link"), so the shipped tree must contain REAL files only (dereference: true).
+const srcPy = IS_WIN ? path.join(pyRoot, 'python.exe') : path.join(pyRoot, 'bin', 'python3.12');
+console.log('[prepare-presidio] installing presidio[server] + spaCy models (en, zh) from PyPI…');
+uv(['pip', 'install', '--python', srcPy, '--break-system-packages',
+  'presidio-analyzer[server]', 'presidio-anonymizer[server]', ...MODELS]);
+
 fs.rmSync(OUT, { recursive: true, force: true });
 fs.rmSync(SRCOUT, { recursive: true, force: true });
 fs.mkdirSync(OUT, { recursive: true });
-fs.cpSync(pyRoot, path.join(OUT, 'python'), { recursive: true });
+// Flatten ALL symlinks into real files: fs.cpSync({dereference}) leaves inner symlinks behind, and
+// macOS codesign rejects bundle-internal symlinks. `cp -RL` follows every link; Windows has none.
+if (IS_WIN) {
+  fs.cpSync(pyRoot, path.join(OUT, 'python'), { recursive: true });
+} else {
+  execFileSync('cp', ['-RL', pyRoot, path.join(OUT, 'python')], { stdio: 'inherit' });
+}
 const outPy = IS_WIN
   ? path.join(OUT, 'python', 'python.exe')
   : path.join(OUT, 'python', 'bin', 'python3.12');
 if (!fs.existsSync(outPy)) throw new Error('copied python interpreter not found at ' + outPy);
-
-console.log('[prepare-presidio] installing presidio[server] + spaCy models (en, zh) from PyPI…');
-uv(['pip', 'install', '--python', outPy, '--break-system-packages',
-  'presidio-analyzer[server]', 'presidio-anonymizer[server]', ...MODELS]);
 
 // 3) Bundle the official Flask entry points from the repo (no external checkout).
 for (const svc of ['presidio-analyzer', 'presidio-anonymizer']) {
