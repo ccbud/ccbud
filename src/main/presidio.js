@@ -223,7 +223,7 @@ async function start() {
     procAnalyzer = spawnService('presidio-analyzer', ANALYZER_PORT, { NLP_CONF_FILE: NLP_CONF });
     procAnonymizer = spawnService('presidio-anonymizer', ANONYMIZER_PORT, {});
     pushLog('[gateway] waiting for services to load the model…');
-    const r = await waitReady(35000);
+    const r = await waitReady(45000); // generous: cold start loads two spaCy models (en + zh)
     if (r === 'healthy') { lastError = null; pushLog('[gateway] services healthy — content filter active'); return { ok: true }; }
     pushLog(`[gateway] start failed on :${ANALYZER_PORT}/:${ANONYMIZER_PORT} (${r}) — switching port`);
     killProcs();
@@ -333,6 +333,25 @@ function insertCjkBoundaries(text) {
   }
   return { spaced: out, map };
 }
+
+// Local (Node-side) recognizers for high-value PII that Presidio's US-centric defaults miss:
+// mainland-China resident ID (18-digit) and mobile numbers. Matched on the ORIGINAL text.
+const LOCAL_RECOGNIZERS = [
+  { entity: 'CN_ID_CARD', re: /(?<!\d)[1-9]\d{5}(?:19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])\d{3}[\dXx](?!\d)/g },
+  { entity: 'PHONE_NUMBER', re: /(?<!\d)1[3-9]\d{9}(?!\d)/g },
+];
+function localSpans(text) {
+  const out = [];
+  for (const rec of LOCAL_RECOGNIZERS) {
+    rec.re.lastIndex = 0;
+    let m;
+    while ((m = rec.re.exec(text)) !== null) {
+      out.push({ entity_type: rec.entity, start: m.index, end: m.index + m[0].length, score: 0.95 });
+    }
+  }
+  return out;
+}
+
 // One /analyze call → array of presidio results {entity_type,start,end,score,…}; [] on empty/error.
 async function analyzeSpans(text, language, entities, threshold) {
   if (!text || !text.trim()) return [];
@@ -364,6 +383,9 @@ async function _presidioRedact(text, opts) {
     const ner = await analyzeSpans(text, hasCjk ? 'zh' : (opts.language || 'en'), NER_ENTITIES, threshold);
     for (const r of ner) spans.push(r);
   }
+
+  // Local recognizers (China ID / mobile) on the original text — Presidio's defaults miss these.
+  for (const r of localSpans(text)) spans.push(r);
 
   // De-dup identical spans (regex + NER can occasionally land on the same range).
   const seen = new Set();

@@ -276,15 +276,13 @@ async function renderPresidioCard() {
   if (thrVal) thrVal.textContent = tv.toFixed(2);
   const nerM = $('fPresidioNerModel'); if (nerM && document.activeElement !== nerM) nerM.value = px.nerModel || 'en_core_web_sm';
   let txt, cls = 'bg-chip-bg text-muted';
-  if (!st.supported) { sw.disabled = true; txt = 'settings.desktopUnsupported'; }
-  else {
-    sw.disabled = false;
-    if (!enabled) txt = 'settings.presidioOff';
-    else if (st.setup === 'installing') { txt = 'settings.presidioInstalling'; cls = 'bg-amber-soft text-amber'; }
-    else if (st.setup === 'missing-source') { txt = 'settings.presidioNoSource'; cls = 'bg-amber-soft text-amber'; }
-    else if (st.running) { txt = 'settings.presidioRunning'; cls = 'bg-green-soft text-green'; }
-    else { txt = 'settings.presidioStarting'; cls = 'bg-amber-soft text-amber'; }
-  }
+  // Bundled per-platform → always supported; just reflect the runtime state.
+  sw.disabled = false;
+  if (!enabled) txt = 'settings.presidioOff';
+  else if (st.setup === 'installing') { txt = 'settings.presidioInstalling'; cls = 'bg-amber-soft text-amber'; }
+  else if (st.setup === 'missing-source') { txt = 'settings.presidioNoSource'; cls = 'bg-amber-soft text-amber'; }
+  else if (st.running) { txt = 'settings.presidioRunning'; cls = 'bg-green-soft text-green'; }
+  else { txt = 'settings.presidioStarting'; cls = 'bg-amber-soft text-amber'; }
   chip.className = 'text-[10.5px] font-semibold rounded-full px-2 py-0.25 ' + cls;
   chip.textContent = I18n.t(txt);
   const dot = $('presidioLogDot');
