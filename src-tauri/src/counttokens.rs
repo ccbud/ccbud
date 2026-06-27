@@ -109,3 +109,19 @@ pub fn estimate_input_tokens(body: &Value) -> i64 {
 pub fn tokenizer_ready() -> bool {
     enc().is_some()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn estimate_is_positive_and_grows_with_content() {
+        let small = estimate_input_tokens(&serde_json::json!({ "messages": [{ "role": "user", "content": "hi" }] }));
+        let big = estimate_input_tokens(&serde_json::json!({ "messages": [{ "role": "user", "content": "hello world this is a much longer message with many more tokens to count" }] }));
+        assert!(small > 0);
+        assert!(big > small, "more content must estimate more tokens ({} vs {})", big, small);
+    }
+    #[test]
+    fn empty_body_is_at_least_one() {
+        assert!(estimate_input_tokens(&serde_json::json!({})) >= 1);
+    }
+}

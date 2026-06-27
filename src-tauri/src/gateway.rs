@@ -1005,3 +1005,27 @@ pub fn routing_selftest() -> Value {
 
     json!({ "total": n, "passed": n - fails.len(), "failed": fails.len(), "fails": fails })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn routing_parity_with_proxy_js() {
+        let r = routing_selftest();
+        assert_eq!(r.get("failed").and_then(|v| v.as_i64()), Some(0), "routing mismatch: {:?}", r);
+        assert_eq!(r.get("passed").and_then(|v| v.as_i64()), Some(8));
+    }
+    #[test]
+    fn synthesize_models_includes_claude_tiers() {
+        let cfg = json!({ "providers": [{ "id": "p", "defaultModel": "m", "smallFastModel": "m" }], "activeProviderId": "p" });
+        let s = synthesize_models(&cfg);
+        let ids: Vec<&str> = s["data"].as_array().unwrap().iter().filter_map(|m| m["id"].as_str()).collect();
+        assert!(ids.contains(&"claude-sonnet-4-6"));
+    }
+    #[test]
+    fn retry_delay_honors_seconds_and_backoff() {
+        assert_eq!(retry_delay(Some("2"), 0, 500), 2000);
+        assert_eq!(retry_delay(None, 0, 500), 500);
+        assert_eq!(retry_delay(None, 1, 500), 1000);
+    }
+}

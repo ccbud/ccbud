@@ -223,6 +223,32 @@ fn set_0600(p: &PathBuf) {
 #[cfg(not(unix))]
 fn set_0600(_p: &PathBuf) {}
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn normalize_sanitizes_providers_and_active() {
+        let input = json!({
+            "port": 9000,
+            "providers": [{ "name": "X", "baseUrl": "u", "authToken": "t", "extra": "drop",
+                "models": [{ "alias": "a", "upstream": "u" }, { "alias": "", "upstream": "" }] }]
+        });
+        let n = normalize(input);
+        assert_eq!(n["port"], 9000);
+        assert_eq!(n["providers"][0]["name"], "X");
+        assert!(n["providers"][0].get("extra").is_none(), "unknown field must be dropped");
+        assert_eq!(n["providers"][0]["models"].as_array().unwrap().len(), 1, "empty model dropped");
+        assert_eq!(n["activeProviderId"], n["providers"][0]["id"], "active auto-set to first provider");
+        assert!(n["historyDirs"].as_array().unwrap().iter().any(|d| d == "~/.claude"));
+    }
+    #[test]
+    fn normalize_clamps_retry() {
+        let n = normalize(json!({ "retry429": { "max": 999, "baseMs": 99999 } }));
+        assert_eq!(n["retry429"]["max"], 10);
+        assert_eq!(n["retry429"]["baseMs"], 10000);
+    }
+}
+
 /// Stable-enough unique id for a new provider (single-user, serialized writes).
 pub fn gen_id() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
