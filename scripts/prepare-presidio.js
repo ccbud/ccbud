@@ -30,9 +30,12 @@ const OUT = path.join(ROOT, 'vendor', 'presidio-env');
 const SRCOUT = path.join(ROOT, 'vendor', 'presidio-src');
 const SRCIN = path.join(ROOT, 'assets', 'presidio-src');
 const PYVER = process.env.PRESIDIO_PYTHON || '3.12';
-// spaCy small English model as a direct wheel (uv venvs have no pip, so `spacy download` won't work).
-const MODEL = process.env.PRESIDIO_MODEL ||
-  'https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl';
+// spaCy small models as direct wheels (uv venvs have no pip, so `spacy download` won't work).
+// English + Chinese, so the NER tier can recognize Chinese names / places / orgs too.
+const MODELS = (process.env.PRESIDIO_MODELS || [
+  'https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl',
+  'https://github.com/explosion/spacy-models/releases/download/zh_core_web_sm-3.8.0/zh_core_web_sm-3.8.0-py3-none-any.whl',
+].join(' ')).split(/\s+/).filter(Boolean);
 const IS_WIN = process.platform === 'win32';
 
 // Locate uv: PATH first (CI), then the common per-user / Homebrew install locations.
@@ -73,9 +76,9 @@ const outPy = IS_WIN
   : path.join(OUT, 'python', 'bin', 'python3.12');
 if (!fs.existsSync(outPy)) throw new Error('copied python interpreter not found at ' + outPy);
 
-console.log('[prepare-presidio] installing presidio[server] + spaCy small model (from PyPI)…');
+console.log('[prepare-presidio] installing presidio[server] + spaCy models (en, zh) from PyPI…');
 uv(['pip', 'install', '--python', outPy, '--break-system-packages',
-  'presidio-analyzer[server]', 'presidio-anonymizer[server]', MODEL]);
+  'presidio-analyzer[server]', 'presidio-anonymizer[server]', ...MODELS]);
 
 // 3) Bundle the official Flask entry points from the repo (no external checkout).
 for (const svc of ['presidio-analyzer', 'presidio-anonymizer']) {

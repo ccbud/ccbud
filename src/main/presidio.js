@@ -120,7 +120,12 @@ const envReady = () => { try { return fs.existsSync(pyExe()); } catch (_) { retu
 /* ---------- env setup (uv venv + install + small model) ---------- */
 function writeNlpConf() {
   fs.mkdirSync(ROOT, { recursive: true });
-  fs.writeFileSync(NLP_CONF, 'nlp_engine_name: spacy\nmodels:\n  - lang_code: en\n    model_name: en_core_web_sm\n');
+  // Two-language spaCy engine (en + zh) so the NER tier covers Chinese names/places/orgs.
+  fs.writeFileSync(NLP_CONF,
+    'nlp_engine_name: spacy\n' +
+    'models:\n' +
+    '  - lang_code: en\n    model_name: en_core_web_sm\n' +
+    '  - lang_code: zh\n    model_name: zh_core_web_sm\n');
 }
 // Returns 'ready' | 'installing' | 'missing-source' | 'idle'
 function setupState() {
@@ -328,26 +333,48 @@ function insertCjkBoundaries(text) {
   }
   return { spaced: out, map };
 }
+// One /analyze call → array of presidio results {entity_type,start,end,score,…}; [] on empty/error.
+async function analyzeSpans(text, language, entities, threshold) {
+  if (!text || !text.trim()) return [];
+  try {
+    const r = await postJson(ANALYZER_PORT, '/analyze', { text, language, score_threshold: threshold, entities });
+    return Array.isArray(r) ? r : [];
+  } catch (_) { return []; }
+}
 async function _presidioRedact(text, opts) {
-  const entities = opts.ner ? DEFAULT_ENTITIES.concat(NER_ENTITIES) : DEFAULT_ENTITIES;
   const threshold = (typeof opts.threshold === 'number' && opts.threshold >= 0) ? opts.threshold : ANALYZE_SCORE_THRESHOLD;
+  const hasCjk = CJK_RE.test(text);
+  const spans = [];
+
+  // Tier 1 — regex/checksum recognizers, language-agnostic. Run on the CJK-spaced copy so `\b` fires
+  // next to Chinese, then map spans back onto the ORIGINAL text. (The spaced copy isn't real Chinese,
+  // so it always uses the `en` engine.)
   const { spaced, map } = insertCjkBoundaries(text);
-  const results = await postJson(ANALYZER_PORT, '/analyze', {
-    text: spaced, language: opts.language || 'en', score_threshold: threshold, entities,
-  });
-  if (!Array.isArray(results) || !results.length) return text;
-  // Map spans from the spaced text back to the original (no-op when nothing was inserted).
-  const mapped = results.map((r) => {
-    if (!map) return r;
+  const regex = await analyzeSpans(spaced, hasCjk ? 'en' : (opts.language || 'en'), DEFAULT_ENTITIES, threshold);
+  for (const r of regex) {
+    if (!map) { spans.push(r); continue; }
     const start = map[r.start];
     const end = (r.end - 1 < map.length) ? map[r.end - 1] + 1 : text.length;
-    return Object.assign({}, r, { start, end });
-  });
+    spans.push(Object.assign({}, r, { start, end }));
+  }
+
+  // Tier 2 — NER (opt-in) runs on the ORIGINAL text (spacing would break tokenization); Chinese text
+  // uses the zh model, everything else the en model. Coordinates already match the original text.
+  if (opts.ner) {
+    const ner = await analyzeSpans(text, hasCjk ? 'zh' : (opts.language || 'en'), NER_ENTITIES, threshold);
+    for (const r of ner) spans.push(r);
+  }
+
+  // De-dup identical spans (regex + NER can occasionally land on the same range).
+  const seen = new Set();
+  const merged = spans.filter((r) => { const k = r.entity_type + ':' + r.start + ':' + r.end; if (seen.has(k)) return false; seen.add(k); return true; });
+  if (!merged.length) return text;
+
   // Capture findings for the Findings table (entity type + matched span + confidence). Local only.
-  for (const r of mapped) {
+  for (const r of merged) {
     pushFinding({ entity: r.entity_type, text: text.slice(r.start, r.end), start: r.start, end: r.end, score: Math.round((r.score || 0) * 100) / 100, ts: Date.now() });
   }
-  const body = { text, analyzer_results: mapped };
+  const body = { text, analyzer_results: merged };
   const anonymizers = buildAnonymizers(opts.deidentify);
   if (anonymizers) body.anonymizers = anonymizers;
   const out = await postJson(ANONYMIZER_PORT, '/anonymize', body);
