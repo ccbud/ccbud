@@ -13,6 +13,7 @@
 mod claude;
 mod claudedesktop;
 mod counttokens;
+mod exporthtml;
 mod gateway;
 mod history;
 mod store;
@@ -334,6 +335,21 @@ fn selfcheck_desktop() -> Value {
     })
 }
 #[tauri::command]
+fn selfcheck_export() -> Value {
+    let base = store::ccbud_home();
+    let _ = history::history_selftest(&base);
+    let file = base.join("test-claude").join("projects").join("-test-cwd").join("sess1.jsonl");
+    let html = exporthtml::build_export_html(&file.to_string_lossy());
+    json!({
+        "len": html.len(),
+        "hasConv": html.contains("__CONV__"),
+        "hasContent": html.contains("hello world from selfcheck"),
+        "hasSkin": html.contains("</style>"),
+        "embedded": html.len() > 180000,
+        "validHtml": html.starts_with("<!doctype html") && html.contains("</html>"),
+    })
+}
+#[tauri::command]
 async fn selfcheck_gateway(
     gw: tauri::State<'_, std::sync::Arc<gateway::GatewayState>>,
 ) -> Result<Value, String> {
@@ -398,6 +414,7 @@ const SELFCHECK_JS: &str = r#"
       try{ o.copyOk=await window.ccbud.copy('selfcheck-clip'); }catch(e){ o.copyErr=String(e); }
       try{ o.histMeta=await window.__TAURI__.core.invoke('selfcheck_history'); }catch(e){ o.histMetaErr=String(e); }
       try{ o.desktop=await window.__TAURI__.core.invoke('selfcheck_desktop'); }catch(e){ o.desktopErr=String(e); }
+      try{ o.export=await window.__TAURI__.core.invoke('selfcheck_export'); }catch(e){ o.exportErr=String(e); }
       o.errors=window.__ccbud_errors.slice(0,20);
     }catch(e){o.fatal=String((e&&e.stack)||e);}
     rep(o);
@@ -446,7 +463,7 @@ pub fn run() {
             history_import, history_import_paths, history_remove_import, history_set_meta, history_export_raw, history_export_html,
             util_copy, util_open_external,
             update_state, update_check, update_download, update_apply, update_set_auto,
-            selfcheck_report, selfcheck_routing, selfcheck_gateway, selfcheck_history, selfcheck_desktop
+            selfcheck_report, selfcheck_routing, selfcheck_gateway, selfcheck_history, selfcheck_desktop, selfcheck_export
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
