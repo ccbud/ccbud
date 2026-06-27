@@ -10,6 +10,7 @@
 // warnings are suppressed crate-wide until the bodies are filled in.
 #![allow(unused_variables)]
 
+mod gateway;
 mod store;
 
 use serde_json::{json, Value};
@@ -141,6 +142,10 @@ fn provider_test(p: Value) -> Value {
 fn selfcheck_report(report: Value) {
     eprintln!("[SELFCHECK] {}", serde_json::to_string(&report).unwrap_or_default());
 }
+#[tauri::command]
+fn selfcheck_routing() -> Value {
+    gateway::routing_selftest()
+}
 const SELFCHECK_JS: &str = r#"
 (function(){
   if (window.__ccbud_sc) return; window.__ccbud_sc = 1;
@@ -170,6 +175,7 @@ const SELFCHECK_JS: &str = r#"
         var reread=await window.ccbud.getConfig();
         o.rereadProv=((reread&&reread.providers)||[]).length;
       }catch(e){ o.storeErr=String(e); }
+      try{ o.routing=await window.__TAURI__.core.invoke('selfcheck_routing'); }catch(e){ o.routingErr=String(e); }
       o.errors=window.__ccbud_errors.slice(0,20);
     }catch(e){o.fatal=String((e&&e.stack)||e);}
     rep(o);
@@ -206,7 +212,7 @@ pub fn run() {
             history_import, history_import_paths, history_remove_import, history_set_meta, history_export_raw, history_export_html,
             util_copy, util_open_external,
             update_state, update_check, update_download, update_apply, update_set_auto,
-            selfcheck_report
+            selfcheck_report, selfcheck_routing
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
