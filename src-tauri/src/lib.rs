@@ -158,7 +158,35 @@ async fn desktop_connect(
 fn desktop_disconnect() -> Value {
     claudedesktop::disconnect()
 }
-#[tauri::command] fn desktop_replay(file: String) -> Value { Value::Null }
+fn pct(s: &str) -> String {
+    s.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => (b as char).to_string(),
+            _ => format!("%{:02X}", b),
+        })
+        .collect()
+}
+#[tauri::command]
+fn desktop_replay(file: String) -> Value {
+    if file.is_empty() {
+        return json!({ "ok": false, "reason": "noFile" });
+    }
+    if !cfg!(target_os = "macos") {
+        return json!({ "ok": false, "reason": "unsupported" });
+    }
+    let prompt = "请基于这份对话记录在 Claude 桌面版里继续。";
+    let url = format!("claude://cowork/new?q={}&file={}", pct(prompt), pct(&file));
+    #[cfg(target_os = "macos")]
+    {
+        let ok = std::process::Command::new("/usr/bin/open").arg(&url).spawn().is_ok();
+        json!({ "ok": ok })
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = url;
+        json!({ "ok": false, "reason": "unsupported" })
+    }
+}
 
 // ---- server / usage / monitor / logs (Phase 2/3) ----
 async fn full_status(gw: &std::sync::Arc<gateway::GatewayState>) -> Value {
