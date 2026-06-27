@@ -11,6 +11,7 @@
 #![allow(unused_variables)]
 
 mod gateway;
+mod history;
 mod store;
 
 use serde_json::{json, Value};
@@ -125,10 +126,28 @@ async fn server_status(
 #[tauri::command] fn window_view_min_width(w: i64) -> Value { Value::Null }
 
 // ---- conversation history (Phase 3) ----
-#[tauri::command] fn history_projects() -> Value { json!([]) }
-#[tauri::command] fn history_list() -> Value { json!([]) }
-#[tauri::command] fn history_get(file: String) -> Value { json!({ "messages": [] }) }
-#[tauri::command] fn history_dirs() -> Value { json!({ "dirs": [], "active": "" }) }
+#[tauri::command]
+fn history_projects() -> Value {
+    let cfg = store::read_config();
+    let active = cfg.get("historyActive").and_then(|v| v.as_str()).unwrap_or("all").to_string();
+    json!(history::list_projects(&cfg, &active))
+}
+#[tauri::command]
+fn history_list() -> Value {
+    let cfg = store::read_config();
+    let active = cfg.get("historyActive").and_then(|v| v.as_str()).unwrap_or("all").to_string();
+    json!(history::list_sessions(&cfg, &active, 400))
+}
+#[tauri::command]
+fn history_get(file: String) -> Value {
+    history::get_session(&file)
+}
+#[tauri::command]
+fn history_dirs() -> Value {
+    let cfg = store::read_config();
+    let active = cfg.get("historyActive").and_then(|v| v.as_str()).unwrap_or("all").to_string();
+    json!({ "dirs": history::dir_stats(&cfg), "active": active })
+}
 #[tauri::command] fn history_pick_dir() -> Value { Value::Null }
 #[tauri::command] fn history_set_active(id: String) -> Value { Value::Null }
 #[tauri::command] fn history_import() -> Value { Value::Null }
@@ -201,6 +220,13 @@ const SELFCHECK_JS: &str = r#"
       try{ o.routing=await window.__TAURI__.core.invoke('selfcheck_routing'); }catch(e){ o.routingErr=String(e); }
       try{ o.server=await window.ccbud.serverStatus(); }catch(e){ o.serverErr=String(e); }
       try{ o.gateway=await window.__TAURI__.core.invoke('selfcheck_gateway'); }catch(e){ o.gatewayErr=String(e); }
+      try{
+        o.histDirs=(await window.ccbud.historyDirs()).dirs.length;
+        var hl=await window.ccbud.historyList();
+        o.histCount=(hl||[]).length;
+        o.histSample=hl&&hl[0]?{title:String(hl[0].title||'').slice(0,40),project:hl[0].project,hasCwd:!!hl[0].cwd,hasFile:!!hl[0].file}:null;
+        if(hl&&hl[0]){ var ss=await window.ccbud.historyGet(hl[0].file); o.histMsgs=ss&&ss.messages?ss.messages.length:-1; o.histTotals=ss&&ss.meta?ss.meta.totals:null; }
+      }catch(e){ o.histErr=String(e); }
       o.errors=window.__ccbud_errors.slice(0,20);
     }catch(e){o.fatal=String((e&&e.stack)||e);}
     rep(o);
