@@ -14,6 +14,7 @@ mod gateway;
 mod store;
 
 use serde_json::{json, Value};
+use tauri::Manager;
 
 // ---- config / providers (real, store.rs) ----
 #[tauri::command]
@@ -99,7 +100,18 @@ fn provider_test(p: Value) -> Value {
 #[tauri::command] fn desktop_replay(file: String) -> Value { Value::Null }
 
 // ---- server / usage / monitor / logs (Phase 2/3) ----
-#[tauri::command] fn server_status() -> Value { json!({ "running": false, "port": null, "connected": false, "lastStartError": null, "claudePath": "" }) }
+#[tauri::command]
+async fn server_status(
+    gw: tauri::State<'_, std::sync::Arc<gateway::GatewayState>>,
+) -> Result<Value, String> {
+    let mut s = gw.status().await;
+    if let Some(o) = s.as_object_mut() {
+        o.insert("connected".into(), json!(false));
+        o.insert("lastStartError".into(), Value::Null);
+        o.insert("claudePath".into(), json!(""));
+    }
+    Ok(s)
+}
 #[tauri::command] fn usage_get(range: Option<String>) -> Value { json!({ "tokens": 0, "requests": 0, "favoriteModel": "—", "heatmap": [], "days": [], "models": [] }) }
 #[tauri::command] fn monitor_get(id: Value) -> Value { Value::Null }
 #[tauri::command] fn monitor_clear() -> Value { Value::Null }
@@ -146,6 +158,17 @@ fn selfcheck_report(report: Value) {
 fn selfcheck_routing() -> Value {
     gateway::routing_selftest()
 }
+#[tauri::command]
+async fn selfcheck_gateway(
+    gw: tauri::State<'_, std::sync::Arc<gateway::GatewayState>>,
+) -> Result<Value, String> {
+    // Mutates config (writes a mock provider) — only ever allowed in a throwaway self-check run.
+    if std::env::var("CCBUD_SELFCHECK").is_err() {
+        return Err("selfcheck disabled".into());
+    }
+    let port = gw.current_port().await.unwrap_or(0);
+    Ok(gateway::gateway_selftest(port).await)
+}
 const SELFCHECK_JS: &str = r#"
 (function(){
   if (window.__ccbud_sc) return; window.__ccbud_sc = 1;
@@ -176,6 +199,8 @@ const SELFCHECK_JS: &str = r#"
         o.rereadProv=((reread&&reread.providers)||[]).length;
       }catch(e){ o.storeErr=String(e); }
       try{ o.routing=await window.__TAURI__.core.invoke('selfcheck_routing'); }catch(e){ o.routingErr=String(e); }
+      try{ o.server=await window.ccbud.serverStatus(); }catch(e){ o.serverErr=String(e); }
+      try{ o.gateway=await window.__TAURI__.core.invoke('selfcheck_gateway'); }catch(e){ o.gatewayErr=String(e); }
       o.errors=window.__ccbud_errors.slice(0,20);
     }catch(e){o.fatal=String((e&&e.stack)||e);}
     rep(o);
@@ -201,6 +226,18 @@ pub fn run() {
                         .build(),
                 )?;
             }
+            // Start the localhost gateway on the configured port (proxy.js parity).
+            let gw = gateway::GatewayState::new(app.handle().clone());
+            app.manage(gw.clone());
+            let port = store::read_config()
+                .get("port")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(8788) as u16;
+            tauri::async_runtime::spawn(async move {
+                if let Err(e) = gw.start(port).await {
+                    eprintln!("[ccbud] gateway start failed: {}", e);
+                }
+            });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -212,7 +249,7 @@ pub fn run() {
             history_import, history_import_paths, history_remove_import, history_set_meta, history_export_raw, history_export_html,
             util_copy, util_open_external,
             update_state, update_check, update_download, update_apply, update_set_auto,
-            selfcheck_report, selfcheck_routing
+            selfcheck_report, selfcheck_routing, selfcheck_gateway
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

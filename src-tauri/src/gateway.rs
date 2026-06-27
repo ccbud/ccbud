@@ -1,16 +1,31 @@
 // Gateway core — Rust port of proxy.js. Phase 2.
 //
-// Implemented so far: the deterministic ROUTING logic (resolve_routing + helpers), with an
-// in-binary selftest (`routing_selftest`) mirroring the 8 routing cases in test/selftest.js.
-// Still to come: SSE transform (model rewrite + usage sniff), upstream forwarding via reqwest
-// (gzip/deflate/br decode, 429 retry), /v1/models merge/synthesize, and the localhost server.
+// Implements: deterministic ROUTING (resolve_routing + routing_selftest, 8/8 parity with
+// test/selftest.js) AND the localhost reverse proxy — header sanitizing, upstream forwarding
+// (reqwest, auto gzip/br/deflate decode), 429 retry, SSE streaming with model rewrite + usage
+// sniffing, buffered-JSON model rewrite, /v1/models merge/synthesize, and HEAD / 404→200.
+// TODO (next): local count_tokens estimate, full monitor exchange capture.
 
-// Phase 2 in progress: a few pub items (CLAUDE_TIER_MODELS …) are consumed once /v1/models
-// synthesis and forwarding land; silence dead_code until then.
+// Phase 2 in progress: a few pub items are consumed once everything is wired; silence until then.
 #![allow(dead_code)]
 
+use axum::{
+    body::{to_bytes, Body},
+    extract::State,
+    http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri},
+    response::Response,
+    Router,
+};
+use bytes::Bytes;
+use futures_util::StreamExt;
 use serde_json::{json, Value};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+use tauri::Emitter;
+use tokio::sync::{oneshot, Mutex};
+
+use crate::store;
 
 /// Standard Claude tier names ccbud advertises to clients (claudeModels.js).
 pub const CLAUDE_TIER_MODELS: &[(&str, &str)] = &[
@@ -19,17 +34,12 @@ pub const CLAUDE_TIER_MODELS: &[(&str, &str)] = &[
     ("claude-haiku-4-5", "haiku"),
 ];
 
-/// Heuristic: is this model name a "small / fast" tier?
 fn looks_small(name: &str) -> bool {
     let n = name.to_ascii_lowercase();
-    [
-        "haiku", "small", "fast", "mini", "air", "flash", "lite", "nano", "tiny", "turbo",
-    ]
-    .iter()
-    .any(|k| n.contains(k))
+    ["haiku", "small", "fast", "mini", "air", "flash", "lite", "nano", "tiny", "turbo"]
+        .iter()
+        .any(|k| n.contains(k))
 }
-
-/// Is this one of Claude's own default model names (the only names we auto-remap)?
 fn is_claude_default(name: &str) -> bool {
     let n = name.to_ascii_lowercase();
     n.starts_with("claude-") || n.starts_with("claude_")
@@ -43,12 +53,6 @@ pub struct Routing {
 }
 
 /// Decide how to route a request and translate its model name. Mirrors proxy.js `resolveRouting`.
-/// Every request goes to the single ACTIVE provider; the requested model id is resolved in order:
-///   1. an active-provider Custom alias        -> map alias -> the user's upstream name
-///   2. the provider's PRIMARY / LIGHTWEIGHT    -> passthrough
-///   3. a model the provider really has         -> passthrough (configured upstream, or in known_models)
-///   4. otherwise (default mapping on): claude main tiers -> PRIMARY, everything else -> LIGHTWEIGHT;
-///      with mapDefaultModels:false -> forwarded untouched.
 pub fn resolve_routing(
     requested_model: Option<&str>,
     config: &Value,
@@ -63,11 +67,7 @@ pub fn resolve_routing(
         .iter()
         .find(|p| p.get("id").and_then(|v| v.as_str()) == active_id)
         .or_else(|| providers.first())?;
-    let pid = active
-        .get("id")
-        .and_then(|v| v.as_str())
-        .unwrap_or("")
-        .to_string();
+    let pid = active.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
 
     let pass = |m: &str| {
         Some(Routing {
@@ -92,7 +92,6 @@ pub fn resolve_routing(
     let light = active.get("smallFastModel").and_then(|v| v.as_str()).unwrap_or("");
     let models = active.get("models").and_then(|v| v.as_array());
 
-    // 1) active-provider custom alias -> upstream
     if let Some(ms) = models {
         for m in ms {
             let alias = m.get("alias").and_then(|v| v.as_str()).unwrap_or("");
@@ -106,11 +105,9 @@ pub fn resolve_routing(
             }
         }
     }
-    // 2) already the provider's primary / lightweight -> passthrough
     if requested == primary || requested == light {
         return pass(requested);
     }
-    // 3) a model the provider really has -> passthrough
     if let Some(ms) = models {
         for m in ms {
             if m.get("upstream").and_then(|v| v.as_str()) == Some(requested) {
@@ -123,7 +120,6 @@ pub fn resolve_routing(
             return pass(requested);
         }
     }
-    // 4) unconfigured id. default-mapping off -> forward untouched
     let map_default = active
         .get("mapDefaultModels")
         .map(|v| v.as_bool().unwrap_or(true))
@@ -131,7 +127,6 @@ pub fn resolve_routing(
     if !map_default {
         return pass(requested);
     }
-    // map onto the active provider: claude main tiers -> PRIMARY, everything else -> LIGHTWEIGHT
     let big = if !primary.is_empty() { primary } else { light };
     let small = if !light.is_empty() { light } else { primary };
     let target = if is_claude_default(requested) {
@@ -149,8 +144,661 @@ pub fn resolve_routing(
     pass(requested)
 }
 
-/// In-binary equivalent of test/selftest.js's 8 routing unit checks. Returns a JSON summary so
-/// the self-check channel can confirm Rust routing matches the Electron core exactly.
+// ---------------- gateway runtime ----------------
+
+pub struct GatewayState {
+    app: tauri::AppHandle,
+    known: Mutex<HashMap<String, HashSet<String>>>,
+    seq: AtomicU64,
+    running: Mutex<Option<RunningServer>>,
+    client: reqwest::Client,
+    client_insecure: reqwest::Client,
+}
+struct RunningServer {
+    port: u16,
+    shutdown: oneshot::Sender<()>,
+}
+
+impl GatewayState {
+    pub fn new(app: tauri::AppHandle) -> Arc<Self> {
+        let client = reqwest::Client::builder()
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
+        let client_insecure = reqwest::Client::builder()
+            .danger_accept_invalid_certs(true)
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
+        Arc::new(Self {
+            app,
+            known: Mutex::new(HashMap::new()),
+            seq: AtomicU64::new(0),
+            running: Mutex::new(None),
+            client,
+            client_insecure,
+        })
+    }
+
+    fn log(&self, level: &str, msg: impl AsRef<str>) {
+        let _ = self
+            .app
+            .emit("gateway:log", json!({ "level": level, "msg": msg.as_ref() }));
+    }
+
+    pub async fn status(&self) -> Value {
+        match self.running.lock().await.as_ref() {
+            Some(rs) => json!({ "running": true, "port": rs.port }),
+            None => json!({ "running": false, "port": Value::Null }),
+        }
+    }
+
+    pub async fn current_port(&self) -> Option<u16> {
+        self.running.lock().await.as_ref().map(|r| r.port)
+    }
+
+    pub async fn start(self: &Arc<Self>, port: u16) -> Result<u16, String> {
+        if let Some(rs) = self.running.lock().await.as_ref() {
+            return Ok(rs.port);
+        }
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))
+            .await
+            .map_err(|e| e.to_string())?;
+        let actual = listener.local_addr().map_err(|e| e.to_string())?.port();
+        let (tx, rx) = oneshot::channel::<()>();
+        let router = Router::new().fallback(handle).with_state(self.clone());
+        tauri::async_runtime::spawn(async move {
+            let _ = axum::serve(listener, router)
+                .with_graceful_shutdown(async move {
+                    let _ = rx.await;
+                })
+                .await;
+        });
+        *self.running.lock().await = Some(RunningServer { port: actual, shutdown: tx });
+        self.log("info", format!("gateway listening on http://127.0.0.1:{}", actual));
+        let status = self.status().await;
+        let _ = self.app.emit("gateway:status", status);
+        Ok(actual)
+    }
+
+    pub async fn stop(self: &Arc<Self>) {
+        let taken = self.running.lock().await.take();
+        if let Some(rs) = taken {
+            let _ = rs.shutdown.send(());
+            self.log("info", "gateway stopped");
+        }
+        let status = self.status().await;
+        let _ = self.app.emit("gateway:status", status);
+    }
+
+    fn emit_request(&self, method: &Method, path: &str, provider: &str, routing: &Routing, status: u16, usage: Option<&UsageAcc>) {
+        let (it, ot, cr, cc) = usage
+            .map(|u| (u.input, u.output, u.cache_read, u.cache_creation))
+            .unwrap_or((0, 0, 0, 0));
+        let id = self.seq.fetch_add(1, Ordering::Relaxed) + 1;
+        let _ = self.app.emit(
+            "gateway:request",
+            json!({
+                "id": id,
+                "method": method.as_str(),
+                "path": path,
+                "provider": provider,
+                "requestedModel": routing.client_facing_model,
+                "outgoingModel": routing.outgoing_model,
+                "clientFacingModel": routing.client_facing_model,
+                "status": status,
+                "inputTokens": it, "outputTokens": ot, "cacheRead": cr, "cacheCreation": cc,
+            }),
+        );
+    }
+}
+
+#[derive(Default)]
+struct UsageAcc {
+    input: i64,
+    output: i64,
+    cache_read: i64,
+    cache_creation: i64,
+    saw: bool,
+}
+
+fn retry_delay(retry_after: Option<&str>, attempt: i64, base: i64) -> u64 {
+    let cap = 30_000u64;
+    if let Some(ra) = retry_after {
+        let s = ra.trim();
+        if let Ok(n) = s.parse::<u64>() {
+            return (n.saturating_mul(1000)).min(cap);
+        }
+        // HTTP-date form is rare from these providers — fall through to backoff.
+    }
+    let base = if base > 0 { base as u64 } else { 500 };
+    base.saturating_mul(2u64.saturating_pow(attempt.clamp(0, 20) as u32))
+        .min(8000)
+}
+
+fn model_rewrite_re() -> &'static regex::Regex {
+    static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    RE.get_or_init(|| regex::Regex::new(r#"("model"\s*:\s*")[^"]*(")"#).unwrap())
+}
+
+fn absorb_usage_sse(obj: &Value, usage: &mut UsageAcc) {
+    match obj.get("type").and_then(|v| v.as_str()) {
+        Some("message_start") => {
+            if let Some(u) = obj.get("message").and_then(|m| m.get("usage")) {
+                usage.input += u.get("input_tokens").and_then(|v| v.as_i64()).unwrap_or(0);
+                usage.cache_read += u.get("cache_read_input_tokens").and_then(|v| v.as_i64()).unwrap_or(0);
+                usage.cache_creation += u.get("cache_creation_input_tokens").and_then(|v| v.as_i64()).unwrap_or(0);
+                usage.saw = true;
+            }
+        }
+        Some("message_delta") => {
+            if let Some(o) = obj.get("usage").and_then(|u| u.get("output_tokens")).and_then(|v| v.as_i64()) {
+                usage.output = o;
+                usage.saw = true;
+            }
+        }
+        _ => {}
+    }
+}
+
+fn process_sse_line(line: &str, rewrite_model: Option<&str>, usage: &mut UsageAcc) -> String {
+    if line.contains("\"usage\"") {
+        if let Some(i) = line.find('{') {
+            if let Ok(obj) = serde_json::from_str::<Value>(line[i..].trim()) {
+                absorb_usage_sse(&obj, usage);
+            }
+        }
+    }
+    if let Some(m) = rewrite_model {
+        if line.contains("\"model\"") {
+            return model_rewrite_re()
+                .replace_all(line, |caps: &regex::Captures| format!("{}{}{}", &caps[1], m, &caps[2]))
+                .into_owned();
+        }
+    }
+    line.to_string()
+}
+
+fn build_target(base_url: &str, uri: &Uri) -> Option<String> {
+    if base_url.is_empty() {
+        return None;
+    }
+    let base = base_url.trim_end_matches('/');
+    let pq = uri.path_and_query().map(|p| p.as_str()).unwrap_or("/");
+    Some(format!("{}{}", base, pq))
+}
+
+fn error_response(status: StatusCode, msg: &str, etype: &str) -> Response {
+    json_response(status, &json!({ "type": "error", "error": { "type": etype, "message": msg } }))
+}
+fn json_response(status: StatusCode, body: &Value) -> Response {
+    let bytes = serde_json::to_vec(body).unwrap_or_default();
+    Response::builder()
+        .status(status)
+        .header("content-type", "application/json")
+        .body(Body::from(bytes))
+        .unwrap()
+}
+
+// ---- /v1/models augmentation ----
+fn model_entry(id: &str) -> Value {
+    json!({ "type": "model", "id": id, "display_name": id, "created_at": "2025-01-01T00:00:00Z" })
+}
+fn alias_entries(config: &Value) -> Vec<Value> {
+    let mut out = vec![];
+    let mut seen = HashSet::new();
+    if let Some(ps) = config.get("providers").and_then(|v| v.as_array()) {
+        for p in ps {
+            if let Some(ms) = p.get("models").and_then(|v| v.as_array()) {
+                for m in ms {
+                    if let Some(a) = m.get("alias").and_then(|v| v.as_str()) {
+                        if !a.is_empty() && seen.insert(a.to_string()) {
+                            out.push(model_entry(a));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+fn claude_tier_entries() -> Vec<Value> {
+    CLAUDE_TIER_MODELS.iter().map(|(n, _)| model_entry(n)).collect()
+}
+fn merge_models(upstream: &Value, config: &Value) -> Value {
+    let data = upstream.get("data").and_then(|d| d.as_array()).cloned().unwrap_or_default();
+    let mut have: HashSet<String> = data
+        .iter()
+        .filter_map(|m| m.get("id").and_then(|v| v.as_str()).map(|s| s.to_string()))
+        .collect();
+    let mut adds = vec![];
+    for a in alias_entries(config).into_iter().chain(claude_tier_entries()) {
+        let id = a.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        if have.insert(id) {
+            adds.push(a);
+        }
+    }
+    let mut merged = upstream.clone();
+    adds.extend(data);
+    merged["data"] = json!(adds);
+    merged
+}
+fn synthesize_models(config: &Value) -> Value {
+    let mut out = alias_entries(config);
+    if out.is_empty() {
+        let ps = config.get("providers").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+        let active_id = config.get("activeProviderId").and_then(|v| v.as_str());
+        let active = ps
+            .iter()
+            .find(|p| p.get("id").and_then(|v| v.as_str()) == active_id)
+            .or_else(|| ps.first());
+        let mut seen = HashSet::new();
+        if let Some(a) = active {
+            for k in ["defaultModel", "smallFastModel"] {
+                if let Some(id) = a.get(k).and_then(|v| v.as_str()) {
+                    if !id.is_empty() && seen.insert(id.to_string()) {
+                        out.push(model_entry(id));
+                    }
+                }
+            }
+        }
+    }
+    let mut have: HashSet<String> = out
+        .iter()
+        .filter_map(|m| m.get("id").and_then(|v| v.as_str()).map(|s| s.to_string()))
+        .collect();
+    for e in claude_tier_entries() {
+        let id = e.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        if have.insert(id) {
+            out.push(e);
+        }
+    }
+    let first = out.first().and_then(|m| m.get("id").cloned()).unwrap_or(Value::Null);
+    let last = out.last().and_then(|m| m.get("id").cloned()).unwrap_or(Value::Null);
+    json!({ "data": out, "has_more": false, "first_id": first, "last_id": last })
+}
+
+const HOP_BY_HOP_REQ: &[&str] = &[
+    "host", "content-length", "authorization", "x-api-key", "accept-encoding", "cookie",
+    "proxy-authorization", "connection", "proxy-connection", "transfer-encoding",
+];
+const HOP_BY_HOP_RES: &[&str] = &[
+    "content-length", "transfer-encoding", "content-encoding", "connection", "keep-alive",
+    "proxy-authenticate", "proxy-connection", "set-cookie",
+];
+
+/// The localhost reverse-proxy handler. Mirrors proxy.js `handle`.
+async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request) -> Response {
+    let (parts, body) = req.into_parts();
+    let method = parts.method;
+    let uri = parts.uri;
+    let in_headers = parts.headers;
+    let req_path = uri.path().to_string();
+    let body_bytes = to_bytes(body, 64 * 1024 * 1024).await.unwrap_or_default();
+
+    let config = store::read_config();
+
+    // Optional local gateway token (defense in depth; already bound to localhost).
+    if config.get("requireToken").and_then(|v| v.as_bool()).unwrap_or(false) {
+        let token = config.get("gatewayToken").and_then(|v| v.as_str()).unwrap_or("");
+        if !token.is_empty() {
+            let auth = in_headers.get("authorization").and_then(|v| v.to_str().ok()).unwrap_or("");
+            let bearer = auth
+                .strip_prefix("Bearer ")
+                .or_else(|| auth.strip_prefix("bearer "));
+            let presented = bearer.unwrap_or_else(|| {
+                in_headers.get("x-api-key").and_then(|v| v.to_str().ok()).unwrap_or("")
+            });
+            if presented != token {
+                return error_response(StatusCode::UNAUTHORIZED, "ccbud: invalid gateway token", "authentication_error");
+            }
+        }
+    }
+
+    let is_json = in_headers
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.contains("application/json"))
+        .unwrap_or(false);
+    let mut parsed: Option<Value> = None;
+    let mut requested_model: Option<String> = None;
+    if !body_bytes.is_empty() && is_json {
+        if let Ok(v) = serde_json::from_slice::<Value>(&body_bytes) {
+            requested_model = v.get("model").and_then(|m| m.as_str()).map(|s| s.to_string());
+            parsed = Some(v);
+        }
+    }
+
+    let providers = config.get("providers").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+    let active_id = config.get("activeProviderId").and_then(|v| v.as_str());
+    let active_pid = providers
+        .iter()
+        .find(|p| p.get("id").and_then(|v| v.as_str()) == active_id)
+        .or_else(|| providers.first())
+        .and_then(|p| p.get("id").and_then(|v| v.as_str()))
+        .map(|s| s.to_string());
+    let known = match &active_pid {
+        Some(pid) => st.known.lock().await.get(pid).cloned(),
+        None => None,
+    };
+
+    let routing = match resolve_routing(requested_model.as_deref(), &config, known.as_ref()) {
+        Some(r) => r,
+        None => {
+            st.log("warn", "request rejected: no provider configured");
+            return error_response(StatusCode::BAD_GATEWAY, "ccbud: no provider configured. Add one in the app.", "api_error");
+        }
+    };
+    let provider = match providers.iter().find(|p| p.get("id").and_then(|v| v.as_str()) == Some(routing.provider_id.as_str())) {
+        Some(p) => p,
+        None => return error_response(StatusCode::BAD_GATEWAY, "ccbud: no provider configured.", "api_error"),
+    };
+    let base_url = provider.get("baseUrl").and_then(|v| v.as_str()).unwrap_or("");
+    let auth_token = provider.get("authToken").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let provider_name = provider
+        .get("name")
+        .and_then(|v| v.as_str())
+        .unwrap_or(routing.provider_id.as_str())
+        .to_string();
+
+    let need_rewrite = match (routing.client_facing_model.as_ref(), routing.outgoing_model.as_ref()) {
+        (Some(c), Some(o)) => c != o,
+        _ => false,
+    };
+    let mut out_body = body_bytes.clone();
+    if let (Some(p0), Some(out_model)) = (parsed.as_ref(), routing.outgoing_model.as_ref()) {
+        if Some(out_model) != requested_model.as_ref() {
+            let mut p = p0.clone();
+            p["model"] = json!(out_model);
+            if let Ok(b) = serde_json::to_vec(&p) {
+                out_body = Bytes::from(b);
+            }
+        }
+    }
+
+    let target = match build_target(base_url, &uri) {
+        Some(t) => t,
+        None => return error_response(StatusCode::BAD_GATEWAY, "ccbud: invalid provider baseUrl", "api_error"),
+    };
+    let is_models_list = method == Method::GET && (req_path.ends_with("/v1/models") || req_path.ends_with("/v1/models/"));
+    let is_head_root = method == Method::HEAD && req_path == "/";
+
+    // upstream headers (sanitized + provider token swapped in)
+    let mut up_headers = HeaderMap::new();
+    for (k, v) in in_headers.iter() {
+        let kn = k.as_str().to_ascii_lowercase();
+        if HOP_BY_HOP_REQ.contains(&kn.as_str()) {
+            continue;
+        }
+        up_headers.insert(k.clone(), v.clone());
+    }
+    up_headers.insert(axum::http::header::ACCEPT_ENCODING, HeaderValue::from_static("identity"));
+    if !auth_token.is_empty() {
+        if let Ok(val) = HeaderValue::from_str(&format!("Bearer {}", auth_token)) {
+            up_headers.insert(axum::http::header::AUTHORIZATION, val);
+        }
+        if let (Ok(name), Ok(val)) = (HeaderName::from_bytes(b"x-api-key"), HeaderValue::from_str(&auth_token)) {
+            up_headers.insert(name, val);
+        }
+    }
+
+    let insecure = config.get("insecureSkipVerify").and_then(|v| v.as_bool()).unwrap_or(false)
+        && target.starts_with("https:");
+    let client = if insecure { &st.client_insecure } else { &st.client };
+
+    let rc = config.get("retry429").cloned().unwrap_or(json!({}));
+    let retry_enabled = rc.get("enabled").map(|v| v.as_bool().unwrap_or(true)).unwrap_or(true);
+    let retry_max = rc.get("max").and_then(|v| v.as_i64()).unwrap_or(3);
+    let retry_base = rc.get("baseMs").and_then(|v| v.as_i64()).unwrap_or(500);
+
+    // forward with 429 retry
+    let mut attempt = 0i64;
+    let resp = loop {
+        let r = client
+            .request(method.clone(), &target)
+            .headers(up_headers.clone())
+            .body(out_body.clone())
+            .send()
+            .await;
+        match r {
+            Ok(resp) => {
+                if retry_enabled && resp.status().as_u16() == 429 && attempt < retry_max {
+                    let ra = resp.headers().get("retry-after").and_then(|v| v.to_str().ok()).map(|s| s.to_string());
+                    let delay = retry_delay(ra.as_deref(), attempt, retry_base);
+                    st.log("warn", format!("upstream 429 — retry {}/{} in {}ms ({})", attempt + 1, retry_max, delay, provider_name));
+                    tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+                    attempt += 1;
+                    continue;
+                }
+                break resp;
+            }
+            Err(e) => {
+                if is_models_list {
+                    st.emit_request(&method, &req_path, &provider_name, &routing, 200, None);
+                    return json_response(StatusCode::OK, &synthesize_models(&config));
+                }
+                st.log("error", format!("upstream error: {}", e));
+                st.emit_request(&method, &req_path, &provider_name, &routing, 502, None);
+                return error_response(StatusCode::BAD_GATEWAY, &format!("ccbud upstream error: {}", e), "api_error");
+            }
+        }
+    };
+
+    let status = resp.status();
+    let ct = resp.headers().get("content-type").and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
+
+    if is_head_root && status.as_u16() == 404 {
+        st.log("info", format!("HEAD / fallback: upstream 404 → gateway 200 ({})", provider_name));
+        st.emit_request(&method, &req_path, &provider_name, &routing, 200, None);
+        return Response::builder()
+            .status(200)
+            .header("x-ccbud-fallback", "head-root-404-to-200")
+            .header("x-ccbud-upstream-status", "404")
+            .body(Body::empty())
+            .unwrap();
+    }
+
+    let mut out_headers: Vec<(String, String)> = vec![];
+    for (k, v) in resp.headers().iter() {
+        let kn = k.as_str().to_ascii_lowercase();
+        if HOP_BY_HOP_RES.contains(&kn.as_str()) {
+            continue;
+        }
+        if let Ok(s) = v.to_str() {
+            out_headers.push((k.as_str().to_string(), s.to_string()));
+        }
+    }
+
+    // streaming SSE — rewrite model + sniff usage, line-buffered
+    if ct.contains("text/event-stream") {
+        let rewrite_model = if need_rewrite { routing.client_facing_model.clone() } else { None };
+        let st2 = st.clone();
+        let method2 = method.clone();
+        let path2 = req_path.clone();
+        let pname2 = provider_name.clone();
+        let routing2 = routing.clone();
+        let status_code = status.as_u16();
+        let body_stream = async_stream::stream! {
+            let mut s = resp.bytes_stream();
+            let mut buf = String::new();
+            let mut usage = UsageAcc::default();
+            while let Some(chunk) = s.next().await {
+                match chunk {
+                    Ok(bytes) => {
+                        buf.push_str(&String::from_utf8_lossy(&bytes));
+                        let mut out = String::new();
+                        while let Some(idx) = buf.find('\n') {
+                            let line: String = buf.drain(..=idx).collect();
+                            out.push_str(&process_sse_line(&line, rewrite_model.as_deref(), &mut usage));
+                        }
+                        if !out.is_empty() {
+                            yield Ok::<Bytes, std::io::Error>(Bytes::from(out));
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+            if !buf.is_empty() {
+                let line = process_sse_line(&buf, rewrite_model.as_deref(), &mut usage);
+                yield Ok(Bytes::from(line));
+            }
+            st2.emit_request(&method2, &path2, &pname2, &routing2, status_code, Some(&usage));
+        };
+        let mut builder = Response::builder().status(status.as_u16());
+        for (k, v) in &out_headers {
+            builder = builder.header(k, v);
+        }
+        return builder.body(Body::from_stream(body_stream)).unwrap();
+    }
+
+    // buffered (reqwest auto-decoded gzip/br/deflate)
+    let buf = resp.bytes().await.unwrap_or_default();
+
+    if is_models_list {
+        let mut merged = None;
+        if status.is_success() {
+            if let Ok(o) = serde_json::from_slice::<Value>(&buf) {
+                if let Some(data) = o.get("data").and_then(|d| d.as_array()) {
+                    if let Some(pid) = &active_pid {
+                        let ids: HashSet<String> = data
+                            .iter()
+                            .filter_map(|m| m.get("id").and_then(|v| v.as_str()).map(|s| s.to_string()))
+                            .collect();
+                        if !ids.is_empty() {
+                            st.known.lock().await.insert(pid.clone(), ids);
+                        }
+                    }
+                    merged = Some(merge_models(&o, &config));
+                }
+            }
+        }
+        let result = merged.unwrap_or_else(|| synthesize_models(&config));
+        st.emit_request(&method, &req_path, &provider_name, &routing, 200, None);
+        return json_response(StatusCode::OK, &result);
+    }
+
+    let mut out_buf = buf.clone();
+    let mut usage = UsageAcc::default();
+    if ct.contains("application/json") {
+        if let Ok(mut o) = serde_json::from_slice::<Value>(&buf) {
+            if let Some(u) = o.get("usage").cloned() {
+                usage.input += u.get("input_tokens").and_then(|v| v.as_i64()).unwrap_or(0);
+                usage.output += u.get("output_tokens").and_then(|v| v.as_i64()).unwrap_or(0);
+                usage.cache_read += u.get("cache_read_input_tokens").and_then(|v| v.as_i64()).unwrap_or(0);
+                usage.cache_creation += u.get("cache_creation_input_tokens").and_then(|v| v.as_i64()).unwrap_or(0);
+                usage.saw = true;
+            }
+            if need_rewrite {
+                if let Some(cf) = &routing.client_facing_model {
+                    if o.get("model").and_then(|v| v.as_str()).is_some() {
+                        o["model"] = json!(cf);
+                        if let Ok(b) = serde_json::to_vec(&o) {
+                            out_buf = Bytes::from(b);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    st.emit_request(&method, &req_path, &provider_name, &routing, status.as_u16(), Some(&usage));
+
+    let mut builder = Response::builder().status(status.as_u16());
+    for (k, v) in &out_headers {
+        builder = builder.header(k, v);
+    }
+    builder.body(Body::from(out_buf)).unwrap()
+}
+
+// ---- mock upstream + end-to-end gateway selftest (debug only) ----
+
+/// Spawn an in-process mock Anthropic-style upstream on a random port. Echoes back the model
+/// the gateway forwarded (proving the outgoing rewrite), with usage, as JSON or SSE.
+pub async fn start_mock_upstream() -> Option<u16> {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await.ok()?;
+    let port = listener.local_addr().ok()?.port();
+    let app: Router = Router::new().fallback(mock_handler);
+    tauri::async_runtime::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+    Some(port)
+}
+
+async fn mock_handler(req: axum::extract::Request) -> Response {
+    let (_p, body) = req.into_parts();
+    let bytes = to_bytes(body, 1024 * 1024).await.unwrap_or_default();
+    let v: Value = serde_json::from_slice(&bytes).unwrap_or_else(|_| json!({}));
+    let stream = v.get("stream").and_then(|s| s.as_bool()).unwrap_or(false);
+    let model = v.get("model").and_then(|m| m.as_str()).unwrap_or("upstream-model").to_string();
+    if stream {
+        let sse = format!(
+            "event: message_start\ndata: {{\"type\":\"message_start\",\"message\":{{\"model\":\"{m}\",\"usage\":{{\"input_tokens\":10,\"cache_read_input_tokens\":0,\"cache_creation_input_tokens\":0}}}}}}\n\nevent: message_delta\ndata: {{\"type\":\"message_delta\",\"usage\":{{\"output_tokens\":7}}}}\n\nevent: message_stop\ndata: {{\"type\":\"message_stop\"}}\n\n",
+            m = model
+        );
+        Response::builder()
+            .status(200)
+            .header("content-type", "text/event-stream")
+            .body(Body::from(sse))
+            .unwrap()
+    } else {
+        json_response(
+            StatusCode::OK,
+            &json!({ "type":"message", "model":model, "content":[{"type":"text","text":"hi"}], "usage":{"input_tokens":10,"output_tokens":7} }),
+        )
+    }
+}
+
+/// End-to-end gateway test against the mock upstream: routing + response model rewrite for both
+/// buffered JSON and streaming SSE. Mutates CCBUD_HOME config (only called in a throwaway run).
+pub async fn gateway_selftest(gport: u16) -> Value {
+    if gport == 0 {
+        return json!({ "err": "gateway not running" });
+    }
+    let mock = match start_mock_upstream().await {
+        Some(p) => p,
+        None => return json!({ "err": "mock failed to start" }),
+    };
+    let cfg = json!({ "port": gport, "activeProviderId":"mock", "providers":[
+        { "id":"mock","name":"Mock","baseUrl":format!("http://127.0.0.1:{}", mock),"authToken":"k","defaultModel":"upstream-model","smallFastModel":"upstream-model","mapDefaultModels":true,"models":[{"alias":"test-alias","upstream":"upstream-model"}] }
+    ]});
+    store::write_config(cfg);
+    tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+
+    let client = reqwest::Client::new();
+    let base = format!("http://127.0.0.1:{}/v1/messages", gport);
+
+    let ns = client
+        .post(&base)
+        .json(&json!({ "model":"test-alias","max_tokens":8,"messages":[{"role":"user","content":"hi"}] }))
+        .send()
+        .await;
+    let (ns_status, ns_model) = match ns {
+        Ok(r) => {
+            let s = r.status().as_u16();
+            let j: Value = r.json().await.unwrap_or_else(|_| json!({}));
+            (s, j.get("model").and_then(|m| m.as_str()).unwrap_or("").to_string())
+        }
+        Err(e) => (0, format!("ERR:{}", e)),
+    };
+
+    let stm = client
+        .post(&base)
+        .json(&json!({ "model":"test-alias","stream":true,"max_tokens":8,"messages":[{"role":"user","content":"hi"}] }))
+        .send()
+        .await;
+    let (st_status, st_text) = match stm {
+        Ok(r) => (r.status().as_u16(), r.text().await.unwrap_or_default()),
+        Err(e) => (0, format!("ERR:{}", e)),
+    };
+
+    json!({
+        "nonStreamStatus": ns_status,
+        "nonStreamModel": ns_model,
+        "nonStreamRewritten": ns_model == "test-alias",
+        "streamStatus": st_status,
+        "streamHasStart": st_text.contains("message_start"),
+        "streamRewritten": st_text.contains("\"test-alias\"") && !st_text.contains("upstream-model"),
+    })
+}
+
+/// In-binary equivalent of test/selftest.js's 8 routing unit checks.
 pub fn routing_selftest() -> Value {
     let config = json!({ "port":0, "activeProviderId":"glm", "providers":[
         { "id":"glm","name":"GLM","baseUrl":"https://x","authToken":"","defaultModel":"glm-5.1","smallFastModel":"glm-5.1","mapDefaultModels":true,"models":[{"alias":"claude-opus-4.8[1m]","upstream":"glm-5.1"}] }
@@ -178,27 +826,20 @@ pub fn routing_selftest() -> Value {
 
     let r = resolve_routing(Some("claude-opus-4.8[1m]"), &config, None);
     chk("1 alias→upstream", out(&r).as_deref() == Some("glm-5.1") && cf(&r).as_deref() == Some("claude-opus-4.8[1m]"));
-
     let r = resolve_routing(Some("glm-5.1"), &config, None);
     chk("2 real passthrough", out(&r).as_deref() == Some("glm-5.1") && cf(&r).as_deref() == Some("glm-5.1"));
-
     let r = resolve_routing(Some("claude-3-5-haiku-20241022"), &cfg2, None);
     chk("3 haiku→light", out(&r).as_deref() == Some("small-model"));
-
     let r = resolve_routing(Some("claude-sonnet-4-6"), &cfg2, None);
     chk("4 sonnet→primary", out(&r).as_deref() == Some("big-model"));
-
     let r = resolve_routing(Some("gpt-4-turbo"), &cfg2, None);
     chk("5 foreign→light", out(&r).as_deref() == Some("small-model"));
-
     let mut known = HashSet::new();
     known.insert("glm-5.2".to_string());
     let r = resolve_routing(Some("glm-5.2"), &cfg2, Some(&known));
     chk("6 known passthrough", out(&r).as_deref() == Some("glm-5.2"));
-
     let r = resolve_routing(Some("other-alias"), &cfg2, None);
     chk("7 stays on active", pidf(&r).as_deref() == Some("main") && out(&r).as_deref() == Some("small-model"));
-
     let r = resolve_routing(Some("whatever-x"), &off, None);
     chk("8 mapoff passthrough", out(&r).as_deref() == Some("whatever-x"));
 
