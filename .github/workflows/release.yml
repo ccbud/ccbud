@@ -76,19 +76,32 @@ jobs:
       - name: Install frontend deps
         run: npm install --no-audit --no-fund
 
+      # Decode the App Store Connect API key (.p8) for notarization; tauri-action reads it via
+      # APPLE_API_KEY_PATH. Reuses the Electron-era MAC_CSC_*/APPLE_API_* secrets.
+      - name: Prepare notarization key (macOS)
+        if: contains(matrix.platform, 'macos')
+        env:
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+        run: |
+          if [ -n "$APPLE_API_KEY_P8" ]; then
+            printf '%s' "$APPLE_API_KEY_P8" | openssl base64 -d -A > "$RUNNER_TEMP/AuthKey.p8"
+            echo "APPLE_API_KEY_PATH=$RUNNER_TEMP/AuthKey.p8" >> "$GITHUB_ENV"
+          fi
+
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Updater signing — REQUIRED for auto-update. Generate locally with
-          # `npx tauri signer generate`; the public key lives in tauri.conf.json.
+          # Updater signing — REQUIRED for auto-update; public key lives in tauri.conf.json.
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          # macOS code-signing + notarization (optional; unsigned if these secrets are absent).
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          # macOS code-signing (reuse the Electron-era Developer ID .p12) + notarization via the
+          # App Store Connect API key. Unsigned if the secrets are absent.
+          APPLE_CERTIFICATE: ${{ secrets.MAC_CSC_LINK }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_KEY_PATH: ${{ env.APPLE_API_KEY_PATH }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         with:
           tagName: v__VERSION__
@@ -99,7 +112,7 @@ jobs:
 
             Pick the installer for your platform (macOS `.dmg` x64/arm64 · Windows `.exe`/`.msi` ·
             Linux `.AppImage`/`.deb`). Installed copies auto-update in place.
-          releaseDraft: false
+          releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}
 

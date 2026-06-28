@@ -86,11 +86,23 @@ async function renderStats() {
   $('sTokens').textContent = fmt(u.tokens);
   $('sReq').textContent = (u.requests || 0).toLocaleString();
   $('sDays').textContent = u.activeDays || 0;
-  $('sProv').textContent = u.favoriteProvider || '—';
+  const elProv = $('sProv');
+  const fullProv = u.favoriteProvider && u.favoriteProvider !== '—' ? u.favoriteProvider : '';
+  elProv.textContent = u.favoriteProvider || '—';
+  if (elProv.parentElement) {
+    if (fullProv) elProv.parentElement.setAttribute('data-tip', fullProv);
+    else elProv.parentElement.removeAttribute('data-tip');
+  }
   $('sCur').innerHTML = `${u.currentStreak || 0}<span class="text-[10px] text-muted font-normal ml-0.5">${esc(L('time.unitDay'))}</span>`;
   $('sLong').innerHTML = `${u.longestStreak || 0}<span class="text-[10px] text-muted font-normal ml-0.5">${esc(L('time.unitDay'))}</span>`;
   $('sPeak').textContent = u.peakHour == null ? '—' : hourLabel(u.peakHour);
-  $('sModel').textContent = u.favoriteModel || '—';
+  const elModel = $('sModel');
+  const fullModel = u.favoriteModel && u.favoriteModel !== '—' ? u.favoriteModel : '';
+  elModel.textContent = u.favoriteModel || '—';
+  if (elModel.parentElement) {
+    if (fullModel) elModel.parentElement.setAttribute('data-tip', fullModel);
+    else elModel.parentElement.removeAttribute('data-tip');
+  }
 
   const ml = $('modelList');
   if (ml) {
@@ -101,7 +113,7 @@ async function renderStats() {
       const row = document.createElement('div');
       row.className = 'model-row flex items-center gap-2';
       row.innerHTML = `
-        <div class="model-name w-[120px] text-[11px] font-mono truncate text-fg">${esc(m.model)}</div>
+        <div class="model-name w-[120px] text-[11px] font-mono truncate text-fg" title="${esc(m.model)}">${esc(m.model)}</div>
         <div class="model-bar flex-1 h-[5px] bg-chip-bg rounded-[3px] overflow-hidden"><div class="model-bar-fill h-full bg-brand" style="width:${Math.max(2, Math.round((m.pct || 0) * 100))}%"></div></div>
         <div class="model-tok mono w-11 text-right text-[10px] text-caption font-mono">${fmt(m.tokens)}</div>`;
       ml.appendChild(row);

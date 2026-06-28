@@ -226,6 +226,50 @@ fn build_data(config: &Value, active: &str) -> HashMap<String, Day> {
     days
 }
 
+// ---- usage cache ----
+// build_data scans every history .jsonl (~0.5s cold for ~1200 files), and the popover calls
+// usage_get TWICE per open (heatmap "all" + stats range). Cache the scanned per-day map keyed by
+// the active dirs, invalidated when history files change (notify watcher) — so the second per-open
+// call + repeated opens are instant, and a startup/post-change warm makes the first open instant.
+struct UsageCache {
+    sig: String,
+    days: HashMap<String, Day>,
+}
+static USAGE_CACHE: std::sync::Mutex<Option<UsageCache>> = std::sync::Mutex::new(None);
+
+fn dirs_sig(config: &Value, active: &str) -> String {
+    format!("{}|{:?}", active, active_dirs(config, active))
+}
+
+fn build_data_cached(config: &Value, active: &str) -> HashMap<String, Day> {
+    let sig = dirs_sig(config, active);
+    if let Ok(cache) = USAGE_CACHE.lock() {
+        if let Some(c) = cache.as_ref() {
+            if c.sig == sig {
+                return c.days.clone();
+            }
+        }
+    }
+    let days = build_data(config, active);
+    if let Ok(mut cache) = USAGE_CACHE.lock() {
+        *cache = Some(UsageCache { sig, days: days.clone() });
+    }
+    days
+}
+
+/// Drop the cached scan — call when history files change so the next read rescans.
+pub fn invalidate_cache() {
+    if let Ok(mut cache) = USAGE_CACHE.lock() {
+        *cache = None;
+    }
+}
+
+/// Scan + cache now (off the click path). Call at startup and after history changes so the first
+/// popover open is instant instead of paying the cold-scan cost.
+pub fn warm_cache(config: &Value, active: &str) {
+    let _ = build_data_cached(config, active);
+}
+
 fn range_keys(days: &HashMap<String, Day>, range: &str, now: i64) -> Vec<String> {
     let mut all: Vec<String> = days.keys().cloned().collect();
     all.sort();
@@ -370,7 +414,7 @@ fn query(days: &HashMap<String, Day>, range: &str, now: i64) -> Value {
 
 /// Public entry: aggregate the active dirs and return the usage stats payload for `range`.
 pub fn usage_get(config: &Value, active: &str, range: &str) -> Value {
-    let days = build_data(config, active);
+    let days = build_data_cached(config, active);
     let now = Local::now().timestamp_millis();
     query(&days, range, now)
 }

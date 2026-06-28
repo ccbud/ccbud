@@ -427,6 +427,74 @@ pub fn dir_stats(config: &Value) -> Vec<Value> {
         .collect()
 }
 
+/// Read a session's child subagent dialogues from `<stem>/subagents/agent-*.jsonl` (+ .meta.json),
+/// keyed by the spawning tool_use id so the renderer can nest them. {} when none. (history.js readSubagents)
+fn read_subagents(file: &str) -> serde_json::Map<String, Value> {
+    let p = Path::new(file);
+    let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+    let dir = match p.parent() {
+        Some(d) => d.join(stem).join("subagents"),
+        None => return serde_json::Map::new(),
+    };
+    let mut by_tool = serde_json::Map::new();
+    let entries = match fs::read_dir(&dir) {
+        Ok(e) => e,
+        Err(_) => return by_tool,
+    };
+    for ent in entries.flatten() {
+        let name = ent.file_name().to_string_lossy().to_string();
+        if !(name.starts_with("agent-") && name.ends_with(".jsonl")) {
+            continue;
+        }
+        let agent_id = name
+            .trim_start_matches("agent-")
+            .trim_end_matches(".jsonl")
+            .to_string();
+        let meta: Value = fs::read_to_string(dir.join(format!("agent-{}.meta.json", agent_id)))
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_else(|| json!({}));
+        let raw = match fs::read_to_string(ent.path()) {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+        let recs = parse_lines(&raw);
+        let shaped = shape_messages(&recs);
+        let key = meta
+            .get("toolUseId")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| format!("agent:{}", agent_id));
+        let agent_type = meta
+            .get("agentType")
+            .and_then(|v| v.as_str())
+            .or_else(|| meta.get("subagent_type").and_then(|v| v.as_str()))
+            .unwrap_or("agent");
+        by_tool.insert(
+            key,
+            json!({
+                "agentId": agent_id,
+                "file": ent.path().to_string_lossy(),
+                "type": agent_type,
+                "description": meta.get("description").and_then(|v| v.as_str()).unwrap_or(""),
+                "count": shaped.messages.len(),
+                "totals": shaped.totals,
+                "messages": shaped.messages,
+            }),
+        );
+    }
+    by_tool
+}
+
+/// Read the import provenance sidecar (`<stem>.import.json`) for an imported transcript.
+fn read_import_meta(file: &str) -> Option<Value> {
+    let p = Path::new(file);
+    let stem = p.file_stem().and_then(|s| s.to_str())?;
+    let dir = p.parent()?;
+    let raw = fs::read_to_string(dir.join(format!("{}.import.json", stem))).ok()?;
+    serde_json::from_str(&raw).ok()
+}
+
 pub fn get_session(file: &str) -> Value {
     let path = Path::new(file);
     let raw = match fs::read_to_string(path) {
@@ -439,6 +507,10 @@ pub fn get_session(file: &str) -> Value {
         .find(|r| r.get("cwd").is_some())
         .or_else(|| recs.iter().find(|r| r.get("sessionId").is_some()));
     let agent_rec = recs.iter().find(|r| r.get("agentId").is_some());
+    let agent_id = agent_rec
+        .and_then(|r| r.get("agentId"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
     let summary = recs
         .iter()
         .find(|r| r.get("type").and_then(|v| v.as_str()) == Some("summary") && r.get("summary").is_some())
@@ -449,6 +521,18 @@ pub fn get_session(file: &str) -> Value {
     let subagent = agent_rec.is_some();
     let cwd = meta_rec.and_then(|r| r.get("cwd")).and_then(|v| v.as_str()).map(|s| s.to_string());
     let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("").to_string();
+    let base_id = meta_rec
+        .and_then(|r| r.get("sessionId"))
+        .and_then(|v| v.as_str())
+        .unwrap_or(&stem)
+        .to_string();
+    // A subagent session's id carries the agent suffix; only a top-level session embeds subagents.
+    let sess_id = match (subagent, &agent_id) {
+        (true, Some(aid)) => format!("{}-{}", base_id, aid),
+        _ => base_id.clone(),
+    };
+    let subs = if subagent { serde_json::Map::new() } else { read_subagents(file) };
+    let import_meta = read_import_meta(file);
 
     json!({
         "meta": {
@@ -459,31 +543,34 @@ pub fn get_session(file: &str) -> Value {
             "autoTitle": auto_title,
             "tags": cc_tags,
             "summary": summary,
-            "sessionId": meta_rec.and_then(|r| r.get("sessionId")).and_then(|v| v.as_str()).unwrap_or(&stem),
+            "sessionId": sess_id,
             "cwd": cwd.clone(),
             "project": cwd.as_deref().map(base_name).unwrap_or_default(),
             "gitBranch": meta_rec.and_then(|r| r.get("gitBranch")).cloned().unwrap_or(Value::Null),
             "version": meta_rec.and_then(|r| r.get("version")).cloned().unwrap_or(Value::Null),
             "isSubagent": subagent,
-            "imported": false,
+            "imported": import_meta.is_some(),
+            "importedFrom": import_meta.as_ref().and_then(|m| m.get("originalPath")).cloned().unwrap_or(Value::Null),
+            "importedAt": import_meta.as_ref().and_then(|m| m.get("importedAt")).cloned().unwrap_or(Value::Null),
             "model": shaped.model,
             "totals": shaped.totals,
             "messages": shaped.messages.len(),
-            "subagentCount": 0,
+            "subagentCount": subs.len(),
             "firstTs": shaped.first_ts,
             "lastTs": shaped.last_ts,
         },
         "messages": shaped.messages,
-        "subagents": {},
+        "subagents": subs,
     })
 }
 
 /// Write per-conversation customization (custom title + tags) onto the FIRST parseable line as a
-/// `__ccbud__` field. Atomic (tmp + rename). Guarded to the configured dirs (renderer can't drive
-/// an arbitrary-path write). Mirrors history.js setCcbud.
+/// `__ccbud__` field. Atomic (tmp + rename). Guarded to the configured dirs + the imports store
+/// (renderer can't drive an arbitrary-path write, but imported sessions must be titleable/taggable
+/// too — mirrors history.js setCcbud, whose getDirs() includes the imported dir).
 pub fn set_ccbud(file: &str, patch: &Value, config: &Value) -> Value {
     let target = Path::new(file);
-    let within = config_dirs(config).iter().any(|(_, _, pd)| target.starts_with(pd));
+    let within = all_dirs(config).iter().any(|(_, _, pd)| target.starts_with(pd));
     if !within {
         return json!({ "ok": false, "reason": "out-of-scope" });
     }

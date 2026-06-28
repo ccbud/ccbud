@@ -22,20 +22,85 @@ mod usage;
 use serde_json::{json, Value};
 use tauri::{Emitter, Manager};
 
+// Timestamp (ms since epoch) of the last popover hide — used to debounce the tray click,
+// which would otherwise re-show the popover on the very click that blurred it shut.
+static LAST_POPOVER_HIDE_MS: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+// Timestamp of the last popover show — a fullscreen app steals focus the instant the popover
+// appears, so we ignore blur within a grace window after show (else it hides before being seen).
+static LAST_POPOVER_SHOW_MS: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
 // ---- config / providers (real, store.rs) ----
 #[tauri::command]
 fn config_get() -> Value {
     store::read_config()
 }
+/// Last gateway start error (e.g. a bad port the user typed). Surfaced via server:status so the
+/// renderer can show the failure banner. Mirrors main.js lastStartError.
+static LAST_START_ERROR: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 #[tauri::command]
-fn config_save(app: tauri::AppHandle, cfg: Value) -> Value {
+async fn config_save(
+    app: tauri::AppHandle,
+    gw: tauri::State<'_, std::sync::Arc<gateway::GatewayState>>,
+    cfg: Value,
+) -> Result<Value, String> {
+    let prev = store::read_config();
+    let prev_port = prev.get("port").and_then(|v| v.as_u64()).unwrap_or(8788) as u16;
+    let next_port = cfg
+        .get("port")
+        .and_then(|v| v.as_u64())
+        .map(|p| p as u16)
+        .unwrap_or(prev_port);
+    let was_connected = claude::is_connected(prev_port);
+    let prev_dirs = prev.get("historyDirs").cloned();
+
+    // If the gateway is running and the port changed, bind the NEW port BEFORE committing so a bad
+    // port can never lock the user out — roll back to the old port and report on failure.
+    if next_port != prev_port && gw.current_port().await.is_some() {
+        gw.stop().await;
+        if let Err(e) = gw.start(next_port).await {
+            let _ = gw.start(prev_port).await;
+            let msg = format!("端口 {} 启动失败：{}", next_port, e);
+            *LAST_START_ERROR.lock().unwrap() = Some(msg.clone());
+            gw.emit("gateway:status", full_status(&gw).await);
+            return Err(msg);
+        }
+        *LAST_START_ERROR.lock().unwrap() = None;
+    }
+
     let saved = store::write_config(cfg);
-    // Apply the open-at-login preference via the autostart plugin.
     use tauri_plugin_autostart::ManagerExt;
     let want = saved.get("openAtLogin").and_then(|v| v.as_bool()).unwrap_or(false);
     let mgr = app.autolaunch();
     let _ = if want { mgr.enable() } else { mgr.disable() };
-    saved
+
+    // Keep Claude Code's settings.json in sync if connected (port/token may have changed).
+    if was_connected {
+        let port = saved.get("port").and_then(|v| v.as_u64()).unwrap_or(8788) as u16;
+        claude::connect(port, &claude::current_token(&saved));
+    }
+
+    // History dirs changed → invalidate + re-warm the usage cache and notify the renderer.
+    if saved.get("historyDirs").cloned() != prev_dirs {
+        usage::invalidate_cache();
+        let active = saved
+            .get("historyActive")
+            .and_then(|v| v.as_str())
+            .unwrap_or("all")
+            .to_string();
+        let cfg2 = saved.clone();
+        std::thread::spawn(move || usage::warm_cache(&cfg2, &active));
+        let _ = app.emit("history:changed", json!({ "files": [] }));
+    }
+
+    update_tray_title(&app);
+    gw.emit("gateway:status", full_status(&gw).await);
+    Ok(saved)
 }
 #[tauri::command]
 fn provider_upsert(p: Value) -> Value {
@@ -98,38 +163,144 @@ fn provider_set_active(id: String) -> Value {
     cfg["activeProviderId"] = json!(id);
     store::write_config(cfg)
 }
+/// Build the upstream `/v1/messages` URL from a provider baseUrl.
+fn messages_url(base: &str) -> Option<String> {
+    let base = base.trim();
+    if !(base.starts_with("http://") || base.starts_with("https://")) {
+        return None;
+    }
+    Some(format!("{}/v1/messages", base.trim_end_matches('/')))
+}
+/// Live connection test (mirror of main.js testProvider): POST a tiny ping to the provider's
+/// /v1/messages and report ok / error / timeout. The renderer localizes the result message.
 #[tauri::command]
-fn provider_test(p: Value) -> Value {
-    json!({ "ok": false, "error": "not implemented yet" })
+async fn provider_test(p: Value) -> Value {
+    let base = p.get("baseUrl").and_then(|v| v.as_str()).unwrap_or("").trim();
+    if base.is_empty() {
+        return json!({ "ok": false, "reason": "baseUrlEmpty" });
+    }
+    let url = match messages_url(base) {
+        Some(u) => u,
+        None => return json!({ "ok": false, "reason": "baseUrlInvalid" }),
+    };
+    let model = p
+        .get("defaultModel")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            p.get("models")
+                .and_then(|m| m.as_array())
+                .and_then(|a| a.first())
+                .and_then(|m| m.get("upstream"))
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+        })
+        .unwrap_or("claude-3-5-haiku-20241022")
+        .to_string();
+    let token = p.get("authToken").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let insecure = store::read_config()
+        .get("insecureSkipVerify")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let body = json!({
+        "model": model,
+        "max_tokens": 16,
+        "messages": [{ "role": "user", "content": "ping" }],
+    });
+    let client = match reqwest::Client::builder()
+        .danger_accept_invalid_certs(insecure)
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => return json!({ "ok": false, "message": e.to_string() }),
+    };
+    let resp = client
+        .post(&url)
+        .header("content-type", "application/json")
+        .header("authorization", format!("Bearer {}", token))
+        .header("x-api-key", token)
+        .header("anthropic-version", "2023-06-01")
+        .json(&body)
+        .send()
+        .await;
+    match resp {
+        Ok(r) => {
+            let status = r.status().as_u16();
+            let text = r.text().await.unwrap_or_default();
+            let parsed: Option<Value> = serde_json::from_str(&text).ok();
+            let http_ok = (200..300).contains(&status);
+            let is_message = parsed
+                .as_ref()
+                .and_then(|j| j.get("type"))
+                .and_then(|v| v.as_str())
+                == Some("message");
+            if http_ok && is_message {
+                let m = parsed
+                    .as_ref()
+                    .and_then(|j| j.get("model"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(&model);
+                return json!({ "ok": true, "status": status, "model": m });
+            }
+            let msg = parsed
+                .as_ref()
+                .and_then(|j| j.get("error"))
+                .and_then(|e| e.get("message"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| {
+                    if !text.is_empty() {
+                        text.chars().take(200).collect()
+                    } else {
+                        format!("HTTP {}", status)
+                    }
+                });
+            json!({ "ok": false, "status": status, "message": msg })
+        }
+        Err(e) => {
+            if e.is_timeout() {
+                json!({ "ok": false, "reason": "timeout" })
+            } else {
+                json!({ "ok": false, "message": e.to_string() })
+            }
+        }
+    }
 }
 
 // ---- claude code / desktop integration (Phase 4) ----
 #[tauri::command]
 async fn claude_connect(
+    app: tauri::AppHandle,
     gw: tauri::State<'_, std::sync::Arc<gateway::GatewayState>>,
 ) -> Result<Value, String> {
     let cfg = store::read_config();
     let n = cfg.get("providers").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0);
     if n == 0 {
-        return Ok(json!({ "ok": false, "message": "no provider configured" }));
+        // reason code → renderer i18n (parity with desktop_connect), not a hardcoded English string.
+        return Ok(json!({ "ok": false, "reason": "noProvider" }));
     }
     let port = cfg.get("port").and_then(|v| v.as_u64()).unwrap_or(8788) as u16;
     if let Err(e) = gw.start(port).await {
-        return Ok(json!({ "ok": false, "message": format!("port {} failed: {}", port, e) }));
+        // reason for i18n + message keeps the diagnostic detail for this rare path.
+        return Ok(json!({ "ok": false, "reason": "portFailed", "message": format!("port {} failed: {}", port, e) }));
     }
     claude::connect(port, &claude::current_token(&cfg));
     let status = full_status(&gw).await;
     gw.emit("gateway:status", status);
+    refresh_tray_menu(&app);
     Ok(json!({ "ok": true }))
 }
 #[tauri::command]
 async fn claude_disconnect(
+    app: tauri::AppHandle,
     gw: tauri::State<'_, std::sync::Arc<gateway::GatewayState>>,
 ) -> Result<Value, String> {
     claude::disconnect();
     gw.stop().await;
     let status = full_status(&gw).await;
     gw.emit("gateway:status", status);
+    refresh_tray_menu(&app);
     Ok(json!({ "ok": true }))
 }
 #[tauri::command]
@@ -167,15 +338,19 @@ fn pct(s: &str) -> String {
         .collect()
 }
 #[tauri::command]
-fn desktop_replay(file: String) -> Value {
+fn desktop_replay(file: String, prompt: Option<String>) -> Value {
     if file.is_empty() {
         return json!({ "ok": false, "reason": "noFile" });
     }
     if !cfg!(target_os = "macos") {
         return json!({ "ok": false, "reason": "unsupported" });
     }
-    let prompt = "请基于这份对话记录在 Claude 桌面版里继续。";
-    let url = format!("claude://cowork/new?q={}&file={}", pct(prompt), pct(&file));
+    // The full review prompt comes from the renderer's i18n (desktop.replayPrompt) so it stays
+    // localized; fall back to a minimal default only if the renderer didn't supply one.
+    let prompt = prompt
+        .filter(|p| !p.is_empty())
+        .unwrap_or_else(|| "请基于这份对话记录在 Claude 桌面版里继续。".to_string());
+    let url = format!("claude://cowork/new?q={}&file={}", pct(&prompt), pct(&file));
     #[cfg(target_os = "macos")]
     {
         let ok = std::process::Command::new("/usr/bin/open").arg(&url).spawn().is_ok();
@@ -197,7 +372,15 @@ async fn full_status(gw: &std::sync::Arc<gateway::GatewayState>) -> Value {
         .unwrap_or_else(|| store::read_config().get("port").and_then(|v| v.as_u64()).unwrap_or(8788) as u16);
     if let Some(o) = s.as_object_mut() {
         o.insert("connected".into(), json!(claude::is_connected(port)));
-        o.insert("lastStartError".into(), Value::Null);
+        o.insert(
+            "lastStartError".into(),
+            LAST_START_ERROR
+                .lock()
+                .ok()
+                .and_then(|g| g.clone())
+                .map(Value::String)
+                .unwrap_or(Value::Null),
+        );
         o.insert("claudePath".into(), json!(claude::settings_path().to_string_lossy()));
     }
     s
@@ -210,9 +393,165 @@ async fn server_status(
 }
 #[tauri::command]
 fn usage_get(range: Option<String>) -> Value {
+    let t = std::time::Instant::now();
     let cfg = store::read_config();
     let active = cfg.get("historyActive").and_then(|v| v.as_str()).unwrap_or("all").to_string();
-    usage::usage_get(&cfg, &active, range.as_deref().unwrap_or("7d"))
+    let r = usage::usage_get(&cfg, &active, range.as_deref().unwrap_or("7d"));
+    eprintln!(
+        "[TIMING] usage_get(range={}) {}ms",
+        range.as_deref().unwrap_or("7d"),
+        t.elapsed().as_millis()
+    );
+    r
+}
+
+/// Compact token count (mirror of usage.js `formatTokens`): 1234→"1.2K", 4.9e9→"4.9B".
+fn format_tokens(n: i64) -> String {
+    let n = n.max(0);
+    if n < 1000 {
+        return n.to_string();
+    }
+    let strip = |s: String| s.strip_suffix(".0").map(|p| p.to_string()).unwrap_or(s);
+    if n < 1_000_000 {
+        let v = n as f64 / 1e3;
+        let s = if n < 10_000 { format!("{:.1}", v) } else { format!("{:.0}", v) };
+        return format!("{}K", strip(s));
+    }
+    if n < 1_000_000_000 {
+        let v = n as f64 / 1e6;
+        let s = if n < 10_000_000 { format!("{:.1}", v) } else { format!("{:.0}", v) };
+        return format!("{}M", strip(s));
+    }
+    let v = n as f64 / 1e9;
+    format!("{}B", strip(format!("{:.1}", v)))
+}
+
+#[cfg(test)]
+mod fmt_tests {
+    use super::format_tokens;
+    #[test]
+    fn matches_js_format_tokens() {
+        assert_eq!(format_tokens(0), "0");
+        assert_eq!(format_tokens(999), "999");
+        assert_eq!(format_tokens(1000), "1K");
+        assert_eq!(format_tokens(1234), "1.2K");
+        assert_eq!(format_tokens(9999), "10K");
+        assert_eq!(format_tokens(12_345), "12K");
+        assert_eq!(format_tokens(1_000_000), "1M");
+        assert_eq!(format_tokens(4_900_000), "4.9M");
+        assert_eq!(format_tokens(12_000_000), "12M");
+        assert_eq!(format_tokens(1_000_000_000), "1B");
+        assert_eq!(format_tokens(4_892_112_447), "4.9B");
+    }
+}
+
+/// Set the macOS menu-bar tray title to the configured usage token count (or clear it when
+/// trayUsage is off). Heavy work (config read + usage scan) runs on the caller's thread;
+/// only the set_title call hops to the main thread, where macOS requires UI mutation.
+fn update_tray_title(app: &tauri::AppHandle) {
+    let config = store::read_config();
+    let tu = config.get("trayUsage").cloned().unwrap_or_else(|| json!({}));
+    let enabled = tu.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false);
+    let title: Option<String> = if enabled {
+        let range = tu.get("range").and_then(|v| v.as_str()).unwrap_or("7d").to_string();
+        let active = config.get("historyActive").and_then(|v| v.as_str()).unwrap_or("all").to_string();
+        let tokens = usage::usage_get(&config, &active, &range)
+            .get("tokens")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
+        Some(format!(" {}", format_tokens(tokens)))
+    } else {
+        None
+    };
+    let app2 = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        if let Some(tray) = app2.tray_by_id("main") {
+            let _ = tray.set_title(title.as_deref());
+        }
+    });
+}
+
+// ---- system tray: dynamic, localized context menu (parity with main.js buildTrayMenu) ----
+struct TrayLabels {
+    connected_with: &'static str,
+    disconnected: &'static str,
+    open_main: &'static str,
+    disconnect: &'static str,
+    connect: &'static str,
+    quit: &'static str,
+    check_updates: &'static str,
+}
+fn tray_labels(lang: &str) -> TrayLabels {
+    match lang {
+        "zh-CN" => TrayLabels { connected_with: "● 已接入：{name}", disconnected: "○ 未接入 Claude Code", open_main: "打开主界面", disconnect: "断开接入", connect: "一键接入", quit: "退出 ccbud", check_updates: "检查更新…" },
+        "zh-TW" => TrayLabels { connected_with: "● 已接入：{name}", disconnected: "○ 未接入 Claude Code", open_main: "開啟主視窗", disconnect: "中斷接入", connect: "一鍵接入", quit: "結束 ccbud", check_updates: "檢查更新…" },
+        "ja" => TrayLabels { connected_with: "● 接続済み：{name}", disconnected: "○ Claude Code 未接続", open_main: "メインウィンドウを開く", disconnect: "切断", connect: "接続", quit: "ccbud を終了", check_updates: "更新を確認…" },
+        "ko" => TrayLabels { connected_with: "● 연결됨: {name}", disconnected: "○ Claude Code 미연결", open_main: "메인 창 열기", disconnect: "연결 해제", connect: "연결", quit: "ccbud 종료", check_updates: "업데이트 확인…" },
+        _ => TrayLabels { connected_with: "● Connected: {name}", disconnected: "○ Not connected to Claude Code", open_main: "Open main window", disconnect: "Disconnect", connect: "Connect", quit: "Quit ccbud", check_updates: "Check for updates…" },
+    }
+}
+fn config_lang(config: &Value) -> String {
+    config.get("language").and_then(|v| v.as_str()).unwrap_or("en").to_string()
+}
+fn active_provider_name(config: &Value) -> String {
+    let id = match config.get("activeProviderId").and_then(|v| v.as_str()) {
+        Some(i) => i,
+        None => return String::new(),
+    };
+    config
+        .get("providers")
+        .and_then(|v| v.as_array())
+        .and_then(|arr| {
+            arr.iter()
+                .find(|p| p.get("id").and_then(|v| v.as_str()) == Some(id))
+                .and_then(|p| p.get("name").and_then(|v| v.as_str()))
+        })
+        .unwrap_or("")
+        .to_string()
+}
+fn build_tray_menu(
+    app: &tauri::AppHandle,
+    connected: bool,
+    provider: &str,
+    lang: &str,
+) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
+    use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+    let l = tray_labels(lang);
+    let status_txt = if connected {
+        let name = if provider.is_empty() { "Claude Code" } else { provider };
+        l.connected_with.replace("{name}", name)
+    } else {
+        l.disconnected.to_string()
+    };
+    // Status row is disabled (it's an indicator, like main.js { enabled: false }).
+    let status_i = MenuItem::with_id(app, "tray_status", status_txt, false, None::<&str>)?;
+    let open_i = MenuItem::with_id(app, "tray_open", l.open_main, true, None::<&str>)?;
+    let conn_i = if connected {
+        MenuItem::with_id(app, "tray_disconnect", l.disconnect, true, None::<&str>)?
+    } else {
+        MenuItem::with_id(app, "tray_connect", l.connect, true, None::<&str>)?
+    };
+    let check_i = MenuItem::with_id(app, "tray_check", l.check_updates, true, None::<&str>)?;
+    let quit_i = MenuItem::with_id(app, "tray_quit", l.quit, true, None::<&str>)?;
+    let sep1 = PredefinedMenuItem::separator(app)?;
+    let sep2 = PredefinedMenuItem::separator(app)?;
+    Menu::with_items(app, &[&status_i, &sep1, &open_i, &conn_i, &check_i, &sep2, &quit_i])
+}
+/// Rebuild the tray menu to reflect current connection state + locale + active provider.
+fn refresh_tray_menu(app: &tauri::AppHandle) {
+    let app2 = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        let config = store::read_config();
+        let port = config.get("port").and_then(|v| v.as_u64()).unwrap_or(8788) as u16;
+        let connected = claude::is_connected(port);
+        let provider = active_provider_name(&config);
+        let lang = config_lang(&config);
+        if let Ok(menu) = build_tray_menu(&app2, connected, &provider, &lang) {
+            if let Some(tray) = app2.tray_by_id("main") {
+                let _ = tray.set_menu(Some(menu));
+            }
+        }
+    });
 }
 #[tauri::command]
 async fn monitor_get(
@@ -229,13 +568,38 @@ async fn monitor_clear(
     gw.monitor_clear().await;
     Ok(json!(true))
 }
-#[tauri::command] fn logs_get() -> Value { json!([]) }
-#[tauri::command] fn logs_clear() -> Value { Value::Null }
+#[tauri::command]
+fn logs_get(gw: tauri::State<'_, std::sync::Arc<gateway::GatewayState>>) -> Value {
+    gw.logs_snapshot()
+}
+#[tauri::command]
+fn logs_clear(gw: tauri::State<'_, std::sync::Arc<gateway::GatewayState>>) -> Value {
+    gw.logs_clear();
+    Value::Null
+}
 
 // ---- window / app lifecycle (Phase 4) ----
+/// macOS Dock icon follows the main window: Regular (Dock shown) while a window is open,
+/// Accessory (menu-bar only) when it's closed. The popover floats over fullscreen apps via its
+/// NSPanel regardless of this policy, so showing the Dock icon with the main window is safe.
+fn set_dock_visible(app: &tauri::AppHandle, visible: bool) {
+    #[cfg(target_os = "macos")]
+    {
+        let app2 = app.clone();
+        let _ = app.run_on_main_thread(move || {
+            let policy = if visible {
+                tauri::ActivationPolicy::Regular
+            } else {
+                tauri::ActivationPolicy::Accessory
+            };
+            let _ = app2.set_activation_policy(policy);
+        });
+    }
+}
 #[tauri::command]
 fn app_open_main(app: tauri::AppHandle) -> Value {
     if let Some(win) = app.get_webview_window("main") {
+        set_dock_visible(&app, true);
         let _ = win.show();
         let _ = win.unminimize();
         let _ = win.set_focus();
@@ -413,27 +777,70 @@ fn util_open_external(url: String) -> bool {
 }
 
 // ---- in-app updates (Phase 5) ----
-#[tauri::command]
-fn update_state(app: tauri::AppHandle) -> Value {
+// In-app update state, mapped to the shape the renderer's about/update pane expects
+// (runningVersion / latestVersion / mode / pending). Tauri's updater is in-app full → mode "hot".
+static UPDATE_LATEST: std::sync::Mutex<Option<(String, Option<String>)>> =
+    std::sync::Mutex::new(None);
+static UPDATE_CHECKED: std::sync::Mutex<bool> = std::sync::Mutex::new(false);
+static UPDATE_STAGED: std::sync::Mutex<bool> = std::sync::Mutex::new(false);
+
+fn build_update_state(app: &tauri::AppHandle) -> Value {
     let cfg = store::read_config();
+    let current = app.package_info().version.to_string();
+    let latest = UPDATE_LATEST.lock().ok().and_then(|g| g.clone());
+    let checked = UPDATE_CHECKED.lock().map(|g| *g).unwrap_or(false);
+    let staged = UPDATE_STAGED.lock().map(|g| *g).unwrap_or(false);
+    let (latest_v, notes, mode) = match (&latest, checked) {
+        (Some((v, n)), _) => (json!(v), n.clone().map(Value::String).unwrap_or(Value::Null), "hot"),
+        (None, true) => (Value::Null, Value::Null, "none"),
+        (None, false) => (Value::Null, Value::Null, "unknown"),
+    };
     json!({
-        "current": app.package_info().version.to_string(),
-        "status": "idle",
-        "available": Value::Null,
+        "ok": true,
+        "runningVersion": current,
+        "shellVersion": current,
+        "latestVersion": latest_v,
+        "mode": mode,
+        "notes": notes,
+        "pending": if staged {
+            json!({ "staged": true, "version": latest.as_ref().map(|(v, _)| v.clone()) })
+        } else {
+            Value::Null
+        },
+        "installMethod": "tauri",
         "autoUpdate": cfg.get("autoUpdate").cloned().unwrap_or(json!({ "check": true, "autoDownload": true })),
     })
 }
 #[tauri::command]
+fn update_state(app: tauri::AppHandle) -> Value {
+    build_update_state(&app)
+}
+#[tauri::command]
 async fn update_check(app: tauri::AppHandle) -> Result<Value, String> {
     use tauri_plugin_updater::UpdaterExt;
-    match app.updater() {
-        Ok(updater) => match updater.check().await {
-            Ok(Some(u)) => Ok(json!({ "available": true, "version": u.version, "notes": u.body })),
-            Ok(None) => Ok(json!({ "available": false })),
-            Err(e) => Ok(json!({ "available": false, "error": e.to_string() })),
-        },
-        Err(e) => Ok(json!({ "available": false, "error": e.to_string() })),
+    *UPDATE_CHECKED.lock().unwrap() = true;
+    let result = match app.updater() {
+        Ok(updater) => updater.check().await,
+        Err(e) => Err(e),
+    };
+    match result {
+        Ok(Some(u)) => {
+            *UPDATE_LATEST.lock().unwrap() = Some((u.version.clone(), u.body.clone()));
+        }
+        Ok(None) => {
+            *UPDATE_LATEST.lock().unwrap() = None;
+        }
+        Err(e) => {
+            return Ok(json!({
+                "ok": false,
+                "error": e.to_string(),
+                "runningVersion": app.package_info().version.to_string(),
+            }));
+        }
     }
+    let st = build_update_state(&app);
+    let _ = app.emit("update:state", st.clone());
+    Ok(st)
 }
 #[tauri::command]
 async fn update_download(app: tauri::AppHandle) -> Result<Value, String> {
@@ -442,9 +849,13 @@ async fn update_download(app: tauri::AppHandle) -> Result<Value, String> {
     match updater.check().await.map_err(|e| e.to_string())? {
         Some(u) => {
             u.download_and_install(|_chunk, _total| {}, || {}).await.map_err(|e| e.to_string())?;
-            Ok(json!({ "ok": true, "staged": true }))
+            *UPDATE_STAGED.lock().unwrap() = true;
+            let st = build_update_state(&app);
+            let _ = app.emit("update:staged", st.clone());
+            let _ = app.emit("update:state", st.clone());
+            Ok(st)
         }
-        None => Ok(json!({ "ok": false, "reason": "no update" })),
+        None => Ok(json!({ "ok": true, "mode": "none" })),
     }
 }
 #[tauri::command]
@@ -471,7 +882,16 @@ fn update_set_auto(patch: Value) -> Value {
 // ---- debug self-check (gated by CCBUD_SELFCHECK env; injected via on_page_load) ----
 #[tauri::command]
 fn selfcheck_report(report: Value) {
-    eprintln!("[SELFCHECK] {}", serde_json::to_string(&report).unwrap_or_default());
+    let line = serde_json::to_string(&report).unwrap_or_default();
+    eprintln!("[SELFCHECK] {}", line);
+    // Also append to a file when CCBUD_SELFCHECK_OUT is set — a GUI-session run
+    // (open .app via launchd) has no terminal-attached stderr to read.
+    if let Ok(path) = std::env::var("CCBUD_SELFCHECK_OUT") {
+        use std::io::Write;
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+            let _ = writeln!(f, "{}", line);
+        }
+    }
 }
 #[tauri::command]
 fn selfcheck_routing() -> Value {
@@ -509,6 +929,58 @@ fn selfcheck_export() -> Value {
         "hasSkin": html.contains("</style>"),
         "embedded": html.len() > 180000,
         "validHtml": html.starts_with("<!doctype html") && html.contains("</html>"),
+    })
+}
+#[tauri::command]
+fn selfcheck_popover(app: tauri::AppHandle) -> Value {
+    let pop = match app.get_webview_window("popover") {
+        Some(p) => p,
+        None => return json!({ "err": "no popover window" }),
+    };
+    let mon = match pop.current_monitor() {
+        Ok(Some(m)) => m,
+        _ => return json!({ "err": "no monitor" }),
+    };
+    let scale = mon.scale_factor();
+    let pw = (424.0 * scale) as i32;
+    let sx = mon.position().x;
+    let sy = mon.position().y;
+    let sw = mon.size().width as i32;
+    let sh = mon.size().height as i32;
+    // Simulate a tray icon at the top-right of the menu bar, run the same placement
+    // math as the real tray click, then read back where the window actually lands.
+    let tray_cx = sx + sw - (12.0 * scale) as i32;
+    let x = (tray_cx - pw / 2).clamp(sx + 4, sx + sw - pw - 4);
+    let y = sy + (26.0 * scale) as i32;
+    // macOS window ops must run on the main thread — the real tray callback already
+    // does; here we hop onto it explicitly and read back inside the same closure so
+    // the probe sees the post-move geometry without a cross-thread timing race.
+    let (tx, rx) = std::sync::mpsc::channel();
+    let pop2 = pop.clone();
+    let _ = app.run_on_main_thread(move || {
+        let _ = pop2.show();
+        let _ = pop2.set_position(tauri::PhysicalPosition::new(x, y));
+        let pos = pop2.outer_position().ok().map(|p| (p.x, p.y));
+        let size = pop2.outer_size().ok().map(|s| (s.width as i32, s.height as i32));
+        let _ = pop2.hide();
+        let _ = tx.send((pos, size));
+    });
+    let (pos, size) = rx
+        .recv_timeout(std::time::Duration::from_millis(1500))
+        .unwrap_or((None, None));
+    let in_screen = match (pos, size) {
+        (Some((px, py)), Some((sw2, sh2))) => {
+            px >= sx && py >= sy && (px + sw2) <= (sx + sw + 2) && (py + sh2) <= (sy + sh + 2)
+        }
+        _ => false,
+    };
+    json!({
+        "scale": scale,
+        "monitor": [sx, sy, sw, sh],
+        "computed": [x, y],
+        "popPos": pos.map(|(a, b)| json!([a, b])),
+        "popSize": size.map(|(a, b)| json!([a, b])),
+        "inScreen": in_screen,
     })
 }
 #[tauri::command]
@@ -599,6 +1071,7 @@ const SELFCHECK_JS: &str = r#"
       try{ o.drag={regions:document.querySelectorAll('.drag-region').length,wired:document.querySelectorAll('[data-tauri-drag-region]').length}; }catch(e){ o.dragErr=String(e); }
       try{ var cs=getComputedStyle(document.body); o.userSelect=cs.webkitUserSelect||cs.userSelect; }catch(e){}
       try{ var ep=document.getElementById('endpoint'); var eb=document.getElementById('exportBlock'); o.epSel=ep?getComputedStyle(ep).webkitUserSelect:'-'; o.ebSel=eb?getComputedStyle(eb).webkitUserSelect:'-'; }catch(e){}
+      try{ o.popoverPos=await window.__TAURI__.core.invoke('selfcheck_popover'); }catch(e){ o.popoverPosErr=String(e); }
       o.errors=window.__ccbud_errors.slice(0,20);
     }catch(e){o.fatal=String((e&&e.stack)||e);}
     rep(o);
@@ -606,9 +1079,28 @@ const SELFCHECK_JS: &str = r#"
 })();
 "#;
 
+const POPOVER_SELFCHECK_JS: &str = r#"
+(function(){
+  setTimeout(async function(){
+    var o={win:"popover"};
+    try{ o.hasCcbud=!!window.ccbud; var u=await window.ccbud.usageGet("all"); o.usageTokens=u?u.tokens:"null"; o.heatmapLen=u&&u.heatmap?u.heatmap.length:-1; o.heatmapFilled=u&&u.heatmap?u.heatmap.filter(function(c){return c.level>0;}).length:-1; }catch(e){ o.usageErr=String(e); }
+    try{ var st=document.getElementById("sTokens"); o.sTokensText=st?st.textContent:"noel"; var hm=document.getElementById("heatmap"); o.heatCells=hm?hm.children.length:-1; }catch(e){}
+    try{
+      o.innerW=window.innerWidth; o.innerH=window.innerHeight; o.scrollH=document.body.scrollHeight;
+      var st2=document.getElementById("sTokens"); if(st2){var r=st2.getBoundingClientRect(); o.sTokTop=Math.round(r.top); o.sTokVisible=(r.top>=0&&r.bottom<=window.innerHeight);}
+      var hm2=document.getElementById("heatmap"); if(hm2){var hr=hm2.getBoundingClientRect(); o.hmTop=Math.round(hr.top); o.hmBottom=Math.round(hr.bottom);}
+      o.bodyBg=getComputedStyle(document.body).backgroundColor;
+      var root=document.querySelector(".pop-body-root"); o.rootBg=root?getComputedStyle(root).backgroundColor:"noel";
+    }catch(e){ o.visErr=String(e); }
+    try{ window.__TAURI__.core.invoke("selfcheck_report",{report:o}); }catch(_){}
+  }, 1500);
+})();
+"#;
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    #[allow(unused_mut)]
+    let mut builder = tauri::Builder::default()
         // single-instance MUST be the first plugin registered.
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if let Some(w) = app.get_webview_window("main") {
@@ -621,13 +1113,27 @@ pub fn run() {
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
         ))
-        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_updater::Builder::new().build());
+    // macOS: NSPanel plugin so the popover can be a non-activating panel that floats over
+    // fullscreen apps (a plain window can't reliably appear on another app's fullscreen Space).
+    #[cfg(target_os = "macos")]
+    {
+        builder = builder.plugin(tauri_nspanel::init());
+    }
+    builder
         .on_page_load(|webview, payload| {
-            if webview.label() == "main"
-                && matches!(payload.event(), tauri::webview::PageLoadEvent::Finished)
+            if matches!(payload.event(), tauri::webview::PageLoadEvent::Finished)
                 && std::env::var("CCBUD_SELFCHECK").is_ok()
             {
-                let _ = webview.eval(SELFCHECK_JS);
+                match webview.label() {
+                    "main" => {
+                        let _ = webview.eval(SELFCHECK_JS);
+                    }
+                    "popover" => {
+                        let _ = webview.eval(POPOVER_SELFCHECK_JS);
+                    }
+                    _ => {}
+                }
             }
         })
         .setup(|app| {
@@ -651,13 +1157,12 @@ pub fn run() {
                 }
             });
 
-            // System tray: icon + menu (open / quit) + click-to-open.
+            // System tray: icon + dynamic i18n menu (status / open / connect-or-disconnect /
+            // check-updates / quit, parity with main.js buildTrayMenu) + click-to-open popover.
             {
-                use tauri::menu::{Menu, MenuItem};
                 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-                let open_i = MenuItem::with_id(app, "tray_open", "打开 ccbud", true, None::<&str>)?;
-                let quit_i = MenuItem::with_id(app, "tray_quit", "退出 ccbud", true, None::<&str>)?;
-                let menu = Menu::with_items(app, &[&open_i, &quit_i])?;
+                let init_cfg = store::read_config();
+                let menu = build_tray_menu(app.handle(), false, "", &config_lang(&init_cfg))?;
                 // Menu-bar icon: monochrome template (like other macOS apps), auto black/white.
                 let tray_img = tauri::image::Image::from_bytes(include_bytes!("../../build/iconTemplate.png"))
                     .unwrap_or_else(|_| app.default_window_icon().cloned().unwrap());
@@ -670,10 +1175,58 @@ pub fn run() {
                     .on_menu_event(|app, event| match event.id.as_ref() {
                         "tray_open" => {
                             if let Some(w) = app.get_webview_window("main") {
+                                set_dock_visible(app, true);
                                 let _ = w.show();
                                 let _ = w.unminimize();
                                 let _ = w.set_focus();
                             }
+                        }
+                        "tray_connect" => {
+                            let app = app.clone();
+                            tauri::async_runtime::spawn(async move {
+                                let cfg = store::read_config();
+                                let port = cfg.get("port").and_then(|v| v.as_u64()).unwrap_or(8788) as u16;
+                                let gw = app
+                                    .try_state::<std::sync::Arc<gateway::GatewayState>>()
+                                    .map(|s| s.inner().clone());
+                                if let Some(gw) = gw {
+                                    if gw.start(port).await.is_ok() {
+                                        claude::connect(port, &claude::current_token(&cfg));
+                                        let status = full_status(&gw).await;
+                                        gw.emit("gateway:status", status);
+                                    }
+                                }
+                                refresh_tray_menu(&app);
+                            });
+                        }
+                        "tray_disconnect" => {
+                            let app = app.clone();
+                            tauri::async_runtime::spawn(async move {
+                                claude::disconnect();
+                                let gw = app
+                                    .try_state::<std::sync::Arc<gateway::GatewayState>>()
+                                    .map(|s| s.inner().clone());
+                                if let Some(gw) = gw {
+                                    gw.stop().await;
+                                    let status = full_status(&gw).await;
+                                    gw.emit("gateway:status", status);
+                                }
+                                refresh_tray_menu(&app);
+                            });
+                        }
+                        "tray_check" => {
+                            if let Some(w) = app.get_webview_window("main") {
+                                set_dock_visible(app, true);
+                                let _ = w.show();
+                                let _ = w.unminimize();
+                                let _ = w.set_focus();
+                            }
+                            // Open the About/update pane shortly after the window is up (main.js parity).
+                            let app2 = app.clone();
+                            tauri::async_runtime::spawn(async move {
+                                tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                                let _ = app2.emit("update:openPane", json!({}));
+                            });
                         }
                         "tray_quit" => app.exit(0),
                         _ => {}
@@ -682,26 +1235,165 @@ pub fn run() {
                         if let TrayIconEvent::Click {
                             button: MouseButton::Left,
                             button_state: MouseButtonState::Up,
-                            position,
+                            rect,
                             ..
                         } = event
                         {
                             let app = tray.app_handle();
                             if let Some(pop) = app.get_webview_window("popover") {
-                                if pop.is_visible().unwrap_or(false) {
+                                #[cfg(target_os = "macos")]
+                                let vis_before = {
+                                    use tauri_nspanel::ManagerExt as _;
+                                    app.get_webview_panel("popover")
+                                        .map(|p| p.is_visible())
+                                        .unwrap_or(false)
+                                };
+                                #[cfg(not(target_os = "macos"))]
+                                let vis_before = pop.is_visible().unwrap_or(false);
+                                let debounced = now_ms()
+                                    - LAST_POPOVER_HIDE_MS
+                                        .load(std::sync::atomic::Ordering::Relaxed)
+                                    < 250;
+                                let action;
+                                if vis_before {
+                                    #[cfg(target_os = "macos")]
+                                    {
+                                        use tauri_nspanel::ManagerExt as _;
+                                        if let Ok(p) = app.get_webview_panel("popover") {
+                                            p.order_out(None);
+                                        }
+                                    }
+                                    #[cfg(not(target_os = "macos"))]
                                     let _ = pop.hide();
+                                    LAST_POPOVER_HIDE_MS
+                                        .store(now_ms(), std::sync::atomic::Ordering::Relaxed);
+                                    action = "hide";
+                                } else if debounced {
+                                    // Debounce: clicking the tray first blurs (hides) the popover;
+                                    // without this the same click would re-show it instantly.
+                                    action = "debounce_skip";
                                 } else {
-                                    let x = (position.x as i32 - 212).max(0);
-                                    let y = position.y as i32 + 8;
-                                    let _ = pop.set_position(tauri::PhysicalPosition::new(x, y));
-                                    let _ = pop.show();
-                                    let _ = pop.set_focus();
+                                    // Center under the tray icon, clamped to the monitor (rect +
+                                    // scale are physical px, so retina is handled correctly).
+                                    let mon = pop
+                                        .current_monitor()
+                                        .ok()
+                                        .flatten()
+                                        .or_else(|| pop.primary_monitor().ok().flatten());
+                                    let geom = mon.map(|mon| {
+                                        let scale = mon.scale_factor();
+                                        let pw = (424.0 * scale) as i32;
+                                        let sx = mon.position().x;
+                                        let sw = mon.size().width as i32;
+                                        let tray_pos = rect.position.to_physical::<f64>(scale);
+                                        let tray_size = rect.size.to_physical::<f64>(scale);
+                                        let tray_cx = (tray_pos.x + tray_size.width / 2.0) as i32;
+                                        let x = (tray_cx - pw / 2).clamp(sx + 4, sx + sw - pw - 4);
+                                        let y = (tray_pos.y + tray_size.height + 2.0) as i32;
+                                        tauri::PhysicalPosition::new(x, y)
+                                    });
+                                    if let Some(p) = geom {
+                                        let _ = pop.set_position(p);
+                                    }
+                                    // Show via the NSPanel: nonactivating, so it appears on the
+                                    // CURRENT Space (incl. a fullscreen app's) without activating
+                                    // ccbud or switching Spaces.
+                                    #[cfg(target_os = "macos")]
+                                    {
+                                        use tauri_nspanel::ManagerExt as _;
+                                        if let Ok(p) = app.get_webview_panel("popover") {
+                                            p.show();
+                                        }
+                                    }
+                                    #[cfg(not(target_os = "macos"))]
+                                    {
+                                        let _ = pop.show();
+                                        let _ = pop.set_focus();
+                                    }
+                                    if let Some(p) = geom {
+                                        let _ = pop.set_position(p);
+                                    }
                                     let _ = app.emit("popover:show", ());
+                                    LAST_POPOVER_SHOW_MS
+                                        .store(now_ms(), std::sync::atomic::Ordering::Relaxed);
+                                    action = "show";
+                                }
+                                if let Ok(path) = std::env::var("CCBUD_SELFCHECK_OUT") {
+                                    use std::io::Write;
+                                    if let Ok(mut f) = std::fs::OpenOptions::new()
+                                        .create(true)
+                                        .append(true)
+                                        .open(&path)
+                                    {
+                                        let _ = writeln!(
+                                            f,
+                                            "{}",
+                                            json!({ "trayClick": action, "visBefore": vis_before })
+                                        );
+                                    }
                                 }
                             }
                         }
                     })
                     .build(app)?;
+            }
+
+            // Popover behavior: (1) float on the current Space AND over fullscreen apps;
+            // (2) auto-hide when it loses focus — clicking anywhere else closes it.
+            if let Some(pop) = app.get_webview_window("popover") {
+                // macOS: convert the popover into a non-activating NSPanel. Unlike a plain window,
+                // a nonactivating panel can float on the CURRENT Space — including another app's
+                // fullscreen Space — and shows without activating ccbud or switching Spaces.
+                #[cfg(target_os = "macos")]
+                {
+                    use tauri_nspanel::cocoa::appkit::NSWindowCollectionBehavior as CB;
+                    use tauri_nspanel::WebviewWindowExt as _;
+                    if let Ok(panel) = pop.to_panel() {
+                        panel.set_style_mask((1 << 7) as i32); // NSWindowStyleMaskNonactivatingPanel
+                        panel.set_collection_behaviour(
+                            CB::NSWindowCollectionBehaviorCanJoinAllSpaces
+                                | CB::NSWindowCollectionBehaviorFullScreenAuxiliary
+                                | CB::NSWindowCollectionBehaviorStationary,
+                        );
+                        panel.set_floating_panel(true);
+                        panel.set_level(24); // ~NSMainMenuWindowLevel: above fullscreen content
+                        panel.set_hides_on_deactivate(false);
+                        panel.set_released_when_closed(false);
+                    }
+                }
+                let pop2 = pop.clone();
+                pop.on_window_event(move |event| {
+                    // Bind + deref: `Focused(false)` as a literal pattern does NOT match against
+                    // &WindowEvent here (match ergonomics), so the handler would never fire.
+                    if let tauri::WindowEvent::Focused(focused) = event {
+                        if !*focused {
+                            // Grace period: a fullscreen app steals focus the instant the popover
+                            // shows; ignore that blur so it isn't hidden before being seen. A real
+                            // click-away blur arrives well after the show.
+                            if now_ms()
+                                - LAST_POPOVER_SHOW_MS.load(std::sync::atomic::Ordering::Relaxed)
+                                >= 400
+                            {
+                                let _ = pop2.hide();
+                                LAST_POPOVER_HIDE_MS
+                                    .store(now_ms(), std::sync::atomic::Ordering::Relaxed);
+                            }
+                        }
+                    }
+                });
+            }
+
+            // Tray usage title: show the configured token count next to the menu-bar icon
+            // (macOS), refreshed on a timer so it tracks new usage without any user action.
+            {
+                let h = app.handle().clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_millis(1500));
+                    loop {
+                        update_tray_title(&h);
+                        std::thread::sleep(std::time::Duration::from_secs(60));
+                    }
+                });
             }
 
             // History live-watch: fs events on the projects dirs → history:changed.
@@ -714,6 +1406,20 @@ pub fn run() {
                         if let Ok(events) = res {
                             let files: Vec<String> = events.iter().map(|e| e.path.to_string_lossy().to_string()).collect();
                             let _ = app_w.emit("history:changed", json!({ "files": files }));
+                            // History changed → drop the stale usage cache and re-warm off-thread
+                            // (+ refresh the tray title) so the next popover open stays instant.
+                            usage::invalidate_cache();
+                            let h = app_w.clone();
+                            std::thread::spawn(move || {
+                                let cfg = store::read_config();
+                                let active = cfg
+                                    .get("historyActive")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("all")
+                                    .to_string();
+                                usage::warm_cache(&cfg, &active);
+                                update_tray_title(&h);
+                            });
                         }
                     },
                 ) {
@@ -724,6 +1430,31 @@ pub fn run() {
                     }
                     std::mem::forget(deb); // keep watching for the app's lifetime
                 }
+            }
+
+            // Warm the usage cache at startup (off the click path) so the FIRST popover open is
+            // instant instead of paying the ~0.5s cold-scan cost.
+            {
+                let cfg = store::read_config();
+                let active = cfg
+                    .get("historyActive")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("all")
+                    .to_string();
+                std::thread::spawn(move || {
+                    usage::warm_cache(&cfg, &active);
+                });
+            }
+
+            // Reflect persisted Claude Code connection state in the tray menu on launch (the menu
+            // is built optimistically as "disconnected"; this corrects it if settings.json already
+            // points at us).
+            {
+                let h = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                    refresh_tray_menu(&h);
+                });
             }
 
             Ok(())
@@ -737,7 +1468,7 @@ pub fn run() {
             history_import, history_import_paths, history_remove_import, history_set_meta, history_export_raw, history_export_html,
             util_copy, util_open_external,
             update_state, update_check, update_download, update_apply, update_set_auto,
-            selfcheck_report, selfcheck_routing, selfcheck_gateway, selfcheck_history, selfcheck_desktop, selfcheck_export, selfcheck_import
+            selfcheck_report, selfcheck_routing, selfcheck_gateway, selfcheck_history, selfcheck_desktop, selfcheck_export, selfcheck_import, selfcheck_popover
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
@@ -751,6 +1482,10 @@ pub fn run() {
             {
                 if let Some(w) = app_handle.get_webview_window(&label) {
                     let _ = w.hide();
+                }
+                // Closing the main window drops the Dock icon back to menu-bar-only.
+                if label == "main" {
+                    set_dock_visible(app_handle, false);
                 }
                 api.prevent_close();
             }

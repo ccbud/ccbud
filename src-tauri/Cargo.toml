@@ -1,6 +1,6 @@
 [package]
 name = "app"
-version = "0.1.0"
+version = "1.1.0"
 description = "ccbud — Claude Code Gateway"
 authors = ["loadchange <soocto@gmail.com>"]
 license = "GPL-3.0-only"
@@ -40,6 +40,11 @@ tauri-plugin-single-instance = "2"
 tauri-plugin-autostart = "2"
 rfd = "0.15"
 notify-debouncer-mini = "0.4"
+
+# macOS-only: set NSWindow collectionBehavior so the popover floats over fullscreen apps.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc = "0.2"
+tauri-nspanel = { git = "https://github.com/ahkohd/tauri-nspanel", branch = "v2" }
 
 # Size-optimized release build — critical for the <50MB goal.
 [profile.release]

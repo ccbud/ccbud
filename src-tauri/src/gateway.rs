@@ -154,6 +154,10 @@ pub struct GatewayState {
     exchanges: Mutex<VecDeque<Value>>,
     client: reqwest::Client,
     client_insecure: reqwest::Client,
+    // Ring buffer of recent gateway log lines (seq+ts stamped) so the settings Logs panel can
+    // backfill on open — mirrors main.js gatewayLogs (cap 80). std Mutex: log() is sync.
+    logs: std::sync::Mutex<VecDeque<Value>>,
+    log_seq: AtomicU64,
 }
 struct RunningServer {
     port: u16,
@@ -177,13 +181,38 @@ impl GatewayState {
             exchanges: Mutex::new(VecDeque::new()),
             client,
             client_insecure,
+            logs: std::sync::Mutex::new(VecDeque::new()),
+            log_seq: AtomicU64::new(0),
         })
     }
 
     fn log(&self, level: &str, msg: impl AsRef<str>) {
-        let _ = self
-            .app
-            .emit("gateway:log", json!({ "level": level, "msg": msg.as_ref() }));
+        let seq = self.log_seq.fetch_add(1, Ordering::Relaxed) + 1;
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        let entry = json!({ "seq": seq, "ts": ts, "level": level, "msg": msg.as_ref() });
+        if let Ok(mut buf) = self.logs.lock() {
+            buf.push_back(entry.clone());
+            while buf.len() > 80 {
+                buf.pop_front();
+            }
+        }
+        let _ = self.app.emit("gateway:log", entry);
+    }
+
+    /// Snapshot of the recent-log ring, oldest→newest (logs_get backfill).
+    pub fn logs_snapshot(&self) -> Value {
+        self.logs
+            .lock()
+            .map(|b| Value::Array(b.iter().cloned().collect()))
+            .unwrap_or_else(|_| json!([]))
+    }
+    pub fn logs_clear(&self) {
+        if let Ok(mut b) = self.logs.lock() {
+            b.clear();
+        }
     }
 
     pub async fn status(&self) -> Value {
@@ -298,7 +327,12 @@ fn retry_delay(retry_after: Option<&str>, attempt: i64, base: i64) -> u64 {
         if let Ok(n) = s.parse::<u64>() {
             return (n.saturating_mul(1000)).min(cap);
         }
-        // HTTP-date form is rare from these providers — fall through to backoff.
+        // HTTP-date form (RFC 7231 IMF-fixdate) — honor the absolute time the upstream named
+        // (proxy.js parity). chrono is already a dep, so no extra crate is pulled in for this.
+        if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(s, "%a, %d %b %Y %H:%M:%S GMT") {
+            let ms = (dt.and_utc() - chrono::Utc::now()).num_milliseconds().max(0) as u64;
+            return ms.min(cap);
+        }
     }
     let base = if base > 0 { base as u64 } else { 500 };
     base.saturating_mul(2u64.saturating_pow(attempt.clamp(0, 20) as u32))
@@ -1073,5 +1107,9 @@ mod tests {
         assert_eq!(retry_delay(Some("2"), 0, 500), 2000);
         assert_eq!(retry_delay(None, 0, 500), 500);
         assert_eq!(retry_delay(None, 1, 500), 1000);
+        // HTTP-date in the past → no wait (clamped to 0), NOT a fall-through to backoff.
+        assert_eq!(retry_delay(Some("Wed, 21 Oct 2015 07:28:00 GMT"), 3, 500), 0);
+        // Unparseable Retry-After → exponential backoff (base * 2^attempt).
+        assert_eq!(retry_delay(Some("soon"), 2, 500), 2000);
     }
 }

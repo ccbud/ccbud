@@ -798,7 +798,11 @@ async function toggleConnect() {
   btn.disabled = false;
   status = await api.serverStatus();
   renderAll();
-    if (!res.ok) showHeroNote(res.message || I18n.t('err.opFailed'), true);
+    if (!res.ok) {
+      const m = res.reason === 'noProvider' ? I18n.t('settings.desktopNoProvider')
+        : (res.message || I18n.t('err.opFailed'));
+      showHeroNote(m, true);
+    }
 }
 function copyFeedback(btn, text) {
   const orig = btn.dataset.copyOrig || (btn.dataset.copyOrig = btn.textContent);
@@ -1184,7 +1188,13 @@ function bind() {
       tr.classList.remove('hidden', 'ok', 'err');
       tr.classList.add('pending');
       const res = await api.testProvider(collectProvider());
-      tr.textContent = (res.ok ? '✓ ' : '✗ ') + res.message;
+      let msg;
+      if (res.reason === 'baseUrlEmpty') msg = I18n.t('err.baseUrlEmpty');
+      else if (res.reason === 'baseUrlInvalid') msg = I18n.t('err.baseUrlInvalid');
+      else if (res.reason === 'timeout') msg = I18n.t('err.timeout');
+      else if (res.ok) msg = I18n.t('err.testOk', { model: res.model || '' });
+      else msg = res.message || ('HTTP ' + (res.status || ''));
+      tr.textContent = (res.ok ? '✓ ' : '✗ ') + msg;
       tr.classList.remove('pending', 'ok', 'err');
       tr.classList.add(res.ok ? 'ok' : 'err');
     }

@@ -30,7 +30,7 @@
     desktopStatus: () => inv('desktop_status'),
     desktopConnect: () => inv('desktop_connect'),
     desktopDisconnect: () => inv('desktop_disconnect'),
-    desktopReplay: (file) => inv('desktop_replay', { file }),
+    desktopReplay: (file, prompt) => inv('desktop_replay', { file, prompt }),
 
     serverStatus: () => inv('server_status'),
     usageGet: (range) => inv('usage_get', { range }),

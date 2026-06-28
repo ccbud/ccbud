@@ -40,50 +40,52 @@
 /* ccbud — macOS 27 design system */
 
 :root {
-  --brand: #5856D6;
-  --brand-2: #4B6BFF;
-  --brand-3: #0A84FF;
-  --brand-soft: rgba(88, 86, 214, 0.11);
-  --brand-glow: rgba(88, 86, 214, 0.30);
-  --brand-text: #4f4dc8;
+  /* Claude design language — warm paper + terracotta (mirrors export-assets/skin.css,
+     the skin used by exported transcripts). Accents are terracotta, not Apple blue/purple. */
+  --brand: #cc785c;
+  --brand-2: #d97757;
+  --brand-3: #bd5d3a;
+  --brand-soft: rgba(204, 120, 92, 0.12);
+  --brand-glow: rgba(204, 120, 92, 0.30);
+  --brand-text: #a44a2c;
 
-  /* Refined light — crisp opaque surfaces over a soft cool-gray canvas */
-  --bg-app: rgba(234, 236, 242, 0.94);
-  --bg-sidebar: rgba(223, 226, 234, 0.72);
+  /* Warm "Ivory" paper canvas; white cards lift off it like the exported transcript. */
+  --bg-app: rgba(250, 249, 245, 0.94);
+  --bg-sidebar: rgba(240, 238, 230, 0.80);
   --bg-elev: #ffffff;
   --bg-input: #ffffff;
   --card-bg: #ffffff;
-  --card-shadow: 0 1px 2px rgba(17, 24, 39, .05), 0 4px 14px rgba(17, 24, 39, .07);
-  --card-shadow-hover: 0 3px 8px rgba(17, 24, 39, .08), 0 16px 36px rgba(17, 24, 39, .13);
+  --card-shadow: 0 1px 2px rgba(40, 37, 30, .06), 0 4px 16px rgba(40, 37, 30, .08);
+  --card-shadow-hover: 0 3px 8px rgba(40, 37, 30, .10), 0 16px 36px rgba(40, 37, 30, .14);
 
-  --fg: #1b1c22;
-  --muted: #535a67;   /* a11y: darkened to pass WCAG AA on light backgrounds (was #6a7280) */
-  --caption: #59606d; /* a11y: darkened to pass WCAG AA (was #99a1ad, ~2.2:1) */
-  --border: rgba(17, 24, 39, 0.13);
-  --border-strong: rgba(17, 24, 39, 0.2);
+  --fg: #29261f;      /* warm charcoal (Claude --text) */
+  --muted: #6e6a5f;   /* warm dim text (Claude --text-dim); passes WCAG AA on #faf9f5 */
+  --caption: #857f72; /* warm faint text; deepened from Claude --text-faint to keep AA */
+  --border: rgba(41, 38, 31, 0.14);   /* warm border — visible on white cards over paper */
+  --border-strong: rgba(41, 38, 31, 0.2);
   --window-border: rgba(0, 0, 0, 0.12);
 
   --primary: var(--brand-3);
-  --primary-hover: #0A6FE0;
-  --primary-soft: rgba(10, 132, 255, 0.10);
+  --primary-hover: #a44a2c;
+  --primary-soft: rgba(189, 93, 58, 0.10);
 
   /* Vivid system colors stay for tiny FILLS/dots; text & borders use the calmer
      `-text`/`-border` tokens below so light surfaces don't glare (Tailwind skin pattern:
      vivid fill = ~500, text = ~700, border = ~200). */
-  --green: #34C759;
-  --green-text: #0d5f2e;
-  --green-soft: rgba(52, 199, 89, 0.12);
-  --green-border: rgba(52, 199, 89, 0.30);
-  --red: #FF3B30;
-  --red-text: #bd2a22;
-  --red-soft: rgba(255, 59, 48, 0.09);
-  --red-border: rgba(255, 59, 48, 0.22);
+  --green: #5b7f3f;       /* Claude olive (skin.css) — replaces Apple #34C759 */
+  --green-text: #3f5a2c;  /* deep olive — WCAG AA on green-soft + paper */
+  --green-soft: rgba(91, 127, 63, 0.12);
+  --green-border: rgba(91, 127, 63, 0.30);
+  --red: #b24632;         /* Claude brick red (skin.css) — replaces Apple #FF3B30 */
+  --red-text: #a23b29;
+  --red-soft: rgba(178, 70, 50, 0.10);
+  --red-border: rgba(178, 70, 50, 0.22);
   --orange: #FF9500;
   --amber: #FF9F0A;
   --amber-text: #b3760a;
   --amber-soft: rgba(255, 159, 10, 0.12);
 
-  --chip-bg: rgba(17, 24, 39, 0.05);
+  --chip-bg: rgba(41, 38, 31, 0.05);
   --radius-sm: 8px;
   --radius-md: 12px;
   --radius-lg: 16px;
@@ -235,8 +237,8 @@ body {
    this the labels wrap to two lines until it finishes. */
 .settings-subnav-item { white-space: nowrap; }
 .settings-subnav.collapsed {
-  width: 52px;
-  padding-right: 10px;
+  width: 44px;
+  padding-right: 8px;
 }
 .settings-subnav.collapsed .settings-subnav-label { display: none; }
 .settings-subnav.collapsed .settings-subnav-item {
@@ -316,7 +318,7 @@ body {
 
 .nav-item.active {
   background: var(--brand-soft);
-  color: #3a37a6; /* a11y: var(--brand) (#5856D6) failed contrast on the light brand-soft tint */
+  color: #a44a2c; /* a11y: deep terracotta on the light brand-soft tint (Claude accent) */
   font-weight: 600;
 }
 [data-theme="dark"] .nav-item.active { color: #c9c7ff; }
@@ -521,13 +523,13 @@ body {
   cursor: pointer;
   background: linear-gradient(180deg, var(--brand-2) 0%, var(--brand) 100%);
   color: #fff;
-  box-shadow: 0 1px 2px rgba(88,86,214,.25), 0 4px 12px rgba(88,86,214,.18);
+  box-shadow: 0 1px 2px rgba(204,120,92,.25), 0 4px 12px rgba(204,120,92,.18);
   transition: transform 0.15s, box-shadow 0.15s, background 0.15s;
   white-space: nowrap;
 }
 
 .hero-action:hover {
-  box-shadow: 0 2px 4px rgba(88,86,214,.3), 0 8px 20px rgba(88,86,214,.22);
+  box-shadow: 0 2px 4px rgba(204,120,92,.3), 0 8px 20px rgba(204,120,92,.22);
 }
 
 .hero-action:active { transform: scale(0.98); }
@@ -931,13 +933,26 @@ body {
 
 .settings-card {
   background: var(--card-bg);
-  border: 1px solid var(--border);
+  border: 1px solid var(--border-strong);
   border-radius: var(--radius-md);
   box-shadow: var(--card-shadow);
   padding: 16px 18px;
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+/* Items inside a settings card are separated only by whitespace, so their edges blur
+   together. Add a hairline between each direct child to make every item's boundary clear —
+   but keep a title and its description (and consecutive descriptions) as one group. */
+.settings-card > * + * {
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+.settings-card-title + .caption,
+.settings-card-header + .caption,
+.caption + .caption {
+  padding-top: 0;
+  border-top: none;
 }
 
 .settings-card-title {
@@ -1180,9 +1195,9 @@ body {
 }
 
 @keyframes pulse {
-  0% { box-shadow: 0 0 0 0 rgba(48, 209, 88, 0.5); }
-  70% { box-shadow: 0 0 0 5px rgba(48, 209, 88, 0); }
-  100% { box-shadow: 0 0 0 0 rgba(48, 209, 88, 0); }
+  0% { box-shadow: 0 0 0 0 rgba(91, 127, 63, 0.5); }
+  70% { box-shadow: 0 0 0 5px rgba(91, 127, 63, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(91, 127, 63, 0); }
 }
 
 /* ── Stream ── */
@@ -1346,7 +1361,7 @@ body {
 .tool-card { border-left-width: 3px; }
 .tool-exec { border-left-color: #f59e0b; }   /* run / Bash */
 .tool-read { border-left-color: #3b82f6; }   /* read */
-.tool-write { border-left-color: #22c55e; }  /* edit / write */
+.tool-write { border-left-color: #5a9a55; }  /* edit / write — soft olive (skin.css) */
 .tool-search { border-left-color: #a855f7; } /* grep / glob */
 .tool-task { border-left-color: #ec4899; }   /* subagent */
 .tool-net { border-left-color: #06b6d4; }    /* web */
@@ -1541,7 +1556,8 @@ body {
   border-radius: 99px;
   flex-shrink: 0;
 }
-.conv-proj-sessions .conv-item { padding-left: 22px; border-bottom: none; }
+.conv-proj-sessions .conv-item { padding-left: 22px; border-bottom: 1px solid var(--border); }
+.conv-proj-sessions .conv-item:last-child { border-bottom: none; }
 .conv-proj-sessions .conv-item.active { padding-left: 19.5px; }
 .conv-model { color: var(--brand); }
 
@@ -2350,6 +2366,46 @@ pre.cb-has-gutter > code { flex: 1 1 auto; min-width: 0; overflow-x: auto; paddi
   background: rgba(22, 23, 28, 0.98);
 }
 
+/* WKWebView draws a blue focus ring on focused buttons (Chromium didn't, so it only showed
+   up after the Tauri move). The popover is mouse-driven — suppress the ring. */
+.pop-body-root :focus,
+.pop-body-root :focus-visible {
+  outline: none;
+}
+
+/* Light theme: the pale chip-bg seg group + white active pill blur into the popover bg.
+   Give the group a border and the active pill a clear ring so the top row reads. */
+#popTabs, #popRanges {
+  border: 1px solid var(--border);
+}
+#popTabs .seg-btn.active, #popRanges .seg-btn.active {
+  box-shadow: 0 1px 2px rgba(40, 37, 30, 0.1), 0 0 0 1px var(--border-strong);
+}
+
+/* Instant CSS tooltip for truncated metric cards (model/provider): renders just below the card
+   on hover — immediate, unlike the slow ~1s native title. */
+.pop-body-root [data-tip] { position: relative; }
+.pop-body-root [data-tip]:hover::after {
+  content: attr(data-tip);
+  position: absolute;
+  right: 0;
+  top: calc(100% + 4px);
+  z-index: 30;
+  max-width: 280px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 10.5px;
+  font-weight: 500;
+  color: var(--fg);
+  background: var(--bg-elev);
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  padding: 4px 8px;
+  box-shadow: var(--card-shadow);
+  pointer-events: none;
+}
+
 .pop {
   padding: 11px 12px 0;
   height: 100%;
@@ -2454,13 +2510,13 @@ pre.cb-has-gutter > code { flex: 1 1 auto; min-width: 0; overflow-x: auto; paddi
   height: var(--hm-size);
   aspect-ratio: 1 / 1;
   border-radius: 3px;
-  background: #c6ccd8; /* clearly-visible empty cell on the near-white panel */
+  background: #d6d1c4; /* clearly-visible warm-gray empty cell on the warm-paper panel */
   transition: background-color 0.2s ease;
 }
-.hm-cell.lv0 { background: #c6ccd8; }
-.hm-cell.lv1 { background: rgba(88, 86, 214, 0.34); }
-.hm-cell.lv2 { background: rgba(88, 86, 214, 0.55); }
-.hm-cell.lv3 { background: rgba(88, 86, 214, 0.76); }
+.hm-cell.lv0 { background: #d6d1c4; }
+.hm-cell.lv1 { background: rgba(204, 120, 92, 0.34); }
+.hm-cell.lv2 { background: rgba(204, 120, 92, 0.55); }
+.hm-cell.lv3 { background: rgba(204, 120, 92, 0.76); }
 .hm-cell.lv4 { background: var(--brand); }
 
 [data-theme="dark"] .hm-cell { background: rgba(255, 255, 255, 0.14); }
@@ -2546,7 +2602,7 @@ pre.cb-has-gutter > code { flex: 1 1 auto; min-width: 0; overflow-x: auto; paddi
   position: fixed;
   inset: 0;
   z-index: 50;
-  background: rgba(17, 24, 39, 0.28);
+  background: rgba(40, 37, 30, 0.28);
   -webkit-backdrop-filter: blur(2px);
   backdrop-filter: blur(2px);
   display: flex;
@@ -2558,7 +2614,7 @@ pre.cb-has-gutter > code { flex: 1 1 auto; min-width: 0; overflow-x: auto; paddi
   height: 100%;
   background: var(--bg-elev);
   border-left: 1px solid var(--border);
-  box-shadow: -12px 0 40px rgba(17, 24, 39, 0.18);
+  box-shadow: -12px 0 40px rgba(40, 37, 30, 0.18);
   display: flex;
   flex-direction: column;
   animation: drawerIn 0.24s var(--ease);
@@ -2645,8 +2701,7 @@ pre.cb-has-gutter > code { flex: 1 1 auto; min-width: 0; overflow-x: auto; paddi
    no spacing. Stack with a gap so they're not glued together. */
 .hist-dir-list { display: flex; flex-direction: column; gap: 10px; }
 /* Light theme: white rows on a white card vanish — give them a faint fill + clearer edge */
-[data-theme="light"] .hist-dir-row { background: #f4f6f9; border-color: rgba(17, 24, 39, 0.12); }
-[data-theme="light"] .settings-card { border-color: rgba(17, 24, 39, 0.11); }
+[data-theme="light"] .hist-dir-row { background: #f4f2ec; border-color: rgba(41, 38, 31, 0.14); }
 
 /* Same stacking issue for scale: these get their :active/:hover scale from the restored CSS
    (transform), and the markup also carries scale utilities (the `scale` property) → they double.

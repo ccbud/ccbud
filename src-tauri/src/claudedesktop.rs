@@ -14,6 +14,8 @@ use std::path::PathBuf;
 
 const BUNDLE_ID: &str = "com.anthropic.claudefordesktop";
 const PROFILE_IDENTIFIER: &str = "dev.ccbud.gateway.claude-desktop-inference";
+const PROFILES_PANE: &str =
+    "x-apple.systempreferences:com.apple.preferences.configurationprofiles";
 
 fn home() -> PathBuf {
     std::env::var("HOME").map(PathBuf::from).unwrap_or_else(|_| PathBuf::from("."))
@@ -185,6 +187,12 @@ pub fn connect(port: u16, token: &str) -> Value {
     }
     let f = file.to_string_lossy().to_string();
     let _ = std::process::Command::new("/usr/bin/open").arg(&f).spawn();
+    // Take the user to System Settings › Profiles shortly after, so they can approve it (matches
+    // claudeDesktop.js — without this many users get stuck not knowing where to approve).
+    std::thread::spawn(|| {
+        std::thread::sleep(std::time::Duration::from_millis(1200));
+        let _ = std::process::Command::new("/usr/bin/open").arg(PROFILES_PANE).spawn();
+    });
     json!({ "ok": true, "needsApproval": true, "path": f })
 }
 
@@ -198,6 +206,21 @@ pub fn disconnect() -> Value {
     );
     match std::process::Command::new("/usr/bin/osascript").args(["-e", &osa]).output() {
         Ok(o) if o.status.success() => json!({ "ok": true, "removed": true }),
-        _ => json!({ "ok": true, "removed": false, "needsApproval": true }),
+        Ok(o) => {
+            // User canceled the admin-password prompt (-128 / "User canceled") → report it as
+            // cancelled instead of pretending it still needs approval. Otherwise (CLI unavailable)
+            // fall back to opening System Settings so the user can remove it manually.
+            let stderr = String::from_utf8_lossy(&o.stderr);
+            if stderr.contains("-128") || stderr.to_lowercase().contains("user canceled") {
+                json!({ "ok": false, "cancelled": true })
+            } else {
+                let _ = std::process::Command::new("/usr/bin/open").arg(PROFILES_PANE).spawn();
+                json!({ "ok": true, "removed": false, "needsApproval": true })
+            }
+        }
+        Err(_) => {
+            let _ = std::process::Command::new("/usr/bin/open").arg(PROFILES_PANE).spawn();
+            json!({ "ok": true, "removed": false, "needsApproval": true })
+        }
     }
 }

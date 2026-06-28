@@ -9,6 +9,8 @@
   if (!api) return;
   const $ = (id) => document.getElementById(id);
   const L = (k, p) => (window.I18n ? window.I18n.t(k, p) : k); // translate (t/$ already taken)
+  // Middle-ellipsis a long path so the start (/Users…) and meaningful tail (…/work) both stay visible.
+  const midEllip = (s, max) => { s = String(s == null ? '' : s); if (s.length <= max) return s; const k = max - 1, h = Math.ceil(k / 2), t = Math.floor(k / 2); return s.slice(0, h) + '…' + s.slice(s.length - t); };
   const ICN = window.ccbudIcons || {}; // SVG icon set (icons.js loads before this script)
   const localeTag = () => (window.I18n ? window.I18n.localeTag : 'en-US');
 
@@ -276,7 +278,7 @@
     const active = data.active || 'all';
     const opts = [{ id: 'all', label: L('conv.all') }].concat(dirs.map((d) => ({ id: d.id, label: d.label, imported: d.imported, sessions: d.sessions })));
     host.classList.remove('hidden');
-    host.innerHTML = opts.map((o) => `<button class="dir-chip inline-flex items-center gap-1.25 border border-border-custom bg-transparent text-muted font-medium text-[11.5px] px-2.5 py-1 rounded-full cursor-pointer transition-all duration-150 hover:text-fg hover:bg-chip-bg ${o.id === active ? 'active' : ''}" data-dir="${esc(o.id)}" title="${esc(o.label)}">${o.imported ? '<span class="dir-chip-ico">' + (ICN.download || '') + '</span>' : ''}${esc(o.label)}${o.sessions != null ? ' <span class="dir-chip-n text-[10px] px-1.25 py-0 rounded-full bg-black/12">' + o.sessions + '</span>' : ''}</button>`).join('');
+    host.innerHTML = opts.map((o) => `<button class="dir-chip inline-flex items-center gap-1.25 border border-border-custom bg-transparent text-muted font-medium text-[11.5px] px-2.5 py-1 rounded-full cursor-pointer transition-all duration-150 hover:text-fg hover:bg-chip-bg whitespace-nowrap ${o.id === active ? 'active' : ''}" data-dir="${esc(o.id)}" title="${esc(o.label)}">${o.imported ? '<span class="dir-chip-ico">' + (ICN.download || '') + '</span>' : ''}${esc(midEllip(o.label, 30))}${o.sessions != null ? ' <span class="dir-chip-n text-[10px] px-1.25 py-0 rounded-full bg-black/12">' + o.sessions + '</span>' : ''}</button>`).join('');
   }
 
   function filteredProjects() {
@@ -904,7 +906,8 @@
     if (btn) btn.disabled = true;
     toast(L('conv.replayOpening'));
     let res;
-    try { res = await api.desktopReplay(p); } catch (e) { res = { ok: false, reason: 'failed' }; }
+    const prompt = L('desktop.replayPrompt').slice(0, 13000); // q is truncated ~14k by Claude
+    try { res = await api.desktopReplay(p, prompt); } catch (e) { res = { ok: false, reason: 'failed' }; }
     if (btn) btn.disabled = false;
     if (res && res.ok) return; // Claude Desktop now opening with the file + prompt
     const reason = res && res.reason;
