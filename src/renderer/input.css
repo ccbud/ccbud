@@ -159,11 +159,11 @@ body {
 /* The app-wide `user-select: none` (chrome shouldn't be selectable) also blocked copying the
    conversation transcript. Re-enable text selection for the message panels (main + request inspector). */
 .conv-detail, .conv-detail *, #reqDrawerBody, #reqDrawerBody * { -webkit-user-select: text; user-select: text; }
-/* Gateway URL / export snippet are content read-outs WITH copy buttons; keep them unselectable
-   like the rest of the chrome (WKWebView's UA otherwise leaves <pre>/<code> selectable). */
-#endpoint, #exportBlock, #heroEndpoint, #heroEndpointText, .endpoint, .code-block {
-  -webkit-user-select: none;
-  user-select: none;
+/* Gateway URL / export snippet are copyable content read-outs — keep them selectable so the user
+   can grab a fragment (the app-wide `user-select: none` would otherwise block it). */
+#endpoint, #exportBlock, .endpoint, .code-block {
+  -webkit-user-select: text;
+  user-select: text;
 }
 
 /* ── Shell ── */

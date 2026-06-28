@@ -2875,9 +2875,9 @@ body {
   -webkit-user-select: text;
   user-select: text;
 }
-#endpoint, #exportBlock, #heroEndpoint, #heroEndpointText, .endpoint, .code-block {
-  -webkit-user-select: none;
-  user-select: none;
+#endpoint, #exportBlock, .endpoint, .code-block {
+  -webkit-user-select: text;
+  user-select: text;
 }
 .app-window {
   display: flex;
