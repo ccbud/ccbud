@@ -784,13 +784,24 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
             return builder.body(Body::from(buf)).unwrap();
         }
         let est = crate::counttokens::estimate_input_tokens(parsed.as_ref().unwrap_or(&Value::Null));
+        let ebody = serde_json::to_vec(&json!({ "input_tokens": est })).unwrap_or_default();
         st.emit_request(ex_id, started, &method, &req_path, &provider_name, &routing, 200, None);
+        st.record_exchange(json!({
+            "id": ex_id, "ts": now_ms(), "ms": started.elapsed().as_millis() as u64,
+            "method": method.as_str(), "path": req_path, "url": ex_url,
+            "provider": provider_name, "requestedModel": routing.client_facing_model,
+            "outgoingModel": routing.outgoing_model, "clientFacingModel": routing.client_facing_model,
+            "status": 200, "reqHeaders": ex_req_headers, "reqBody": ex_req_body,
+            "resHeaders": json!({ "x-ccbud-tokens": "estimated", "x-ccbud-upstream-status": status.as_u16().to_string() }),
+            "resBody": json!({ "text": String::from_utf8_lossy(&ebody), "bytes": ebody.len(), "truncated": 0 }),
+        }))
+        .await;
         return Response::builder()
             .status(200)
             .header("content-type", "application/json")
             .header("x-ccbud-tokens", "estimated")
             .header("x-ccbud-upstream-status", status.as_u16().to_string())
-            .body(Body::from(serde_json::to_vec(&json!({ "input_tokens": est })).unwrap_or_default()))
+            .body(Body::from(ebody))
             .unwrap();
     }
 
@@ -813,8 +824,23 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
             }
         }
         let result = merged.unwrap_or_else(|| synthesize_models(&config));
+        let rbody = serde_json::to_vec(&result).unwrap_or_default();
         st.emit_request(ex_id, started, &method, &req_path, &provider_name, &routing, 200, None);
-        return json_response(StatusCode::OK, &result);
+        st.record_exchange(json!({
+            "id": ex_id, "ts": now_ms(), "ms": started.elapsed().as_millis() as u64,
+            "method": method.as_str(), "path": req_path, "url": ex_url,
+            "provider": provider_name, "requestedModel": routing.client_facing_model,
+            "outgoingModel": routing.outgoing_model, "clientFacingModel": routing.client_facing_model,
+            "status": 200, "reqHeaders": ex_req_headers, "reqBody": ex_req_body,
+            "resHeaders": json!({ "content-type": "application/json" }),
+            "resBody": json!({ "text": String::from_utf8_lossy(&rbody), "bytes": rbody.len(), "truncated": 0 }),
+        }))
+        .await;
+        return Response::builder()
+            .status(200)
+            .header("content-type", "application/json")
+            .body(Body::from(rbody))
+            .unwrap();
     }
 
     let mut out_buf = buf.clone();

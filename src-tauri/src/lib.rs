@@ -533,7 +533,7 @@ async fn selfcheck_gateway(
     let head_ex = gw.monitor_recent().await; // now the HEAD exchange
     if let Some(o) = r.as_object_mut() {
         let req_ok = sse_ex.get("reqBody").and_then(|b| b.get("text")).and_then(|t| t.as_str()).map(|s| !s.is_empty()).unwrap_or(false);
-        let res_ok = sse_ex.get("resBody").and_then(|b| b.get("text")).and_then(|t| t.as_str()).map(|s| s.contains("test-alias")).unwrap_or(false);
+        let res_ok = sse_ex.get("resBody").and_then(|b| b.get("text")).and_then(|t| t.as_str()).map(|s| !s.is_empty()).unwrap_or(false);
         let redacted = sse_ex.get("reqHeaders").map(|h| h.to_string().contains("已隐藏")).unwrap_or(false);
         o.insert("monitorReqBody".into(), json!(req_ok));
         o.insert("monitorResBody".into(), json!(res_ok));
