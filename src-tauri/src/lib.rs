@@ -658,8 +658,12 @@ pub fn run() {
                 let open_i = MenuItem::with_id(app, "tray_open", "打开 ccbud", true, None::<&str>)?;
                 let quit_i = MenuItem::with_id(app, "tray_quit", "退出 ccbud", true, None::<&str>)?;
                 let menu = Menu::with_items(app, &[&open_i, &quit_i])?;
+                // Menu-bar icon: monochrome template (like other macOS apps), auto black/white.
+                let tray_img = tauri::image::Image::from_bytes(include_bytes!("../../build/iconTemplate.png"))
+                    .unwrap_or_else(|_| app.default_window_icon().cloned().unwrap());
                 let _ = TrayIconBuilder::with_id("main")
-                    .icon(app.default_window_icon().cloned().unwrap())
+                    .icon(tray_img)
+                    .icon_as_template(true)
                     .tooltip("ccbud")
                     .menu(&menu)
                     .show_menu_on_left_click(false)
@@ -687,7 +691,7 @@ pub fn run() {
                                 if pop.is_visible().unwrap_or(false) {
                                     let _ = pop.hide();
                                 } else {
-                                    let x = (position.x as i32 - 150).max(0);
+                                    let x = (position.x as i32 - 212).max(0);
                                     let y = position.y as i32 + 8;
                                     let _ = pop.set_position(tauri::PhysicalPosition::new(x, y));
                                     let _ = pop.show();
