@@ -2875,6 +2875,10 @@ body {
   -webkit-user-select: text;
   user-select: text;
 }
+#endpoint, #exportBlock, #heroEndpoint, #heroEndpointText, .endpoint, .code-block {
+  -webkit-user-select: none;
+  user-select: none;
+}
 .app-window {
   display: flex;
   height: 100vh;
