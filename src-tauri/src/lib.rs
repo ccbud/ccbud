@@ -521,14 +521,31 @@ async fn selfcheck_gateway(
     }
     let port = gw.current_port().await.unwrap_or(0);
     let mut r = gateway::gateway_selftest(port).await;
-    let recent = gw.monitor_recent().await;
+    let sse_ex = gw.monitor_recent().await; // last recorded by gateway_selftest = the SSE exchange
+    // Exercise HEAD / (mock 404 → gateway fallback 200 → recorded) to verify monitor detail + ms.
+    let head_status = reqwest::Client::new()
+        .head(format!("http://127.0.0.1:{}/", port))
+        .send()
+        .await
+        .map(|x| x.status().as_u16())
+        .unwrap_or(0);
+    tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+    let head_ex = gw.monitor_recent().await; // now the HEAD exchange
     if let Some(o) = r.as_object_mut() {
-        let req_ok = recent.get("reqBody").and_then(|b| b.get("text")).and_then(|t| t.as_str()).map(|s| !s.is_empty()).unwrap_or(false);
-        let res_ok = recent.get("resBody").and_then(|b| b.get("text")).and_then(|t| t.as_str()).map(|s| s.contains("test-alias")).unwrap_or(false);
-        let redacted = recent.get("reqHeaders").map(|h| h.to_string().contains("已隐藏")).unwrap_or(false);
+        let req_ok = sse_ex.get("reqBody").and_then(|b| b.get("text")).and_then(|t| t.as_str()).map(|s| !s.is_empty()).unwrap_or(false);
+        let res_ok = sse_ex.get("resBody").and_then(|b| b.get("text")).and_then(|t| t.as_str()).map(|s| s.contains("test-alias")).unwrap_or(false);
+        let redacted = sse_ex.get("reqHeaders").map(|h| h.to_string().contains("已隐藏")).unwrap_or(false);
         o.insert("monitorReqBody".into(), json!(req_ok));
         o.insert("monitorResBody".into(), json!(res_ok));
         o.insert("monitorRedacted".into(), json!(redacted));
+        o.insert("recordHasMs".into(), json!(sse_ex.get("ms").map(|v| v.is_number()).unwrap_or(false)));
+        o.insert("headStatus".into(), json!(head_status));
+        o.insert(
+            "headMonitored".into(),
+            json!(head_ex.get("method").and_then(|m| m.as_str()) == Some("HEAD")
+                && head_ex.get("reqHeaders").map(|h| h.is_object()).unwrap_or(false)
+                && head_ex.get("ms").map(|v| v.is_number()).unwrap_or(false)),
+        );
     }
     Ok(r)
 }
