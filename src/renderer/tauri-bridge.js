@@ -79,4 +79,21 @@
     onStatus: (cb) => on('gateway:status', cb),
     onPopoverShow: (cb) => on('popover:show', cb),
   };
+
+  // Window dragging: Electron's `-webkit-app-region: drag` is Chromium-only and does nothing in
+  // WKWebView. Map the existing `.drag-region` elements onto Tauri's `data-tauri-drag-region`
+  // (its bundled handler starts a window drag on mousedown over an element carrying that attr;
+  // `.no-drag` children like buttons/inputs are untouched since the event target is the child).
+  function wireDrag(root) {
+    (root || document).querySelectorAll('.drag-region').forEach((el) => {
+      el.setAttribute('data-tauri-drag-region', '');
+    });
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', () => wireDrag());
+  else wireDrag();
+  // Re-apply for any drag bars the renderer injects after first paint (view switches, etc.).
+  try {
+    const mo = new MutationObserver(() => wireDrag());
+    mo.observe(document.documentElement, { childList: true, subtree: true });
+  } catch (_) {}
 })();
