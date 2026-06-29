@@ -711,12 +711,12 @@ fn history_set_meta(app: tauri::AppHandle, file: String, patch: Value) -> Value 
 #[tauri::command]
 async fn history_export_raw(file: String) -> Result<Value, String> {
     let data = std::fs::read_to_string(&file).map_err(|e| e.to_string())?;
-    let base = std::path::Path::new(&file).file_stem().and_then(|s| s.to_str()).unwrap_or("export").to_string();
+    let base = exporthtml::export_base_name(&file);
     match rfd::AsyncFileDialog::new().set_file_name(format!("{}.jsonl", base)).save_file().await {
         Some(d) => {
             let p = d.path().to_path_buf();
             std::fs::write(&p, data).map_err(|e| e.to_string())?;
-            Ok(json!({ "canceled": false, "filePath": p.to_string_lossy() }))
+            Ok(json!({ "canceled": false, "path": p.to_string_lossy() }))
         }
         None => Ok(json!({ "canceled": true })),
     }
@@ -729,13 +729,15 @@ async fn history_export_html(payload: Value) -> Result<Value, String> {
         .or_else(|| payload.as_str())
         .ok_or("no file")?
         .to_string();
-    let html = exporthtml::build_export_html(&file);
-    let base = std::path::Path::new(&file).file_stem().and_then(|s| s.to_str()).unwrap_or("export").to_string();
+    // Build the export data once, then reuse it for both the HTML body and the filename.
+    let data = exporthtml::build_data(&file);
+    let html = exporthtml::html_from_data(&data);
+    let base = exporthtml::export_base_name_from_data(&data);
     match rfd::AsyncFileDialog::new().set_file_name(format!("{}.html", base)).save_file().await {
         Some(d) => {
             let p = d.path().to_path_buf();
             std::fs::write(&p, html).map_err(|e| e.to_string())?;
-            Ok(json!({ "canceled": false, "filePath": p.to_string_lossy() }))
+            Ok(json!({ "canceled": false, "path": p.to_string_lossy() }))
         }
         None => Ok(json!({ "canceled": true })),
     }
