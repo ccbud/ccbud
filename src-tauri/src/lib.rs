@@ -737,6 +737,8 @@ async fn history_export_html(payload: Value) -> Result<Value, String> {
         Some(d) => {
             let p = d.path().to_path_buf();
             std::fs::write(&p, html).map_err(|e| e.to_string())?;
+            // Open the freshly-exported viewer in the user's default browser (issue #7).
+            open_path_native(&p);
             Ok(json!({ "canceled": false, "path": p.to_string_lossy() }))
         }
         None => Ok(json!({ "canceled": true })),
@@ -771,6 +773,18 @@ fn util_open_external(url: String) -> bool {
         }
     };
     spawned.is_ok()
+}
+
+// Open a local file with the OS default handler. Used to pop the freshly-exported HTML viewer in
+// the user's browser so they don't have to hunt for it in the filesystem — parity with the
+// Electron `shell.openPath` (issue #7). Best-effort: a spawn failure must not fail the export.
+fn open_path_native(path: &std::path::Path) {
+    #[cfg(target_os = "macos")]
+    let _ = std::process::Command::new("open").arg(path).spawn();
+    #[cfg(target_os = "windows")]
+    let _ = std::process::Command::new("cmd").args(["/C", "start", ""]).arg(path).spawn();
+    #[cfg(target_os = "linux")]
+    let _ = std::process::Command::new("xdg-open").arg(path).spawn();
 }
 
 // ---- in-app updates (Phase 5) ----
@@ -1272,10 +1286,31 @@ pub fn run() {
                                 } else {
                                     // Center under the tray icon, clamped to the monitor (rect +
                                     // scale are physical px, so retina is handled correctly).
+                                    //
+                                    // Pick the monitor the TRAY icon sits on — mirrors Electron's
+                                    // getDisplayMatching(trayBounds). pop.current_monitor() is the
+                                    // monitor the (hidden) popover window last sat on, which on a
+                                    // multi-display setup is often NOT the screen whose menu bar was
+                                    // clicked; using it clamps the popover to the wrong monitor's
+                                    // bounds. Find the monitor whose physical bounds contain the tray
+                                    // rect (each candidate's own scale converts the rect to px).
                                     let mon = pop
-                                        .current_monitor()
+                                        .available_monitors()
                                         .ok()
-                                        .flatten()
+                                        .and_then(|mons| {
+                                            mons.into_iter().find(|m| {
+                                                let p = rect
+                                                    .position
+                                                    .to_physical::<f64>(m.scale_factor());
+                                                let mp = m.position();
+                                                let ms = m.size();
+                                                p.x >= mp.x as f64
+                                                    && p.x < mp.x as f64 + ms.width as f64
+                                                    && p.y >= mp.y as f64
+                                                    && p.y < mp.y as f64 + ms.height as f64
+                                            })
+                                        })
+                                        .or_else(|| pop.current_monitor().ok().flatten())
                                         .or_else(|| pop.primary_monitor().ok().flatten());
                                     let geom = mon.map(|mon| {
                                         let scale = mon.scale_factor();
