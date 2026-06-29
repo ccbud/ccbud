@@ -20,6 +20,7 @@
     "build:css": "tailwindcss -i src/renderer/input.css -o src/renderer/styles.css",
     "sync:shared": "node -e \"require('fs').cpSync('src/shared','src/renderer/shared',{recursive:true})\"",
     "tauri": "tauri",
+    "release": "node scripts/release.js",
     "start": "npm run build:css && electron .",
     "dev": "npm run build:css && electron . --user-data-dir=.devdata",
     "test": "node test/selftest.js",
