@@ -83,6 +83,17 @@
     if (typeof c === 'string') return c ? [{ type: 'text', text: c }] : [];
     return Array.isArray(c) ? c : [];
   }
+  // Strip the harness-injected blocks Claude Code appends to user turns — environment
+  // <system-reminder>s, slash-command expansions (<command-*>), and local-command output
+  // (<local-command-*>) — leaving the human prose. Returns '' when a turn was nothing but
+  // injected content, so a pure slash-command / lone reminder turn still renders as nothing.
+  function stripInjected(text) {
+    return String(text || '')
+      .replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, '')
+      .replace(/<command-[a-z-]+>[\s\S]*?<\/command-[a-z-]+>/g, '')
+      .replace(/<local-command-[a-z]+>[\s\S]*?<\/local-command-[a-z]+>/g, '')
+      .trim();
+  }
   function projName(cwd) { return cwd ? cwd.split('/').filter(Boolean).pop() : null; }
   function isLive(ts) { return ts && (Date.now() - ts) < 90000; }
   // Is the currently-open session still active (recent on-disk activity)? Used to drive the
@@ -475,9 +486,14 @@
     if (m.role === 'user') {
       const vis = blocks.filter((b) => b.type === 'text' || b.type === 'image');
       if (!vis.length) return '';
-      const textVal = vis.map((b) => b.text || '').join('');
-      if (textVal.includes('<system-reminder>') || textVal.includes('<command-name>') || textVal.includes('<local-command')) return '';
-      return `<div class="msg user flex flex-col gap-1.25 animate-[panelIn_0.18s_cubic-bezier(0.23,1,0.32,1)] w-full"${mid}><div class="msg-role text-[10px] font-bold uppercase tracking-wider text-caption flex items-center gap-1.25">👤 ${esc(L('conv.you'))}</div><div class="msg-body bg-bg-elev border border-border-custom rounded-[11px] p-3 px-4 shadow-card text-[13px] leading-[1.58]">${vis.map(renderUserBlock).join('')}</div></div>`;
+      // Strip harness-injected noise but keep the human prose — the first user turn carries an
+      // appended <system-reminder>, and the old "contains a tag → drop the whole turn" rule made
+      // that turn (the one that also seeds the title) disappear from the panel.
+      const clean = vis
+        .map((b) => (b.type === 'text' ? { type: 'text', text: stripInjected(b.text) } : b))
+        .filter((b) => b.type === 'image' || b.text);
+      if (!clean.length) return '';
+      return `<div class="msg user flex flex-col gap-1.25 animate-[panelIn_0.18s_cubic-bezier(0.23,1,0.32,1)] w-full"${mid}><div class="msg-role text-[10px] font-bold uppercase tracking-wider text-caption flex items-center gap-1.25">👤 ${esc(L('conv.you'))}</div><div class="msg-body bg-bg-elev border border-border-custom rounded-[11px] p-3 px-4 shadow-card text-[13px] leading-[1.58]">${clean.map(renderUserBlock).join('')}</div></div>`;
     }
     let body = '';
     blocks.forEach((b) => {
