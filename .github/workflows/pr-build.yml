@@ -95,8 +95,14 @@ jobs:
         with:
           name: ccbud-${{ env.DEV_VERSION }}-${{ matrix.artifact }}
           if-no-files-found: error
+          # Native builds land in target/release/bundle; cross-target builds (macOS arm64) land in
+          # target/<triple>/release/bundle. Cover both explicitly rather than relying on a glob.
           path: |
-            src-tauri/target/**/release/bundle/**/*.dmg
-            src-tauri/target/**/release/bundle/**/*.AppImage
-            src-tauri/target/**/release/bundle/**/*.deb
-            src-tauri/target/**/release/bundle/**/*.exe
+            src-tauri/target/release/bundle/**/*.dmg
+            src-tauri/target/release/bundle/**/*.AppImage
+            src-tauri/target/release/bundle/**/*.deb
+            src-tauri/target/release/bundle/**/*.exe
+            src-tauri/target/*/release/bundle/**/*.dmg
+            src-tauri/target/*/release/bundle/**/*.AppImage
+            src-tauri/target/*/release/bundle/**/*.deb
+            src-tauri/target/*/release/bundle/**/*.exe
