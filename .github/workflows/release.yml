@@ -112,7 +112,7 @@ jobs:
 
             Pick the installer for your platform (macOS `.dmg` x64/arm64 · Windows `.exe`/`.msi` ·
             Linux `.AppImage`/`.deb`). Installed copies auto-update in place.
-          releaseDraft: true
+          releaseDraft: false
           prerelease: false
           args: ${{ matrix.args }}
 
