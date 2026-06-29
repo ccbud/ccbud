@@ -462,7 +462,7 @@
           </label>
 
           <details class="disclosure mappings-details border border-border-custom rounded-xl bg-bg-elev overflow-hidden" open>
-            <summary class="cursor-pointer text-[12.5px] text-muted outline-none py-3 px-4 list-none select-none [&::-webkit-details-marker]:hidden" data-i18n="modal.aliasSummary">自定义模型别名（别名 ⇄ 上游模型）</summary>
+            <summary class="cursor-pointer text-[12.5px] text-muted outline-none list-none select-none [&::-webkit-details-marker]:hidden" data-i18n="modal.aliasSummary">自定义模型别名（别名 ⇄ 上游模型）</summary>
             <div class="mappings border border-border-custom rounded-lg p-3 mx-2.5 mt-2 mb-2.5 flex flex-col gap-1.75">
               <p class="caption text-[12px] text-caption" data-i18n="modal.aliasDesc">把客户端请求的模型名精确映射到上游模型，回包自动改回原名。带 [1m]（1M 上下文）等特殊模型务必在此显式映射到支持的上游，避免被自动映射降级。未命中别名时才走「自动映射」。</p>
               <div id="mapRows" class="map-rows flex flex-col gap-1.25"></div>

@@ -1231,9 +1231,6 @@
   .p-\[22px_26px\] {
     padding: 22px 26px;
   }
-  .px-0 {
-    padding-inline: 0;
-  }
   .px-0\.5 {
     padding-inline: calc(var(--spacing) * 0.5);
   }
@@ -2606,14 +2603,6 @@
       opacity: 40%;
     }
   }
-  .\[\&\.err\]\:border-red\/12 {
-    &.err {
-      border-color: var(--color-red);
-      @supports (color: color-mix(in lab, red, red)) {
-        border-color: color-mix(in oklab, var(--color-red) 12%, transparent);
-      }
-    }
-  }
   .\[\&\.err\]\:bg-red {
     &.err {
       background-color: var(--color-red);
@@ -2643,14 +2632,6 @@
   .\[\&\.in_progress\]\:text-primary {
     &.in progress {
       color: var(--color-primary);
-    }
-  }
-  .\[\&\.ok\]\:border-green\/12 {
-    &.ok {
-      border-color: var(--color-green);
-      @supports (color: color-mix(in lab, red, red)) {
-        border-color: color-mix(in oklab, var(--color-green) 12%, transparent);
-      }
     }
   }
   .\[\&\.ok\]\:bg-green {
@@ -2686,24 +2667,6 @@
   .\[\&\.on\]\:text-green {
     &.on {
       color: var(--color-green);
-    }
-  }
-  .\[\&\.pending\]\:border-primary\/12 {
-    &.pending {
-      border-color: var(--color-primary);
-      @supports (color: color-mix(in lab, red, red)) {
-        border-color: color-mix(in oklab, var(--color-primary) 12%, transparent);
-      }
-    }
-  }
-  .\[\&\.pending\]\:bg-primary-soft {
-    &.pending {
-      background-color: var(--color-primary-soft);
-    }
-  }
-  .\[\&\.pending\]\:text-primary {
-    &.pending {
-      color: var(--color-primary);
     }
   }
   .\[\&\.running\]\:text-green {
@@ -5320,7 +5283,7 @@ pre.cb-has-gutter > code {
   font-size: 12.5px;
   color: var(--muted);
   outline: none;
-  padding: 3px 0;
+  padding: 11px 14px;
 }
 .map-rows {
   display: flex;
