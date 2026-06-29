@@ -235,7 +235,7 @@
             <div data-pane="data" class="hidden">
             <div class="settings-card bg-bg-elev border border-border-custom rounded-xl shadow-card p-7 flex flex-col gap-6 transition-all duration-300">
               <div class="settings-card-header flex justify-between items-center">
-                <h3 class="settings-card-title text-[13px] font-semibold text-fg" data-i18n="settings.histDir">历史目录</h3>
+                <h3 class="settings-card-title text-[13px] font-semibold text-fg" data-i18n="settings.histDir">工作目录</h3>
                 <button class="btn btn-sm btn-primary bg-primary text-white border-none rounded-md px-2.25 py-1.25 font-semibold text-[11px] leading-none cursor-pointer transition-all duration-140 hover:bg-primary-hover active:scale-[0.985]" id="btnPickHistDir" type="button" data-i18n="settings.pickDir">选择目录…</button>
               </div>
               <p class="caption text-[12px] text-caption" data-i18n="settings.histDirDesc">对话与用量统计的数据来源 —— Claude Code 的配置目录（含 projects/）。默认 ~/.claude；若用 CLAUDE_CONFIG_DIR / claude --config 指定了其他目录，在此添加，可在「对话」页切换查看。</p>
@@ -462,15 +462,14 @@
           </label>
 
           <details class="disclosure mappings-details border border-border-custom rounded-xl bg-bg-elev overflow-hidden" open>
-            <summary class="cursor-pointer text-[12.5px] text-muted outline-none py-0.75 px-0 list-none select-none [&::-webkit-details-marker]:hidden" data-i18n="modal.aliasSummary">自定义模型别名（别名 ⇄ 上游模型）</summary>
-            <div class="mappings border border-border-custom rounded-lg p-2.5 flex flex-col gap-1.75">
+            <summary class="cursor-pointer text-[12.5px] text-muted outline-none py-2.5 px-3.5 list-none select-none [&::-webkit-details-marker]:hidden" data-i18n="modal.aliasSummary">自定义模型别名（别名 ⇄ 上游模型）</summary>
+            <div class="mappings border border-border-custom rounded-lg p-3 mx-2.5 mb-2.5 flex flex-col gap-1.75">
               <p class="caption text-[12px] text-caption" data-i18n="modal.aliasDesc">把客户端请求的模型名精确映射到上游模型，回包自动改回原名。带 [1m]（1M 上下文）等特殊模型务必在此显式映射到支持的上游，避免被自动映射降级。未命中别名时才走「自动映射」。</p>
               <div id="mapRows" class="map-rows flex flex-col gap-1.25"></div>
               <button class="btn btn-sm bg-bg-elev text-fg border border-border-custom rounded-md px-2.25 py-1.25 font-medium text-[11px] leading-none cursor-pointer transition-all duration-140 hover:bg-chip-bg hover:border-border-strong active:scale-[0.985] self-start" id="btnAddMap" type="button" data-i18n="modal.addMapping">+ 添加映射</button>
             </div>
           </details>
 
-          <div id="testResult" class="alert hidden text-[12px] px-3 py-2.25 rounded-lg border border-transparent [&.err]:border-red/12 [&.err]:text-red [&.err]:bg-red-soft [&.ok]:border-green/12 [&.ok]:text-green [&.ok]:bg-green-soft [&.pending]:border-primary/12 [&.pending]:text-primary [&.pending]:bg-primary-soft"></div>
         </div>
         <footer class="sheet-foot flex items-center gap-2 p-3 border-t border-border-custom sticky bottom-0 bg-inherit z-2">
           <button class="btn bg-bg-elev text-fg border border-border-custom rounded-[7px] px-3 py-1.25 font-medium text-[12px] leading-none cursor-pointer transition-all duration-140 hover:bg-chip-bg hover:border-border-strong active:scale-[0.985]" id="btnTest" data-i18n="modal.test">连接测试</button>

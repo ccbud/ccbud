@@ -108,6 +108,45 @@ function hideHeroNote() {
   }
 }
 
+// Floating toast — sits above modals/drawers (z above everything) so a result is never
+// hidden by a scrolled-out container. type: 'ok' | 'err' | 'pending'. Click to dismiss.
+// Uses inline styles (not Tailwind utilities) so it renders correctly regardless of the
+// compiled CSS state.
+function ensureToastHost() {
+  let host = document.getElementById('toastHost');
+  if (!host) {
+    host = document.createElement('div');
+    host.id = 'toastHost';
+    host.style.cssText = 'position:fixed;top:20px;left:50%;transform:translateX(-50%);z-index:9999;display:flex;flex-direction:column;align-items:center;gap:8px;pointer-events:none;';
+    document.body.appendChild(host);
+  }
+  return host;
+}
+function showToast(text, type, opts) {
+  opts = opts || {};
+  const host = ensureToastHost();
+  const bg = type === 'ok' ? 'var(--green)' : type === 'err' ? 'var(--red)' : 'var(--primary)';
+  const el = document.createElement('div');
+  el.style.cssText = `pointer-events:auto;max-width:min(520px,90vw);padding:10px 16px;border-radius:10px;background:${bg};color:#fff;font-size:13px;font-weight:600;line-height:1.5;word-break:break-word;cursor:pointer;box-shadow:0 8px 28px rgba(17,24,39,0.22);animation:panelIn 0.18s cubic-bezier(0.23,1,0.32,1);`;
+  el.textContent = text;
+  const dismiss = () => {
+    if (el._gone) return;
+    el._gone = true;
+    clearTimeout(el._t);
+    el.style.transition = 'opacity 0.18s ease, transform 0.18s ease';
+    el.style.opacity = '0';
+    el.style.transform = 'translateY(-6px)';
+    setTimeout(() => el.remove(), 180);
+  };
+  el.addEventListener('click', dismiss);
+  el.dismiss = dismiss;
+  host.appendChild(el);
+  // pending toasts stay until explicitly replaced; results auto-dismiss (errors linger longer).
+  const ttl = opts.ttl != null ? opts.ttl : (type === 'pending' ? 0 : type === 'err' ? 6000 : 3500);
+  if (ttl) el._t = setTimeout(dismiss, ttl);
+  return el;
+}
+
 let heroRange = '30d';
 async function renderHeroUsage() {
   const wrap = $('heroUsage');
@@ -741,11 +780,6 @@ function openModal(provider) {
   const mapDetails = $('mapRows').closest('details');
   if (mapDetails) mapDetails.open = true;
   updateIconPreview();
-  const tr = $('testResult');
-  if (tr) {
-    tr.classList.add('hidden');
-    tr.classList.remove('ok', 'err', 'pending');
-  }
   $('modal').classList.remove('hidden');
   $('fName').focus();
 }
@@ -1170,34 +1204,25 @@ function bind() {
   $('btnSave').addEventListener('click', async () => {
     const p = collectProvider();
     if (!p.baseUrl) {
-      const tr = $('testResult');
-      if (tr) {
-        tr.textContent = I18n.t('modal.fillUrl');
-        tr.classList.remove('hidden', 'ok', 'pending');
-        tr.classList.add('err');
-      }
+      showToast(I18n.t('modal.fillUrl'), 'err');
       return;
     }
     config = await api.upsertProvider(p);
     closeModal(); renderAll();
   });
   $('btnTest').addEventListener('click', async () => {
-    const tr = $('testResult');
-    if (tr) {
-      tr.textContent = I18n.t('modal.testing');
-      tr.classList.remove('hidden', 'ok', 'err');
-      tr.classList.add('pending');
-      const res = await api.testProvider(collectProvider());
-      let msg;
-      if (res.reason === 'baseUrlEmpty') msg = I18n.t('err.baseUrlEmpty');
-      else if (res.reason === 'baseUrlInvalid') msg = I18n.t('err.baseUrlInvalid');
-      else if (res.reason === 'timeout') msg = I18n.t('err.timeout');
-      else if (res.ok) msg = I18n.t('err.testOk', { model: res.model || '' });
-      else msg = res.message || ('HTTP ' + (res.status || ''));
-      tr.textContent = (res.ok ? '✓ ' : '✗ ') + msg;
-      tr.classList.remove('pending', 'ok', 'err');
-      tr.classList.add(res.ok ? 'ok' : 'err');
-    }
+    // Surface the result as a floating toast — the in-modal alert sits at the bottom of a
+    // scrollable sheet and was easily hidden, leaving users unsure whether the test ran.
+    const pending = showToast(I18n.t('modal.testing'), 'pending');
+    const res = await api.testProvider(collectProvider());
+    let msg;
+    if (res.reason === 'baseUrlEmpty') msg = I18n.t('err.baseUrlEmpty');
+    else if (res.reason === 'baseUrlInvalid') msg = I18n.t('err.baseUrlInvalid');
+    else if (res.reason === 'timeout') msg = I18n.t('err.timeout');
+    else if (res.ok) msg = I18n.t('err.testOk', { model: res.model || '' });
+    else msg = res.message || ('HTTP ' + (res.status || ''));
+    if (pending) pending.dismiss();
+    showToast((res.ok ? '✓ ' : '✗ ') + msg, res.ok ? 'ok' : 'err');
   });
 
   $('btnClearLog').addEventListener('click', () => {

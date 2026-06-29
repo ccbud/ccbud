@@ -30,8 +30,9 @@ function sha256Of(file) {
   catch (_) { return null; }
 }
 
-const arm = sha256Of(path.join(dmgDir, `ccbud-${version}-mac-arm64.dmg`));
-const intel = sha256Of(path.join(dmgDir, `ccbud-${version}-mac-x64.dmg`));
+// Tauri (tauri-action) names the dmgs ccbud_<version>_<arch>.dmg with arch aarch64 / x64.
+const arm = sha256Of(path.join(dmgDir, `ccbud_${version}_aarch64.dmg`));
+const intel = sha256Of(path.join(dmgDir, `ccbud_${version}_x64.dmg`));
 
 let shaStanza;
 if (arm && intel) {
@@ -43,12 +44,12 @@ if (arm && intel) {
 }
 
 const cask = `cask "ccbud" do
-  arch arm: "arm64", intel: "x64"
+  arch arm: "aarch64", intel: "x64"
 
   version "${version}"
 ${shaStanza}
 
-  url "https://github.com/ccbud/ccbud/releases/download/v#{version}/ccbud-#{version}-mac-#{arch}.dmg",
+  url "https://github.com/ccbud/ccbud/releases/download/v#{version}/ccbud_#{version}_#{arch}.dmg",
       verified: "github.com/ccbud/ccbud/"
   name "ccbud"
   desc "Claude Code Gateway — proxy Claude Code to any Anthropic-compatible provider"

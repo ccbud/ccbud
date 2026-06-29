@@ -42,6 +42,23 @@ pub fn default_config() -> Value {
     })
 }
 
+/// Collapse a home-prefixed absolute path back to `~` form so the UI shows
+/// `~/.claude` instead of `/Users/<name>/.claude`. Inverse of history::expand_tilde.
+pub fn collapse_home(p: &str) -> String {
+    let home = std::env::var("HOME").unwrap_or_default();
+    if home.is_empty() {
+        return p.to_string();
+    }
+    let home = home.trim_end_matches('/');
+    if p == home {
+        return "~".to_string();
+    }
+    if let Some(rest) = p.strip_prefix(&format!("{}/", home)) {
+        return format!("~/{}", rest);
+    }
+    p.to_string()
+}
+
 fn str_of(v: Option<&Value>) -> String {
     v.and_then(|x| x.as_str()).unwrap_or("").to_string()
 }
@@ -169,9 +186,10 @@ pub fn normalize(input: Value) -> Value {
     if let Some(Value::Array(ds)) = obj.get("historyDirs") {
         for d in ds {
             if let Some(s) = d.as_str() {
-                let t = s.trim().trim_end_matches(['/', '\\']);
-                if !t.is_empty() && !dirs.iter().any(|x| x == t) {
-                    dirs.push(t.to_string());
+                // Collapse home-prefixed absolute paths to `~/…` for a tidy, portable display.
+                let t = collapse_home(s.trim().trim_end_matches(['/', '\\']));
+                if !t.is_empty() && !dirs.iter().any(|x| *x == t) {
+                    dirs.push(t);
                 }
             }
         }
