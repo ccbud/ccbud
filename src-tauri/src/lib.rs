@@ -215,11 +215,12 @@ async fn provider_test(p: Value) -> Value {
         Ok(c) => c,
         Err(e) => return json!({ "ok": false, "message": e.to_string() }),
     };
+    // Auth via Authorization: Bearer only. Sending both authorization and x-api-key trips
+    // providers that reject having the two auth headers present at once.
     let resp = client
         .post(&url)
         .header("content-type", "application/json")
         .header("authorization", format!("Bearer {}", token))
-        .header("x-api-key", token)
         .header("anthropic-version", "2023-06-01")
         .json(&body)
         .send()
@@ -645,20 +646,14 @@ fn history_dirs() -> Value {
     json!({ "dirs": history::dir_stats(&cfg), "active": active })
 }
 #[tauri::command]
-async fn history_pick_dir(app: tauri::AppHandle) -> Result<Value, String> {
+async fn history_pick_dir() -> Result<Value, String> {
     let folder = rfd::AsyncFileDialog::new().set_title("选择 Claude 配置目录").pick_folder().await;
     match folder {
+        // Return the picked path (home-collapsed to `~/…`) and let the renderer persist it
+        // via saveConfig — mirrors the Electron `history:pickDir` contract the UI expects.
         Some(f) => {
-            let dir = f.path().to_string_lossy().to_string();
-            let mut cfg = store::read_config();
-            let mut dirs: Vec<Value> = cfg.get("historyDirs").and_then(|v| v.as_array()).cloned().unwrap_or_default();
-            if !dirs.iter().any(|d| d.as_str() == Some(dir.as_str())) {
-                dirs.push(json!(dir));
-            }
-            cfg["historyDirs"] = json!(dirs);
-            let saved = store::write_config(cfg);
-            let _ = app.emit("history:changed", json!({ "files": [] }));
-            Ok(json!({ "ok": true, "dir": dir, "config": saved }))
+            let path = store::collapse_home(&f.path().to_string_lossy());
+            Ok(json!({ "ok": true, "path": path }))
         }
         None => Ok(json!({ "ok": false, "canceled": true })),
     }
