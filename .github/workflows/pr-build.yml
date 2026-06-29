@@ -1,0 +1,108 @@
+name: PR Build
+
+# Build installable packages for a pull request so the change can be downloaded and installed to
+# verify it (the local sandbox can't run the Tauri build). Each platform's installer is versioned
+# <version>-<short sha> (e.g. 1.1.3-60de9c5) and uploaded as a workflow artifact. This does NOT
+# publish a GitHub Release or updater artifacts — that stays in release.yml (push to main).
+on:
+  pull_request:
+    branches: [main]
+    paths-ignore:
+      - 'README.md'
+      - 'README.zh-CN.md'
+      - '.gitignore'
+
+# A new push to the PR cancels the in-flight build for that PR.
+concurrency:
+  group: pr-build-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.platform }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS arm64
+            platform: macos-latest
+            args: '--target aarch64-apple-darwin'
+            artifact: macos-arm64
+          - name: Linux x64
+            platform: ubuntu-22.04
+            args: ''
+            artifact: linux-x64
+          - name: Windows x64
+            platform: windows-latest
+            args: ''
+            artifact: windows-x64
+    steps:
+      # Build the PR's head commit itself (not the synthetic merge commit) so the short sha that
+      # ends up in the version matches the commit the developer is testing.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ contains(matrix.platform, 'macos') && 'aarch64-apple-darwin' || '' }}
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: './src-tauri -> target'
+
+      - name: Install Linux deps
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev
+
+      - name: Install frontend deps
+        run: npm install --no-audit --no-fund
+
+      # Stamp the version as <manifest version>-<short sha> and disable the release-only bundles:
+      # updater artifacts (need the signing key, absent on PRs) and msi/rpm (not needed to verify
+      # an install). The edits are CI-only — the committed manifests are untouched.
+      - name: Stamp dev version
+        shell: bash
+        run: |
+          BASE=$(node -p "require('./package.json').version")
+          SHA=$(git rev-parse --short=7 HEAD)
+          DEV="${BASE}-${SHA}"
+          echo "DEV_VERSION=$DEV" >> "$GITHUB_ENV"
+          echo "Building ccbud $DEV"
+          node -e "const fs=require('fs'),f='package.json',j=JSON.parse(fs.readFileSync(f));j.version='$DEV';fs.writeFileSync(f,JSON.stringify(j,null,2)+'\n')"
+          node -e "const fs=require('fs'),f='src-tauri/tauri.conf.json',j=JSON.parse(fs.readFileSync(f));j.version='$DEV';j.bundle.createUpdaterArtifacts=false;j.bundle.targets=['app','dmg','appimage','deb','nsis'];fs.writeFileSync(f,JSON.stringify(j,null,2)+'\n')"
+
+      # No tagName/releaseName -> tauri-action only builds (no Release is created). Unsigned.
+      - uses: tauri-apps/tauri-action@v0
+        with:
+          args: ${{ matrix.args }}
+
+      - name: Upload installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: ccbud-${{ env.DEV_VERSION }}-${{ matrix.artifact }}
+          if-no-files-found: error
+          # Native builds land in target/release/bundle; cross-target builds (macOS arm64) land in
+          # target/<triple>/release/bundle. Cover both explicitly rather than relying on a glob.
+          path: |
+            src-tauri/target/release/bundle/**/*.dmg
+            src-tauri/target/release/bundle/**/*.AppImage
+            src-tauri/target/release/bundle/**/*.deb
+            src-tauri/target/release/bundle/**/*.exe
+            src-tauri/target/*/release/bundle/**/*.dmg
+            src-tauri/target/*/release/bundle/**/*.AppImage
+            src-tauri/target/*/release/bundle/**/*.deb
+            src-tauri/target/*/release/bundle/**/*.exe
