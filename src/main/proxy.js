@@ -76,7 +76,7 @@ function isClaudeDefault(name) {
  *
  * @param {Set<string>} [knownModels] real upstream model ids for the active provider.
  */
-function resolveRouting(requestedModel, config, knownModels) {
+function resolveRouting(requestedModel, config, knownModels, wants1m) {
   const providers = (config && config.providers) || [];
   if (providers.length === 0) return null;
 
@@ -92,6 +92,19 @@ function resolveRouting(requestedModel, config, knownModels) {
   const light = active.smallFastModel || '';
 
   // 1) Custom alias of the ACTIVE provider -> rewrite to the user's upstream model.
+  //    1M (extended) context is requested via the `context-1m` beta header ONLY; Claude Code
+  //    strips the `[1m]` the user picked from the model field on the wire (see the LLM gateway
+  //    protocol). So when 1M is asked for, first honor an explicit `<model>[1m]` alias — letting
+  //    1M traffic reach a 1M-capable upstream — then fall through to the plain-name alias. The
+  //    response is renamed back to the exact name the client sent.
+  if (wants1m && !requestedModel.endsWith('[1m]')) {
+    const key = requestedModel + '[1m]';
+    for (const m of active.models || []) {
+      if (m && m.alias === key && m.upstream) {
+        return { provider: active, outgoingModel: m.upstream, clientFacingModel: requestedModel };
+      }
+    }
+  }
   for (const m of active.models || []) {
     if (m && m.alias && m.alias === requestedModel && m.upstream) {
       return { provider: active, outgoingModel: m.upstream, clientFacingModel: requestedModel };
@@ -336,7 +349,11 @@ function createGateway({ getConfig }) {
     const activeForCache = providersList.find((p) => p.id === config.activeProviderId) || providersList[0];
     const knownModels = activeForCache ? modelsCache.get(activeForCache.id) : null;
 
-    const routing = resolveRouting(requestedModel, config, knownModels);
+    // 1M (extended) context is signaled by the `context-1m` beta header, not a model-name suffix;
+    // pass it to routing so a `<model>[1m]` alias is honored (the header is forwarded either way).
+    const wants1m = String(req.headers['anthropic-beta'] || '').includes('context-1m');
+
+    const routing = resolveRouting(requestedModel, config, knownModels, wants1m);
     if (!routing || !routing.provider) {
       respondJson(res, 502, JSON.parse(errorBody('ccbud: no provider configured. Add one in the app.', 'api_error')));
       log('warn', 'request rejected: no provider configured');
@@ -812,7 +829,7 @@ function createGateway({ getConfig }) {
     stop,
     status,
     // exported for testing
-    _resolveRouting: (m, c, k) => resolveRouting(m, c, k),
+    _resolveRouting: (m, c, k, w) => resolveRouting(m, c, k, w),
   };
 }
 

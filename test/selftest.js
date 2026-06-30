@@ -156,6 +156,23 @@ function firstModelInSse(sse) {
       return r && r.outgoingModel === 'whatever-x' && r.clientFacingModel === 'whatever-x';
     })()
   );
+  // 1M context arrives as the `context-1m` beta header (4th arg = wants1m), NOT a model-name
+  // suffix, so a `<model>[1m]` alias must resolve from the base name; the response is renamed back.
+  const cfg1m = { port: 0, activeProviderId: 'p', providers: [{ id: 'p', name: 'P', baseUrl: 'https://x', authToken: '', defaultModel: 'big-model', smallFastModel: 'small-model', mapDefaultModels: true, models: [{ alias: 'claude-opus-4-8[1m]', upstream: 'up-1m' }] }] };
+  check(
+    'context-1m beta resolves the <model>[1m] alias (renamed back to the base name)',
+    (() => {
+      const r = gateway._resolveRouting('claude-opus-4-8', cfg1m, null, true);
+      return r && r.outgoingModel === 'up-1m' && r.clientFacingModel === 'claude-opus-4-8';
+    })()
+  );
+  check(
+    'without the beta, the same name auto-maps (no [1m] alias match)',
+    (() => {
+      const r = gateway._resolveRouting('claude-opus-4-8', cfg1m, null, false);
+      return r && r.outgoingModel === 'big-model';
+    })()
+  );
 
   if (!GLM.authToken) {
     console.log('\n(skipping live upstream checks — set CCBUD_TEST_TOKEN to run them)');

@@ -1,6 +1,6 @@
 // Gateway core — Rust port of proxy.js. Phase 2.
 //
-// Implements: deterministic ROUTING (resolve_routing + routing_selftest, 8/8 parity with
+// Implements: deterministic ROUTING (resolve_routing + routing_selftest, parity with
 // test/selftest.js) AND the localhost reverse proxy — header sanitizing, upstream forwarding
 // (reqwest, auto gzip/br/deflate decode), 429 retry, SSE streaming with model rewrite + usage
 // sniffing, buffered-JSON model rewrite, /v1/models merge/synthesize, and HEAD / 404→200.
@@ -53,10 +53,17 @@ pub struct Routing {
 }
 
 /// Decide how to route a request and translate its model name. Mirrors proxy.js `resolveRouting`.
+///
+/// `wants_1m` is set when the request carries the `context-1m` Anthropic beta. 1M (extended)
+/// context is requested by header ONLY — Claude Code strips the `[1m]` the user picked from the
+/// model field on the wire (see the LLM gateway protocol: "Extended context … Beta headers only,
+/// no body field"). So to honor a user's `<model>[1m]` alias we have to reconstruct that key from
+/// the beta flag; without this, every 1M request misses the alias and falls through to auto-map.
 pub fn resolve_routing(
     requested_model: Option<&str>,
     config: &Value,
     known_models: Option<&HashSet<String>>,
+    wants_1m: bool,
 ) -> Option<Routing> {
     let providers = config.get("providers")?.as_array()?;
     if providers.is_empty() {
@@ -92,7 +99,25 @@ pub fn resolve_routing(
     let light = active.get("smallFastModel").and_then(|v| v.as_str()).unwrap_or("");
     let models = active.get("models").and_then(|v| v.as_array());
 
+    // 1) Custom alias of the ACTIVE provider. When the client asked for 1M context, prefer the
+    // explicit `<model>[1m]` alias (the suffix never arrives in the model field — it's the
+    // `context-1m` beta header), so 1M traffic can be routed to a 1M-capable upstream. The response
+    // is still renamed back to the exact name the client sent (client_facing_model = requested).
     if let Some(ms) = models {
+        if wants_1m && !requested.ends_with("[1m]") {
+            let key = format!("{}[1m]", requested);
+            for m in ms {
+                let alias = m.get("alias").and_then(|v| v.as_str()).unwrap_or("");
+                let upstream = m.get("upstream").and_then(|v| v.as_str()).unwrap_or("");
+                if alias == key.as_str() && !upstream.is_empty() {
+                    return Some(Routing {
+                        provider_id: pid.clone(),
+                        outgoing_model: Some(upstream.to_string()),
+                        client_facing_model: Some(requested.to_string()),
+                    });
+                }
+            }
+        }
         for m in ms {
             let alias = m.get("alias").and_then(|v| v.as_str()).unwrap_or("");
             let upstream = m.get("upstream").and_then(|v| v.as_str()).unwrap_or("");
@@ -578,7 +603,15 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
         None => None,
     };
 
-    let routing = match resolve_routing(requested_model.as_deref(), &config, known.as_ref()) {
+    // 1M (extended) context is signaled by the `context-1m` beta header, not a model-name suffix;
+    // surface it to routing so a `<model>[1m]` alias can be honored (forwarded verbatim either way).
+    let wants_1m = in_headers
+        .get("anthropic-beta")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.contains("context-1m"))
+        .unwrap_or(false);
+
+    let routing = match resolve_routing(requested_model.as_deref(), &config, known.as_ref(), wants_1m) {
         Some(r) => r,
         None => {
             st.log("warn", "request rejected: no provider configured");
@@ -1038,7 +1071,7 @@ pub async fn gateway_selftest(gport: u16) -> Value {
     })
 }
 
-/// In-binary equivalent of test/selftest.js's 8 routing unit checks.
+/// In-binary equivalent of test/selftest.js's routing unit checks.
 pub fn routing_selftest() -> Value {
     let config = json!({ "port":0, "activeProviderId":"glm", "providers":[
         { "id":"glm","name":"GLM","baseUrl":"https://x","authToken":"","defaultModel":"glm-5.1","smallFastModel":"glm-5.1","mapDefaultModels":true,"models":[{"alias":"claude-opus-4.8[1m]","upstream":"glm-5.1"}] }
@@ -1064,24 +1097,35 @@ pub fn routing_selftest() -> Value {
         }
     };
 
-    let r = resolve_routing(Some("claude-opus-4.8[1m]"), &config, None);
+    let r = resolve_routing(Some("claude-opus-4.8[1m]"), &config, None, false);
     chk("1 alias→upstream", out(&r).as_deref() == Some("glm-5.1") && cf(&r).as_deref() == Some("claude-opus-4.8[1m]"));
-    let r = resolve_routing(Some("glm-5.1"), &config, None);
+    let r = resolve_routing(Some("glm-5.1"), &config, None, false);
     chk("2 real passthrough", out(&r).as_deref() == Some("glm-5.1") && cf(&r).as_deref() == Some("glm-5.1"));
-    let r = resolve_routing(Some("claude-3-5-haiku-20241022"), &cfg2, None);
+    let r = resolve_routing(Some("claude-3-5-haiku-20241022"), &cfg2, None, false);
     chk("3 haiku→light", out(&r).as_deref() == Some("small-model"));
-    let r = resolve_routing(Some("claude-sonnet-4-6"), &cfg2, None);
+    let r = resolve_routing(Some("claude-sonnet-4-6"), &cfg2, None, false);
     chk("4 sonnet→primary", out(&r).as_deref() == Some("big-model"));
-    let r = resolve_routing(Some("gpt-4-turbo"), &cfg2, None);
+    let r = resolve_routing(Some("gpt-4-turbo"), &cfg2, None, false);
     chk("5 foreign→light", out(&r).as_deref() == Some("small-model"));
     let mut known = HashSet::new();
     known.insert("glm-5.2".to_string());
-    let r = resolve_routing(Some("glm-5.2"), &cfg2, Some(&known));
+    let r = resolve_routing(Some("glm-5.2"), &cfg2, Some(&known), false);
     chk("6 known passthrough", out(&r).as_deref() == Some("glm-5.2"));
-    let r = resolve_routing(Some("other-alias"), &cfg2, None);
+    let r = resolve_routing(Some("other-alias"), &cfg2, None, false);
     chk("7 stays on active", pidf(&r).as_deref() == Some("main") && out(&r).as_deref() == Some("small-model"));
-    let r = resolve_routing(Some("whatever-x"), &off, None);
+    let r = resolve_routing(Some("whatever-x"), &off, None, false);
     chk("8 mapoff passthrough", out(&r).as_deref() == Some("whatever-x"));
+
+    // 9) 1M context: the `[1m]` suffix never reaches the model field (it's the context-1m beta
+    // header), so a request for the base name + wants_1m must resolve the `<model>[1m]` alias and
+    // rename the response back to the base name. wants_1m=false leaves it to plain alias/auto-map.
+    let cfg1m = json!({ "port":0, "activeProviderId":"p", "providers":[
+        { "id":"p","name":"P","baseUrl":"https://x","authToken":"","defaultModel":"big-model","smallFastModel":"small-model","mapDefaultModels":true,"models":[{"alias":"claude-opus-4-8[1m]","upstream":"up-1m"}] }
+    ]});
+    let r = resolve_routing(Some("claude-opus-4-8"), &cfg1m, None, true);
+    chk("9 context-1m → [1m] alias", out(&r).as_deref() == Some("up-1m") && cf(&r).as_deref() == Some("claude-opus-4-8"));
+    let r = resolve_routing(Some("claude-opus-4-8"), &cfg1m, None, false);
+    chk("9b no beta → auto-map (no [1m] match)", out(&r).as_deref() == Some("big-model"));
 
     json!({ "total": n, "passed": n - fails.len(), "failed": fails.len(), "fails": fails })
 }
@@ -1093,7 +1137,7 @@ mod tests {
     fn routing_parity_with_proxy_js() {
         let r = routing_selftest();
         assert_eq!(r.get("failed").and_then(|v| v.as_i64()), Some(0), "routing mismatch: {:?}", r);
-        assert_eq!(r.get("passed").and_then(|v| v.as_i64()), Some(8));
+        assert_eq!(r.get("passed").and_then(|v| v.as_i64()), Some(10));
     }
     #[test]
     fn synthesize_models_includes_claude_tiers() {
