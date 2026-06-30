@@ -55,6 +55,7 @@
     historyImportPaths: (paths) => inv('history_import_paths', { paths }),
     historyRemoveImport: (file) => inv('history_remove_import', { file }),
     historySetMeta: (file, patch) => inv('history_set_meta', { file, patch }),
+    historyDeleteForever: (file) => inv('history_delete_forever', { file }),
     historyExportRaw: (file) => inv('history_export_raw', { file }),
     historyExportHtml: (payload) => inv('history_export_html', { payload }),
     // Electron used webUtils.getPathForFile on a dragged File; under Tauri the real path

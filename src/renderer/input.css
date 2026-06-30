@@ -1676,6 +1676,8 @@ body {
   cursor: pointer;
 }
 .conv-ctx-item:hover { background: var(--chip-bg); }
+.conv-ctx-item.conv-ctx-danger { color: var(--red-text); }
+.conv-ctx-item.conv-ctx-danger:hover { background: var(--red-soft); }
 
 /* drag-a-.jsonl-to-import overlay */
 .conv-drop-overlay {

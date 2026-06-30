@@ -11,6 +11,10 @@ use serde_json::{json, Value};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+/// Synthetic "recycle bin" bucket id. Not a real projects tree (never in all_dirs /
+/// each_session_file) — a cross-cutting view of soft-deleted sessions across every dir.
+pub const TRASH_ID: &str = "__trash__";
+
 fn home() -> PathBuf {
     std::env::var("HOME").map(PathBuf::from).unwrap_or_else(|_| PathBuf::from("."))
 }
@@ -149,8 +153,8 @@ fn first_user_text(messages: &[Value]) -> String {
     fallback_cmd.chars().take(90).collect()
 }
 
-/// __ccbud__ customization (custom title + tags) from any record carrying it.
-fn read_ccbud(recs: &[Value]) -> (Option<String>, Vec<String>) {
+/// __ccbud__ customization (custom title + tags + soft-delete flag) from any record carrying it.
+fn read_ccbud(recs: &[Value]) -> (Option<String>, Vec<String>, bool) {
     let c = recs.iter().find_map(|r| r.get("__ccbud__"));
     let title = c
         .and_then(|c| c.get("title"))
@@ -168,7 +172,36 @@ fn read_ccbud(recs: &[Value]) -> (Option<String>, Vec<String>) {
                 .collect()
         })
         .unwrap_or_default();
-    (title, tags)
+    let deleted = c.and_then(|c| c.get("delete")).and_then(|v| v.as_bool()).unwrap_or(false);
+    (title, tags, deleted)
+}
+
+/// Process-lifetime memo of soft-delete status, keyed `path -> (mtime, deleted)`. mtime is the
+/// invalidation signal: set_ccbud rewrites the file (bumping mtime) whenever the flag flips, so a
+/// matching mtime means the cached answer is still valid. This lets dir_stats *stat* unchanged
+/// sessions on each refresh instead of re-reading them — only new/changed files get parsed.
+fn deleted_cache() -> &'static std::sync::Mutex<std::collections::HashMap<PathBuf, (f64, bool)>> {
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<PathBuf, (f64, bool)>>> =
+        std::sync::OnceLock::new();
+    CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+/// Cheap soft-delete probe for counting, memoized by mtime. The `__ccbud__.delete` flag rides on the
+/// first parseable line, so a small head read suffices (the full meta read happens later in session_meta).
+fn is_session_deleted(file: &Path) -> bool {
+    let mt = mtime_ms(file);
+    if let Ok(cache) = deleted_cache().lock() {
+        if let Some(&(cmt, del)) = cache.get(file) {
+            if cmt == mt {
+                return del;
+            }
+        }
+    }
+    let del = read_ccbud(&parse_lines(&read_head(file, 16384))).2;
+    if let Ok(mut cache) = deleted_cache().lock() {
+        cache.insert(file.to_path_buf(), (mt, del));
+    }
+    del
 }
 
 fn line_to_message(rec: &Value) -> Option<Value> {
@@ -321,7 +354,7 @@ fn session_meta(file: &Path, dir_name: &str, dir_id: &str, dir_label: &str) -> O
         .or_else(|| recs.iter().find(|r| r.get("sessionId").is_some()));
     let agent_rec = recs.iter().find(|r| r.get("agentId").is_some());
     let msgs: Vec<Value> = recs.iter().filter_map(line_to_message).collect();
-    let (cc_title, cc_tags) = read_ccbud(&recs);
+    let (cc_title, cc_tags, cc_deleted) = read_ccbud(&recs);
     let auto_title = first_user_text(&msgs);
     let mut model: Option<String> = None;
     for r in &recs {
@@ -355,26 +388,39 @@ fn session_meta(file: &Path, dir_name: &str, dir_id: &str, dir_label: &str) -> O
         "model": model,
         "isSubagent": subagent,
         "imported": dir_id == "__imported__",
+        "deleted": cc_deleted,
         "lastActivity": mt,
         "sizeKB": (size as f64 / 1024.0).round() as i64,
     }))
 }
 
 pub fn list_sessions(config: &Value, active: &str, limit: usize) -> Vec<Value> {
+    // The recycle bin spans every dir and shows only soft-deleted sessions; every other view
+    // is scoped to its dir and hides them.
+    let trash = active == TRASH_ID;
     let mut files: Vec<(PathBuf, String, String, String, f64)> = vec![];
     each_session_file(config, |file, dir_name, id, label| {
-        if active != "all" && id != active {
+        if !trash && active != "all" && id != active {
             return;
         }
         let mt = mtime_ms(&file);
         files.push((file, dir_name, id.to_string(), label.to_string(), mt));
     });
     files.sort_by(|a, b| b.4.partial_cmp(&a.4).unwrap_or(std::cmp::Ordering::Equal));
-    files
-        .into_iter()
-        .take(limit)
-        .filter_map(|(file, dn, id, label, _)| session_meta(&file, &dn, &id, &label))
-        .collect()
+    // Walk newest-first, reading until `limit` rows land on the right side of the deleted/active
+    // partition. Bounds normal-view cost to ~limit reads (deleted sessions are the rare case).
+    let mut out: Vec<Value> = Vec::new();
+    for (file, dn, id, label, _) in files {
+        if out.len() >= limit {
+            break;
+        }
+        if let Some(m) = session_meta(&file, &dn, &id, &label) {
+            if m.get("deleted").and_then(|v| v.as_bool()).unwrap_or(false) == trash {
+                out.push(m);
+            }
+        }
+    }
+    out
 }
 
 pub fn list_projects(config: &Value, active: &str) -> Vec<Value> {
@@ -410,11 +456,18 @@ pub fn list_projects(config: &Value, active: &str) -> Vec<Value> {
 }
 
 pub fn dir_stats(config: &Value) -> Vec<Value> {
+    // Per-dir counts exclude soft-deleted sessions (they're hidden from those views); the deleted
+    // ones are tallied separately into the synthetic recycle-bin bucket.
     let mut counts: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
-    each_session_file(config, |_file, _dn, id, _label| {
-        *counts.entry(id.to_string()).or_insert(0) += 1;
+    let mut trash = 0i64;
+    each_session_file(config, |file, _dn, id, _label| {
+        if is_session_deleted(&file) {
+            trash += 1;
+        } else {
+            *counts.entry(id.to_string()).or_insert(0) += 1;
+        }
     });
-    all_dirs(config)
+    let mut out: Vec<Value> = all_dirs(config)
         .into_iter()
         .map(|(id, label, pd)| {
             let exists = pd.is_dir();
@@ -424,7 +477,12 @@ pub fn dir_stats(config: &Value) -> Vec<Value> {
                 "sessions": counts.get(&id).copied().unwrap_or(0), "exists": exists, "imported": imported,
             })
         })
-        .collect()
+        .collect();
+    out.push(json!({
+        "id": TRASH_ID, "label": "回收站", "projectsDir": "",
+        "sessions": trash, "exists": true, "imported": false, "trash": true,
+    }));
+    out
 }
 
 /// Read a session's child subagent dialogues from `<stem>/subagents/agent-*.jsonl` (+ .meta.json),
@@ -515,7 +573,7 @@ pub fn get_session(file: &str) -> Value {
         .iter()
         .find(|r| r.get("type").and_then(|v| v.as_str()) == Some("summary") && r.get("summary").is_some())
         .and_then(|r| r.get("summary").cloned());
-    let (cc_title, cc_tags) = read_ccbud(&recs);
+    let (cc_title, cc_tags, cc_deleted) = read_ccbud(&recs);
     let shaped = shape_messages(&recs);
     let auto_title = first_user_text(&shaped.messages);
     let subagent = agent_rec.is_some();
@@ -549,6 +607,7 @@ pub fn get_session(file: &str) -> Value {
             "gitBranch": meta_rec.and_then(|r| r.get("gitBranch")).cloned().unwrap_or(Value::Null),
             "version": meta_rec.and_then(|r| r.get("version")).cloned().unwrap_or(Value::Null),
             "isSubagent": subagent,
+            "deleted": cc_deleted,
             "imported": import_meta.is_some(),
             "importedFrom": import_meta.as_ref().and_then(|m| m.get("originalPath")).cloned().unwrap_or(Value::Null),
             "importedAt": import_meta.as_ref().and_then(|m| m.get("importedAt")).cloned().unwrap_or(Value::Null),
@@ -623,6 +682,15 @@ pub fn set_ccbud(file: &str, patch: &Value, config: &Value) -> Value {
             next.remove("tagList");
         }
     }
+    // Soft delete / restore: `delete: true` marks the session deleted; `delete: false` (restore)
+    // drops the flag. Restore that empties __ccbud__ removes the field wholesale below.
+    if let Some(d) = patch.get("delete") {
+        if d.as_bool().unwrap_or(false) {
+            next.insert("delete".into(), json!(true));
+        } else {
+            next.remove("delete");
+        }
+    }
     let o = obj.as_object_mut().unwrap();
     if !next.is_empty() {
         o.insert("__ccbud__".into(), Value::Object(next));
@@ -642,6 +710,30 @@ pub fn set_ccbud(file: &str, patch: &Value, config: &Value) -> Value {
     json!({ "ok": true })
 }
 
+/// Permanently remove a session's .jsonl from disk (recycle-bin "delete forever"). Guarded to the
+/// configured dirs + the imports store exactly like set_ccbud, and also drops the session's
+/// `<stem>/` subagents tree and any import sidecar (mirrors remove_import's cleanup).
+pub fn delete_session_file(file: &str, config: &Value) -> Value {
+    let target = Path::new(file);
+    let within = all_dirs(config).iter().any(|(_, _, pd)| target.starts_with(pd));
+    if !within {
+        return json!({ "ok": false, "reason": "out-of-scope" });
+    }
+    if !target.is_file() {
+        return json!({ "ok": false, "reason": "missing" });
+    }
+    if fs::remove_file(target).is_err() {
+        return json!({ "ok": false, "reason": "remove" });
+    }
+    let dir = target.parent().unwrap_or(Path::new("."));
+    let stem = target.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+    if !stem.is_empty() {
+        let _ = fs::remove_dir_all(dir.join(stem)); // <stem>/subagents/...
+        let _ = fs::remove_file(dir.join(format!("{}.import.json", stem)));
+    }
+    json!({ "ok": true })
+}
+
 /// Self-contained round-trip test of set_ccbud + get_session in a throwaway projects tree.
 pub fn history_selftest(base_dir: &Path) -> Value {
     let proj = base_dir.join("test-claude").join("projects").join("-test-cwd");
@@ -656,11 +748,22 @@ pub fn history_selftest(base_dir: &Path) -> Value {
     let title = sess.get("meta").and_then(|m| m.get("title")).and_then(|v| v.as_str()).unwrap_or("").to_string();
     let tags = sess.get("meta").and_then(|m| m.get("tags")).and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0);
     let auto = sess.get("meta").and_then(|m| m.get("autoTitle")).and_then(|v| v.as_str()).unwrap_or("").to_string();
+    // Soft-delete round-trip: marked → hidden from "all" but present in trash → restored → back in "all".
+    let _ = set_ccbud(&fpath, &json!({ "delete": true }), &config);
+    let after_del = get_session(&fpath).get("meta").and_then(|m| m.get("deleted")).and_then(|v| v.as_bool()).unwrap_or(false);
+    let hidden_in_all = !list_sessions(&config, "all", 50).iter().any(|s| s.get("file").and_then(|v| v.as_str()) == Some(fpath.as_str()));
+    let shown_in_trash = list_sessions(&config, TRASH_ID, 50).iter().any(|s| s.get("file").and_then(|v| v.as_str()) == Some(fpath.as_str()));
+    let _ = set_ccbud(&fpath, &json!({ "delete": false }), &config);
+    let restored = !get_session(&fpath).get("meta").and_then(|m| m.get("deleted")).and_then(|v| v.as_bool()).unwrap_or(false);
     json!({
         "setOk": set.get("ok").and_then(|v| v.as_bool()).unwrap_or(false),
         "title": title,
         "tagCount": tags,
         "autoTitle": auto,
+        "deletedAfterMark": after_del,
+        "hiddenInAll": hidden_in_all,
+        "shownInTrash": shown_in_trash,
+        "restored": restored,
     })
 }
 

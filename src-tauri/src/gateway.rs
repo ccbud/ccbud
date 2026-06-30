@@ -12,7 +12,7 @@
 use axum::{
     body::{to_bytes, Body},
     extract::State,
-    http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri},
+    http::{HeaderMap, HeaderValue, Method, StatusCode, Uri},
     response::Response,
     Router,
 };
@@ -632,11 +632,11 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
     }
     up_headers.insert(axum::http::header::ACCEPT_ENCODING, HeaderValue::from_static("identity"));
     if !auth_token.is_empty() {
+        // Auth via Authorization: Bearer only. Sending both authorization and x-api-key trips
+        // providers that reject having the two auth headers present at once (matches provider_test).
+        // Both inbound auth headers are already stripped by HOP_BY_HOP_REQ above.
         if let Ok(val) = HeaderValue::from_str(&format!("Bearer {}", auth_token)) {
             up_headers.insert(axum::http::header::AUTHORIZATION, val);
-        }
-        if let (Ok(name), Ok(val)) = (HeaderName::from_bytes(b"x-api-key"), HeaderValue::from_str(&auth_token)) {
-            up_headers.insert(name, val);
         }
     }
 

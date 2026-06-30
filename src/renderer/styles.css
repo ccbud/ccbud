@@ -4481,6 +4481,12 @@ body {
 .conv-ctx-item:hover {
   background: var(--chip-bg);
 }
+.conv-ctx-item.conv-ctx-danger {
+  color: var(--red-text);
+}
+.conv-ctx-item.conv-ctx-danger:hover {
+  background: var(--red-soft);
+}
 .conv-drop-overlay {
   position: fixed;
   inset: 0;

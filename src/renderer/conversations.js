@@ -18,6 +18,7 @@
   let openId = null;
   let openFile = null;
   let search = '';
+  let activeDir = 'all';  // active history bucket; '__trash__' = recycle bin (deleted sessions)
   let tagFilter = null;   // when set, the list shows only conversations carrying this exact tag
   let tagClickTimer = null; // debounces a tag's single-click (filter) so a double-click (edit) can cancel it
   let listTimer = null;
@@ -274,22 +275,39 @@
   /* ---------- list (projects → sessions) ---------- */
   async function refresh() {
     try { projects = (await api.historyProjects()) || []; } catch (_) { projects = []; }
-    renderDirSwitch();
+    // Fetch dir stats up front so activeDir (which renderList reads for trash mode) is set before
+    // the list renders — and pass the data into renderDirSwitch to avoid a second round-trip.
+    let dirData = null;
+    if (api.historyDirs) { try { dirData = await api.historyDirs(); } catch (_) { dirData = null; } }
+    activeDir = (dirData && dirData.active) || 'all';
+    renderDirSwitch(dirData);
     renderList();
   }
 
-  async function renderDirSwitch() {
+  async function renderDirSwitch(pre) {
     const host = $('convDirSwitch');
     if (!host || !api.historyDirs) return;
-    let data; try { data = await api.historyDirs(); } catch (_) { data = { dirs: [], active: 'all' }; }
+    let data = pre;
+    if (!data) { try { data = await api.historyDirs(); } catch (_) { data = { dirs: [], active: 'all' }; } }
+    const active = data.active || 'all';
+    const allDirs = data.dirs || [];
+    // Recycle bin: a synthetic bucket of soft-deleted sessions. Surface its chip whenever something
+    // is in it (or it's the active view), so single-dir users still get an entry point.
+    const trashEntry = allDirs.find((d) => d.id === '__trash__' || d.trash);
+    const trashN = trashEntry ? (trashEntry.sessions || 0) : 0;
+    const showTrash = trashN > 0 || active === '__trash__';
     // Hide the synthetic 导入 chip until something is actually imported (keeps the bar clean / unchanged
     // for single-dir users). The + button is the import entry point regardless.
-    const dirs = (data.dirs || []).filter((d) => !(d.imported && !d.sessions));
-    if (dirs.length <= 1) { host.classList.add('hidden'); host.innerHTML = ''; return; }
-    const active = data.active || 'all';
-    const opts = [{ id: 'all', label: L('conv.all') }].concat(dirs.map((d) => ({ id: d.id, label: d.label, imported: d.imported, sessions: d.sessions })));
+    const dirs = allDirs.filter((d) => d.id !== '__trash__' && !d.trash && !(d.imported && !d.sessions));
+    const showDirs = dirs.length > 1;
+    if (!showDirs && !showTrash) { host.classList.add('hidden'); host.innerHTML = ''; return; }
+    const opts = [{ id: 'all', label: L('conv.all') }].concat(showDirs ? dirs.map((d) => ({ id: d.id, label: d.label, imported: d.imported, sessions: d.sessions })) : []);
     host.classList.remove('hidden');
-    host.innerHTML = opts.map((o) => `<button class="dir-chip inline-flex items-center gap-1.25 border border-border-custom bg-transparent text-muted font-medium text-[11.5px] px-2.5 py-1 rounded-full cursor-pointer transition-all duration-150 hover:text-fg hover:bg-chip-bg whitespace-nowrap ${o.id === active ? 'active' : ''}" data-dir="${esc(o.id)}" title="${esc(o.label)}">${o.imported ? '<span class="dir-chip-ico">' + (ICN.download || '') + '</span>' : ''}${esc(midEllip(o.label, 30))}${o.sessions != null ? ' <span class="dir-chip-n text-[10px] px-1.25 py-0 rounded-full bg-black/12">' + o.sessions + '</span>' : ''}</button>`).join('');
+    let html = opts.map((o) => `<button class="dir-chip inline-flex items-center gap-1.25 border border-border-custom bg-transparent text-muted font-medium text-[11.5px] px-2.5 py-1 rounded-full cursor-pointer transition-all duration-150 hover:text-fg hover:bg-chip-bg whitespace-nowrap ${o.id === active ? 'active' : ''}" data-dir="${esc(o.id)}" title="${esc(o.label)}">${o.imported ? '<span class="dir-chip-ico">' + (ICN.download || '') + '</span>' : ''}${esc(midEllip(o.label, 30))}${o.sessions != null ? ' <span class="dir-chip-n text-[10px] px-1.25 py-0 rounded-full bg-black/12">' + o.sessions + '</span>' : ''}</button>`).join('');
+    if (showTrash) {
+      html += `<button class="dir-chip dir-chip-trash inline-flex items-center gap-1.25 border border-border-custom bg-transparent text-muted font-medium text-[11.5px] px-2.5 py-1 rounded-full cursor-pointer transition-all duration-150 hover:text-fg hover:bg-chip-bg whitespace-nowrap ${active === '__trash__' ? 'active' : ''}" data-dir="__trash__" title="${esc(L('conv.trash'))}"><span class="dir-chip-ico">${ICN.trash || ''}</span>${esc(L('conv.trash'))}${trashN ? ' <span class="dir-chip-n text-[10px] px-1.25 py-0 rounded-full bg-black/12">' + trashN + '</span>' : ''}</button>`;
+    }
+    host.innerHTML = html;
   }
 
   function filteredProjects() {
@@ -319,7 +337,12 @@
       ? `<div class="conv-tagfilter">🏷 <span class="conv-tag active"><span class="conv-tag-label">${esc(tagFilter)}</span><button type="button" class="conv-tag-x" data-clear-tagfilter title="${esc(L('conv.clearTagFilter'))}">×</button></span></div>`
       : '';
     if (!total) {
-      el.innerHTML = fbar + `<div class="state-inline py-6 px-3 text-center text-[11.5px] text-caption" style="padding:24px 12px">${(search || tagFilter) ? esc(L('conv.noMatch')) : esc(L('conv.noLocal')) + '<br><span class="text-muted text-[11px]">~/.claude/projects</span>'}</div>`;
+      const emptyMsg = (search || tagFilter)
+        ? esc(L('conv.noMatch'))
+        : (activeDir === '__trash__'
+          ? esc(L('conv.trashEmpty'))
+          : esc(L('conv.noLocal')) + '<br><span class="text-muted text-[11px]">~/.claude/projects</span>');
+      el.innerHTML = fbar + `<div class="state-inline py-6 px-3 text-center text-[11.5px] text-caption" style="padding:24px 12px">${emptyMsg}</div>`;
       return;
     }
     el.innerHTML = fbar + list.map((p) => {
@@ -339,8 +362,12 @@
     const live = isLive(c.lastActivity) ? '<span class="conv-live w-1.25 h-1.25 rounded-full bg-green animate-[pulse_1.6s_infinite] shrink-0"></span>' : '';
     const sub = c.isSubagent ? `<span class="conv-badge text-[10.5px] px-1.5 py-0.25 rounded-full bg-chip-bg text-fg font-sans">${esc(L('conv.subagent'))}</span>` : '';
     const imp = c.imported ? `<span class="conv-badge conv-badge-import inline-flex items-center gap-1 text-[10.5px] px-1.5 py-0.25 rounded-full bg-brand-soft text-brand font-sans">${ICN.download || ''}${esc(L('conv.imported'))}</span>` : '';
-    // Imported copies live only in the app store, so they get a remove affordance (deletes the copy).
-    const rm = c.imported ? `<button class="conv-remove-import ml-auto shrink-0 opacity-55 group-hover:opacity-100 text-caption hover:text-red hover:bg-chip-bg rounded text-[12px] leading-none w-[18px] h-[18px] flex items-center justify-center transition-all" data-remove-import="${esc(c.file || '')}" title="${esc(L('conv.removeImport'))}">✕</button>` : '';
+    // Recycle bin rows swap the import-remove affordance for restore + delete-forever; everywhere else
+    // imported copies (which live only in the app store) keep their remove affordance.
+    const inTrash = activeDir === '__trash__';
+    const rm = inTrash
+      ? `<button class="conv-restore ml-auto shrink-0 opacity-55 group-hover:opacity-100 text-caption hover:text-brand hover:bg-chip-bg rounded text-[12px] leading-none w-[18px] h-[18px] flex items-center justify-center transition-all" data-restore="${esc(c.file || '')}" title="${esc(L('conv.restore'))}">${ICN.refresh || '↺'}</button><button class="conv-delete-forever shrink-0 opacity-55 group-hover:opacity-100 text-caption hover:text-red hover:bg-chip-bg rounded text-[12px] leading-none w-[18px] h-[18px] flex items-center justify-center transition-all" data-delete-forever="${esc(c.file || '')}" title="${esc(L('conv.deleteForever'))}">${ICN.trash || '✕'}</button>`
+      : (c.imported ? `<button class="conv-remove-import ml-auto shrink-0 opacity-55 group-hover:opacity-100 text-caption hover:text-red hover:bg-chip-bg rounded text-[12px] leading-none w-[18px] h-[18px] flex items-center justify-center transition-all" data-remove-import="${esc(c.file || '')}" title="${esc(L('conv.removeImport'))}">✕</button>` : '');
     const model = c.model ? `<span class="conv-model text-brand">${esc(c.model)}</span>` : '';
     // User tags (deletable: x; double-click to edit; click to filter). The import badge stays
     // separate and non-deletable. Empty when the conversation has no custom tags.
@@ -1067,6 +1094,33 @@
     await applyMeta(file, { tags: ((s && s.tags) || []).filter((t) => t !== tag) });
   }
 
+  // Soft delete: confirm, flag __ccbud__.delete=true, then refresh (the session drops out of every
+  // normal view and reappears only in the recycle bin). Mirrors removeImport's open-session reset.
+  async function askConfirm(opts) {
+    if (window.confirmDialog) return window.confirmDialog(opts);
+    return Promise.resolve(window.confirm(opts.message || ''));
+  }
+  async function softDelete(file) {
+    if (!file) return;
+    const ok = await askConfirm({ title: L('conv.deleteTitle'), message: L('conv.deleteConfirm'), confirmText: L('conv.ctxDelete'), cancelText: L('modal.cancel'), danger: true });
+    if (!ok) return;
+    if (file === openFile) { openId = null; openFile = null; }
+    await applyMeta(file, { delete: true });
+  }
+  async function restoreSession(file) {
+    if (!file) return;
+    await applyMeta(file, { delete: false }); // drop the flag → back to its working dir
+  }
+  async function deleteForever(file) {
+    if (!file || !api.historyDeleteForever) return;
+    const ok = await askConfirm({ title: L('conv.deleteForeverTitle'), message: L('conv.deleteForeverConfirm'), confirmText: L('conv.deleteForever'), cancelText: L('modal.cancel'), danger: true });
+    if (!ok) return;
+    let res; try { res = await api.historyDeleteForever(file); } catch (_) { res = null; }
+    if (!res || !res.ok) return;
+    if (file === openFile) { openId = null; openFile = null; }
+    await refresh();
+  }
+
   // Right-click context menu on a conversation row: rename / add tag. A single body-level element,
   // re-targeted per open (the list re-renders, so a list-child menu would be wiped out).
   let ctxMenuEl = null;
@@ -1082,12 +1136,19 @@
         hideCtxMenu();
         if (act === 'rename') startRename(f, i);
         else if (act === 'addtag') startAddTag(f, i);
+        else if (act === 'delete') softDelete(f);
+        else if (act === 'restore') restoreSession(f);
+        else if (act === 'deleteforever') deleteForever(f);
       });
     }
     ctxMenuEl._file = file; ctxMenuEl._id = id;
-    ctxMenuEl.innerHTML =
-      `<button type="button" class="conv-ctx-item" data-ctx="rename">✎ ${esc(L('conv.ctxRename'))}</button>` +
-      `<button type="button" class="conv-ctx-item" data-ctx="addtag"># ${esc(L('conv.ctxAddTag'))}</button>`;
+    // Recycle-bin rows offer restore / delete-forever; everywhere else it's rename / add-tag / delete.
+    ctxMenuEl.innerHTML = (activeDir === '__trash__')
+      ? `<button type="button" class="conv-ctx-item" data-ctx="restore">↺ ${esc(L('conv.restore'))}</button>` +
+        `<button type="button" class="conv-ctx-item conv-ctx-danger" data-ctx="deleteforever">${ICN.trash || '🗑'} ${esc(L('conv.deleteForever'))}</button>`
+      : `<button type="button" class="conv-ctx-item" data-ctx="rename">✎ ${esc(L('conv.ctxRename'))}</button>` +
+        `<button type="button" class="conv-ctx-item" data-ctx="addtag"># ${esc(L('conv.ctxAddTag'))}</button>` +
+        `<button type="button" class="conv-ctx-item conv-ctx-danger" data-ctx="delete">${ICN.trash || '🗑'} ${esc(L('conv.ctxDelete'))}</button>`;
     ctxMenuEl.classList.remove('hidden');
     ctxMenuEl.style.left = Math.min(x, window.innerWidth - 180) + 'px';
     ctxMenuEl.style.top = Math.min(y, window.innerHeight - 80) + 'px';
@@ -1110,6 +1171,10 @@
         tagClickTimer = setTimeout(() => { tagFilter = (tagFilter === tag) ? null : tag; renderList(); }, 220);
         return;
       }
+      const restoreBtn = e.target.closest('[data-restore]');
+      if (restoreBtn) { e.stopPropagation(); await restoreSession(restoreBtn.dataset.restore); return; }
+      const delFvr = e.target.closest('[data-delete-forever]');
+      if (delFvr) { e.stopPropagation(); await deleteForever(delFvr.dataset.deleteForever); return; }
       const rm = e.target.closest('[data-remove-import]');
       if (rm) {
         e.stopPropagation();

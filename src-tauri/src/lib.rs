@@ -709,6 +709,15 @@ fn history_set_meta(app: tauri::AppHandle, file: String, patch: Value) -> Value 
     r
 }
 #[tauri::command]
+fn history_delete_forever(app: tauri::AppHandle, file: String) -> Value {
+    let cfg = store::read_config();
+    let r = history::delete_session_file(&file, &cfg);
+    if r.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+        let _ = app.emit("history:changed", json!({ "files": [] }));
+    }
+    r
+}
+#[tauri::command]
 async fn history_export_raw(file: String) -> Result<Value, String> {
     let data = std::fs::read_to_string(&file).map_err(|e| e.to_string())?;
     let base = exporthtml::export_base_name(&file);
@@ -1497,7 +1506,7 @@ pub fn run() {
             server_status, usage_get, monitor_get, monitor_clear, logs_get, logs_clear,
             app_open_main, app_quit, window_settings_mode, window_view_min_width,
             history_projects, history_list, history_get, history_dirs, history_pick_dir, history_set_active,
-            history_import, history_import_paths, history_remove_import, history_set_meta, history_export_raw, history_export_html,
+            history_import, history_import_paths, history_remove_import, history_set_meta, history_delete_forever, history_export_raw, history_export_html,
             util_copy, util_open_external,
             update_state, update_check, update_download, update_apply, update_set_auto,
             selfcheck_report, selfcheck_routing, selfcheck_gateway, selfcheck_history, selfcheck_desktop, selfcheck_export, selfcheck_import, selfcheck_popover

@@ -199,9 +199,9 @@ pub fn normalize(input: Value) -> Value {
     }
     obj.insert("historyDirs".into(), json!(dirs));
 
-    // historyActive: 'all' | '__imported__' | a configured dir, else 'all'
+    // historyActive: 'all' | '__imported__' | '__trash__' (recycle bin) | a configured dir, else 'all'
     let ha = obj.get("historyActive").and_then(|v| v.as_str()).unwrap_or("all").to_string();
-    let ha_ok = ha == "all" || ha == "__imported__" || dirs.iter().any(|d| *d == ha);
+    let ha_ok = ha == "all" || ha == "__imported__" || ha == "__trash__" || dirs.iter().any(|d| *d == ha);
     obj.insert("historyActive".into(), json!(if ha_ok { ha } else { "all".to_string() }));
 
     c
@@ -264,6 +264,14 @@ mod tests {
         let n = normalize(json!({ "retry429": { "max": 999, "baseMs": 99999 } }));
         assert_eq!(n["retry429"]["max"], 10);
         assert_eq!(n["retry429"]["baseMs"], 10000);
+    }
+    #[test]
+    fn normalize_keeps_recycle_bin_active() {
+        // Synthetic buckets must survive normalize, else history_set_active("__trash__") is
+        // silently reset to "all" and the recycle bin can never be opened.
+        assert_eq!(normalize(json!({ "historyActive": "__trash__" }))["historyActive"], "__trash__");
+        assert_eq!(normalize(json!({ "historyActive": "__imported__" }))["historyActive"], "__imported__");
+        assert_eq!(normalize(json!({ "historyActive": "bogus-dir" }))["historyActive"], "all");
     }
 }
 
