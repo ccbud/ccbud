@@ -176,11 +176,32 @@ fn read_ccbud(recs: &[Value]) -> (Option<String>, Vec<String>, bool) {
     (title, tags, deleted)
 }
 
-/// Cheap soft-delete probe for counting. The `__ccbud__.delete` flag rides on the first parseable
-/// line, so a small head read suffices (the full meta read happens later in session_meta).
+/// Process-lifetime memo of soft-delete status, keyed `path -> (mtime, deleted)`. mtime is the
+/// invalidation signal: set_ccbud rewrites the file (bumping mtime) whenever the flag flips, so a
+/// matching mtime means the cached answer is still valid. This lets dir_stats *stat* unchanged
+/// sessions on each refresh instead of re-reading them — only new/changed files get parsed.
+fn deleted_cache() -> &'static std::sync::Mutex<std::collections::HashMap<PathBuf, (f64, bool)>> {
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<PathBuf, (f64, bool)>>> =
+        std::sync::OnceLock::new();
+    CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+/// Cheap soft-delete probe for counting, memoized by mtime. The `__ccbud__.delete` flag rides on the
+/// first parseable line, so a small head read suffices (the full meta read happens later in session_meta).
 fn is_session_deleted(file: &Path) -> bool {
-    let head = read_head(file, 16384);
-    read_ccbud(&parse_lines(&head)).2
+    let mt = mtime_ms(file);
+    if let Ok(cache) = deleted_cache().lock() {
+        if let Some(&(cmt, del)) = cache.get(file) {
+            if cmt == mt {
+                return del;
+            }
+        }
+    }
+    let del = read_ccbud(&parse_lines(&read_head(file, 16384))).2;
+    if let Ok(mut cache) = deleted_cache().lock() {
+        cache.insert(file.to_path_buf(), (mt, del));
+    }
+    del
 }
 
 fn line_to_message(rec: &Value) -> Option<Value> {
