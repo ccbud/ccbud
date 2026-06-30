@@ -4487,6 +4487,23 @@ body {
 .conv-ctx-item.conv-ctx-danger:hover {
   background: var(--red-soft);
 }
+/* Fixed icon column so every row's label starts at the same x — keeps the text-glyph icons
+   (✎ # ↺) and the 14px trash SVG aligned with each other and with the labels. */
+.conv-ctx-ico {
+  width: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  line-height: 1;
+}
+.conv-ctx-ico svg {
+  display: block;
+}
+.conv-ctx-label {
+  flex: 1;
+  min-width: 0;
+}
 .conv-drop-overlay {
   position: fixed;
   inset: 0;

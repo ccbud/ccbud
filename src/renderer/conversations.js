@@ -1143,12 +1143,16 @@
     }
     ctxMenuEl._file = file; ctxMenuEl._id = id;
     // Recycle-bin rows offer restore / delete-forever; everywhere else it's rename / add-tag / delete.
+    // Each item is icon + label as two flex children; the icon sits in a fixed-width column
+    // (.conv-ctx-ico) so labels line up whether the icon is a text glyph (✎/#/↺) or the trash SVG.
+    const ctxItem = (act, icon, label, danger) =>
+      `<button type="button" class="conv-ctx-item${danger ? ' conv-ctx-danger' : ''}" data-ctx="${act}"><span class="conv-ctx-ico">${icon}</span><span class="conv-ctx-label">${esc(label)}</span></button>`;
     ctxMenuEl.innerHTML = (activeDir === '__trash__')
-      ? `<button type="button" class="conv-ctx-item" data-ctx="restore">↺ ${esc(L('conv.restore'))}</button>` +
-        `<button type="button" class="conv-ctx-item conv-ctx-danger" data-ctx="deleteforever">${ICN.trash || '🗑'} ${esc(L('conv.deleteForever'))}</button>`
-      : `<button type="button" class="conv-ctx-item" data-ctx="rename">✎ ${esc(L('conv.ctxRename'))}</button>` +
-        `<button type="button" class="conv-ctx-item" data-ctx="addtag"># ${esc(L('conv.ctxAddTag'))}</button>` +
-        `<button type="button" class="conv-ctx-item conv-ctx-danger" data-ctx="delete">${ICN.trash || '🗑'} ${esc(L('conv.ctxDelete'))}</button>`;
+      ? ctxItem('restore', '↺', L('conv.restore')) +
+        ctxItem('deleteforever', ICN.trash || '🗑', L('conv.deleteForever'), true)
+      : ctxItem('rename', '✎', L('conv.ctxRename')) +
+        ctxItem('addtag', '#', L('conv.ctxAddTag')) +
+        ctxItem('delete', ICN.trash || '🗑', L('conv.ctxDelete'), true);
     ctxMenuEl.classList.remove('hidden');
     ctxMenuEl.style.left = Math.min(x, window.innerWidth - 180) + 'px';
     ctxMenuEl.style.top = Math.min(y, window.innerHeight - 80) + 'px';
