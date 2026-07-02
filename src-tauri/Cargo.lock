@@ -84,6 +84,7 @@ dependencies = [
  "axum",
  "bytes",
  "chrono",
+ "flate2",
  "futures-util",
  "log",
  "notify-debouncer-mini",

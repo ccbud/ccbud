@@ -18,6 +18,7 @@ mod gateway;
 mod history;
 mod store;
 mod usage;
+mod ziputil;
 
 use serde_json::{json, Value};
 use tauri::{Emitter, Manager};
@@ -338,6 +339,19 @@ fn pct(s: &str) -> String {
         })
         .collect()
 }
+/// When `file` is a session with subagents, write a merged transcript (main thread + subagent runs)
+/// to a per-session temp file and return its path; otherwise None so the caller uses `file` as-is.
+/// Lets "Claude 分析" open one file that includes the subagent dialogues.
+fn merged_replay_file(file: &str) -> Option<String> {
+    let merged = history::merged_transcript(file)?;
+    let dir = std::env::temp_dir().join("ccbud-replay");
+    std::fs::create_dir_all(&dir).ok()?;
+    let stem = std::path::Path::new(file).file_stem().and_then(|s| s.to_str()).unwrap_or("conversation");
+    let out = dir.join(format!("{}-with-subagents.jsonl", stem));
+    std::fs::write(&out, merged).ok()?;
+    Some(out.to_string_lossy().into_owned())
+}
+
 #[tauri::command]
 fn desktop_replay(file: String, prompt: Option<String>) -> Value {
     if file.is_empty() {
@@ -351,7 +365,12 @@ fn desktop_replay(file: String, prompt: Option<String>) -> Value {
     let prompt = prompt
         .filter(|p| !p.is_empty())
         .unwrap_or_else(|| "请基于这份对话记录在 Claude 桌面版里继续。".to_string());
-    let url = format!("claude://cowork/new?q={}&file={}", pct(&prompt), pct(&file));
+    // If the session spawned subagents, hand Claude a transcript that MERGES the main thread with
+    // the subagent runs (they live in a separate subagents/ dir), so the analysis covers them and
+    // not just the main thread. Written to a temp file reused per session; falls back to the raw
+    // file if the merge or write fails.
+    let target = merged_replay_file(&file).unwrap_or_else(|| file.clone());
+    let url = format!("claude://cowork/new?q={}&file={}", pct(&prompt), pct(&target));
     #[cfg(target_os = "macos")]
     {
         let ok = std::process::Command::new("/usr/bin/open").arg(&url).spawn().is_ok();
@@ -671,7 +690,7 @@ fn history_set_active(app: tauri::AppHandle, id: String) -> Value {
 }
 #[tauri::command]
 async fn history_import(app: tauri::AppHandle) -> Result<Value, String> {
-    match rfd::AsyncFileDialog::new().add_filter("JSONL", &["jsonl"]).set_title("导入对话记录").pick_files().await {
+    match rfd::AsyncFileDialog::new().add_filter("对话记录 (.jsonl / .zip)", &["jsonl", "zip"]).set_title("导入对话记录").pick_files().await {
         Some(files) => {
             let paths: Vec<String> = files.iter().map(|f| f.path().to_string_lossy().to_string()).collect();
             let r = history::import_paths(&paths);
@@ -719,15 +738,39 @@ fn history_delete_forever(app: tauri::AppHandle, file: String) -> Value {
 }
 #[tauri::command]
 async fn history_export_raw(file: String) -> Result<Value, String> {
-    let data = std::fs::read_to_string(&file).map_err(|e| e.to_string())?;
     let base = exporthtml::export_base_name(&file);
-    match rfd::AsyncFileDialog::new().set_file_name(format!("{}.jsonl", base)).save_file().await {
-        Some(d) => {
-            let p = d.path().to_path_buf();
-            std::fs::write(&p, data).map_err(|e| e.to_string())?;
-            Ok(json!({ "canceled": false, "path": p.to_string_lossy() }))
+    // A session with subagents exports as a .zip bundle (main .jsonl at the top level + subagents/);
+    // a plain session stays a verbatim .jsonl. import_paths accepts either.
+    if history::session_has_subagents(&file) {
+        let bytes = history::export_bundle(&file).map_err(|e| e.to_string())?;
+        match rfd::AsyncFileDialog::new()
+            .add_filter("ZIP", &["zip"])
+            .set_file_name(format!("{}.zip", base))
+            .save_file()
+            .await
+        {
+            Some(d) => {
+                let p = d.path().to_path_buf();
+                std::fs::write(&p, bytes).map_err(|e| e.to_string())?;
+                Ok(json!({ "canceled": false, "path": p.to_string_lossy(), "bundled": true }))
+            }
+            None => Ok(json!({ "canceled": true })),
         }
-        None => Ok(json!({ "canceled": true })),
+    } else {
+        let data = std::fs::read_to_string(&file).map_err(|e| e.to_string())?;
+        match rfd::AsyncFileDialog::new()
+            .add_filter("JSONL", &["jsonl"])
+            .set_file_name(format!("{}.jsonl", base))
+            .save_file()
+            .await
+        {
+            Some(d) => {
+                let p = d.path().to_path_buf();
+                std::fs::write(&p, data).map_err(|e| e.to_string())?;
+                Ok(json!({ "canceled": false, "path": p.to_string_lossy(), "bundled": false }))
+            }
+            None => Ok(json!({ "canceled": true })),
+        }
     }
 }
 #[tauri::command]

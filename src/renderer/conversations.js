@@ -989,7 +989,10 @@
       if (kind === 'jsonl') {
         const r = await api.historyExportRaw(openFile);
         if (r && r.canceled) return;
-        toast(r && r.path ? L('conv.exportOk') : L('conv.exportFail'), !!(r && r.path));
+        // A session with subagents comes back as a .zip bundle (r.bundled) — say so, so the .zip
+        // (rather than the expected .jsonl) isn't a surprise.
+        if (r && r.path) toast(L(r.bundled ? 'conv.exportOkZip' : 'conv.exportOk'));
+        else toast(L('conv.exportFail'), false);
       } else if (kind === 'html') {
         const r = await api.historyExportHtml(openFile);
         if (r && r.canceled) return;
@@ -1427,10 +1430,10 @@
       }
     });
 
-    // Drag a .jsonl (Claude Code transcript) anywhere onto the window → import it directly, same
-    // pipeline as the import button. preventDefault on dragover/drop is REQUIRED — otherwise Electron
-    // navigates the window to the dropped file:// URL. Non-.jsonl / non-transcript files are ignored
-    // (importOne validates each is a real transcript before copying it in).
+    // Drag a .jsonl transcript or a .zip conversation bundle (main session + subagents) anywhere onto
+    // the window → import it directly, same pipeline as the import button. preventDefault on
+    // dragover/drop is REQUIRED — otherwise Electron navigates to the dropped file:// URL. Other files
+    // are ignored (import validates each is a real transcript/bundle before copying it in).
     const dragHasFiles = (e) => { try { return Array.from((e.dataTransfer && e.dataTransfer.types) || []).indexOf('Files') >= 0; } catch (_) { return false; } };
     let dropOverlay = null, dropDepth = 0;
     const showDropOverlay = () => {
@@ -1453,10 +1456,10 @@
       hideDropOverlay();
       const files = Array.prototype.slice.call(e.dataTransfer.files || []);
       const paths = files.map((f) => { try { return api.pathForFile ? api.pathForFile(f) : (f.path || ''); } catch (_) { return ''; } }).filter(Boolean);
-      const jsonl = paths.filter((p) => /\.jsonl$/i.test(p));
-      if (!jsonl.length) { toast(L('conv.dropNotJsonl'), false); return; }
+      const importable = paths.filter((p) => /\.(jsonl|zip)$/i.test(p));
+      if (!importable.length) { toast(L('conv.dropNotJsonl'), false); return; }
       if (!api.historyImportPaths) return;
-      let r; try { r = await api.historyImportPaths(jsonl); } catch (_) { r = null; }
+      let r; try { r = await api.historyImportPaths(importable); } catch (_) { r = null; }
       await applyImportResult(r);
     });
 

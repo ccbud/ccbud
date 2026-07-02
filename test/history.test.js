@@ -87,6 +87,17 @@ try {
   check('subagent messages shaped (2, last = "done")', !!sa && sa.messages.length === 2 && sa.messages[1].content[0].text === 'done', JSON.stringify(sa && sa.messages.length));
   check('subagent totals rolled up (in=1 out=4)', !!sa && sa.totals.out === 4 && sa.totals.in === 1, JSON.stringify(sa && sa.totals));
   check('meta.subagentCount = 1', s2.meta.subagentCount === 1, String(s2.meta.subagentCount));
+
+  // ---- readSubagentFiles + mergedTranscript (bundle export + "Claude 分析" replay-merge helpers) ----
+  const { readSubagentFiles, mergedTranscript } = require('../src/main/history');
+  const subFiles = readSubagentFiles(file);
+  check('readSubagentFiles returns jsonl + meta (2)', subFiles.length === 2, `n=${subFiles.length}`);
+  check('readSubagentFiles names are agent-aaa.*', subFiles.every((f) => /^agent-aaa\.(jsonl|meta\.json)$/.test(f.name)));
+  check('readSubagentFiles data is a Buffer', subFiles.every((f) => Buffer.isBuffer(f.data)));
+  const mergedText = (mergedTranscript(file) || Buffer.alloc(0)).toString('utf8');
+  check('mergedTranscript keeps the main thread', mergedText.includes('hello world'));
+  check('mergedTranscript appends the subagent transcript', mergedText.includes('do a thing') && mergedText.includes('done'));
+  check('mergedTranscript excludes the .meta.json sidecar', !mergedText.includes('thing doer'));
 } finally {
   fs.rmSync(root, { recursive: true, force: true });
 }

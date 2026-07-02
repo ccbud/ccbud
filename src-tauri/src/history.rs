@@ -544,6 +544,89 @@ fn read_subagents(file: &str) -> serde_json::Map<String, Value> {
     by_tool
 }
 
+/// A session's subagents directory: `<dir>/<stem>/subagents`. None when the path has no stem.
+fn subagent_dir(file: &Path) -> Option<PathBuf> {
+    let stem = file.file_stem().and_then(|s| s.to_str())?;
+    file.parent().map(|d| d.join(stem).join("subagents"))
+}
+
+/// The raw subagent sidecar files for a session — `(agent-*.jsonl | agent-*.meta.json, bytes)`.
+/// Empty when the session spawned no subagents. Shared by bundle export, import, and replay-merge.
+fn read_subagent_files(file: &Path) -> Vec<(String, Vec<u8>)> {
+    let dir = match subagent_dir(file) {
+        Some(d) => d,
+        None => return vec![],
+    };
+    let mut out = vec![];
+    if let Ok(entries) = fs::read_dir(&dir) {
+        for ent in entries.flatten() {
+            let p = ent.path();
+            if !p.is_file() {
+                continue;
+            }
+            let name = ent.file_name().to_string_lossy().into_owned();
+            let lower = name.to_lowercase();
+            if lower.starts_with("agent-") && (lower.ends_with(".jsonl") || lower.ends_with(".meta.json")) {
+                if let Ok(bytes) = fs::read(&p) {
+                    out.push((name, bytes));
+                }
+            }
+        }
+    }
+    out.sort_by(|a, b| a.0.cmp(&b.0)); // deterministic bundle order
+    out
+}
+
+/// Whether a session has any subagent transcripts (drives export → .zip vs plain .jsonl).
+pub fn session_has_subagents(file: &str) -> bool {
+    !read_subagent_files(Path::new(file)).is_empty()
+}
+
+/// Build a conversation-bundle ZIP: the main session `<basename>.jsonl` at the top level and each
+/// subagent file under `subagents/`. Caller uses this only when the session actually has subagents
+/// (a plain .jsonl export otherwise). Round-trips through import_zip / splitBundle.
+pub fn export_bundle(file: &str) -> std::io::Result<Vec<u8>> {
+    let path = Path::new(file);
+    let main = fs::read(path)?;
+    let main_name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("conversation.jsonl")
+        .to_string();
+    let mut entries = vec![crate::ziputil::Entry { name: main_name, data: main }];
+    for (name, bytes) in read_subagent_files(path) {
+        entries.push(crate::ziputil::Entry { name: format!("subagents/{}", name), data: bytes });
+    }
+    Ok(crate::ziputil::build(&entries))
+}
+
+/// Merge a session's transcript with its subagent transcripts into one .jsonl (main lines first,
+/// then each subagent's lines — which already carry `isSidechain`/`agentId`, so the reader can tell
+/// them apart). Returns None when the session has no subagents (caller uses the file as-is). Powers
+/// "Claude 分析", so the analysis sees subagent runs, not just the main thread.
+pub fn merged_transcript(file: &str) -> Option<Vec<u8>> {
+    let path = Path::new(file);
+    let subs = read_subagent_files(path);
+    if subs.is_empty() {
+        return None;
+    }
+    let mut out = match fs::read(path) {
+        Ok(b) => b,
+        Err(_) => return None,
+    };
+    // Only merge the `.jsonl` transcripts, not the `.meta.json` sidecars.
+    for (name, bytes) in subs {
+        if !name.to_lowercase().ends_with(".jsonl") {
+            continue;
+        }
+        if out.last() != Some(&b'\n') {
+            out.push(b'\n');
+        }
+        out.extend_from_slice(&bytes);
+    }
+    Some(out)
+}
+
 /// Read the import provenance sidecar (`<stem>.import.json`) for an imported transcript.
 fn read_import_meta(file: &str) -> Option<Value> {
     let p = Path::new(file);
@@ -791,15 +874,20 @@ fn copy_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Import one transcript: validates it's a real Claude Code session, then snapshots it into the
-/// import store laid out like a native projects/ tree + a sidecar provenance file. Returns
-/// 1 = imported, 2 = skipped (already present), 0 = failed/not-a-transcript.
-fn import_one(src: &str) -> i32 {
-    let raw = match fs::read_to_string(src) {
-        Ok(s) => s,
-        Err(_) => return 0,
-    };
-    let recs = parse_lines(&raw);
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+/// Snapshot a transcript (already read into `raw`) plus its subagent sidecars into the import store,
+/// laid out like a native projects/ tree + a provenance sidecar. `subagents`: (filename, bytes) to
+/// drop under `<baseId>/subagents/` — names are basename-reduced and pattern-checked so a crafted
+/// entry can't escape the directory. Returns 1 = imported, 2 = skipped (already present),
+/// 0 = failed/not-a-transcript. Shared by the plain-.jsonl and .zip-bundle import paths.
+fn write_imported(raw: &str, original_path: &str, original_name: &str, subagents: &[(String, Vec<u8>)]) -> i32 {
+    let recs = parse_lines(raw);
     let has_msg = recs.iter().any(|r| {
         let t = r.get("type").and_then(|v| v.as_str());
         (t == Some("user") || t == Some("assistant")) && r.get("message").is_some()
@@ -813,52 +901,89 @@ fn import_one(src: &str) -> i32 {
         .and_then(|r| r.get("sessionId"))
         .and_then(|v| v.as_str())
         .map(|s| s.to_string())
-        .unwrap_or_else(|| Path::new(src).file_stem().and_then(|s| s.to_str()).unwrap_or("import").to_string());
+        .unwrap_or_else(|| Path::new(original_name).file_stem().and_then(|s| s.to_str()).unwrap_or("import").to_string());
     let dest_dir = imports_root().join("projects").join(encode_cwd(cwd));
     let dest_file = dest_dir.join(format!("{}.jsonl", base_id));
     if dest_file.exists() {
         return 2;
     }
-    if fs::create_dir_all(&dest_dir).is_err() || fs::copy(src, &dest_file).is_err() {
+    if fs::create_dir_all(&dest_dir).is_err() || fs::write(&dest_file, raw).is_err() {
         return 0;
     }
-    // bring along subagents if present next to the source
-    let src_stem = Path::new(src).file_stem().and_then(|s| s.to_str()).unwrap_or("");
-    if let Some(parent) = Path::new(src).parent() {
-        let src_sub = parent.join(src_stem).join("subagents");
-        if src_sub.is_dir() {
-            let _ = copy_dir(&src_sub, &dest_dir.join(&base_id).join("subagents"));
+    if !subagents.is_empty() {
+        let sub_dir = dest_dir.join(&base_id).join("subagents");
+        if fs::create_dir_all(&sub_dir).is_ok() {
+            for (name, bytes) in subagents {
+                // file_name() strips any directory component, so the write can't escape sub_dir.
+                let safe = Path::new(name).file_name().and_then(|n| n.to_str()).unwrap_or("");
+                let lower = safe.to_lowercase();
+                if lower.starts_with("agent-") && (lower.ends_with(".jsonl") || lower.ends_with(".meta.json")) {
+                    let _ = fs::write(sub_dir.join(safe), bytes);
+                }
+            }
         }
     }
-    let imported_at = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0);
     let sidecar = dest_dir.join(format!("{}.import.json", base_id));
     let _ = fs::write(
         &sidecar,
         serde_json::to_vec_pretty(&json!({
-            "originalPath": src,
-            "originalName": Path::new(src).file_name().and_then(|n| n.to_str()).unwrap_or(""),
+            "originalPath": original_path,
+            "originalName": original_name,
             "sessionId": base_id,
-            "importedAt": imported_at,
+            "importedAt": now_ms(),
         }))
         .unwrap_or_default(),
     );
     1
 }
 
+/// Import a plain .jsonl transcript, bringing along its on-disk subagents dir if present.
+fn import_one(src: &str) -> i32 {
+    let raw = match fs::read_to_string(src) {
+        Ok(s) => s,
+        Err(_) => return 0,
+    };
+    let src_path = Path::new(src);
+    let subs = read_subagent_files(src_path);
+    let original_name = src_path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    write_imported(&raw, src, original_name, &subs)
+}
+
+/// Import a conversation-bundle .zip (main session + `subagents/`), restoring the subagent layout so
+/// the pipeline nests them exactly as if they'd been captured live. Round-trips export_bundle.
+fn import_zip(src: &str) -> i32 {
+    let bytes = match fs::read(src) {
+        Ok(b) => b,
+        Err(_) => return 0,
+    };
+    let (main, subs) = crate::ziputil::split_bundle(crate::ziputil::read(&bytes));
+    let main_data = match main {
+        Some((_, data)) => data,
+        None => return 0,
+    };
+    let raw = match String::from_utf8(main_data) {
+        Ok(s) => s,
+        Err(_) => return 0,
+    };
+    let original_name = Path::new(src).file_name().and_then(|n| n.to_str()).unwrap_or("");
+    write_imported(&raw, src, original_name, &subs)
+}
+
 pub fn import_paths(paths: &[String]) -> Value {
     let (mut imported, mut skipped, mut failed) = (0, 0, 0);
     for src in paths {
-        if src.to_lowercase().ends_with(".jsonl") {
-            match import_one(src) {
-                1 => imported += 1,
-                2 => skipped += 1,
-                _ => failed += 1,
-            }
+        let lower = src.to_lowercase();
+        let r = if lower.ends_with(".zip") {
+            import_zip(src)
+        } else if lower.ends_with(".jsonl") {
+            import_one(src)
         } else {
-            failed += 1;
+            0
+        };
+        match r {
+            1 => imported += 1,
+            2 => skipped += 1,
+            _ => failed += 1,
         }
     }
     json!({ "imported": imported, "skipped": skipped, "failed": failed })
@@ -897,11 +1022,98 @@ pub fn import_selftest(base_dir: &Path) -> Value {
     });
     let dest = imports_root().join("projects").join("-imp-cwd").join("impsess.jsonl");
     let rm = remove_import(&dest.to_string_lossy());
+
+    // ---- bundle round-trip: a session WITH subagents exports as a .zip and re-imports with its
+    // subagent transcripts restored (the export → import path the 对话 view drives). ----
+    let bproj = base_dir.join("bundle-src").join("projects").join("-bnd-cwd");
+    let _ = fs::create_dir_all(&bproj);
+    let bmain = bproj.join("bundsess.jsonl");
+    let _ = fs::write(&bmain, "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"tu9\",\"name\":\"Task\",\"input\":{}}]},\"cwd\":\"/bnd/cwd\",\"sessionId\":\"bundsess\",\"timestamp\":\"2025-01-01T10:00:00.000Z\"}\n");
+    let bsub = bproj.join("bundsess").join("subagents");
+    let _ = fs::create_dir_all(&bsub);
+    let _ = fs::write(bsub.join("agent-b1.jsonl"), "{\"type\":\"assistant\",\"isSidechain\":true,\"agentId\":\"b1\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"sub done\"}]},\"sessionId\":\"bundsess\",\"timestamp\":\"2025-01-01T10:00:01.000Z\"}\n");
+    let _ = fs::write(bsub.join("agent-b1.meta.json"), "{\"agentType\":\"general-purpose\",\"description\":\"d\",\"toolUseId\":\"tu9\"}");
+    let zip = export_bundle(&bmain.to_string_lossy()).unwrap_or_default();
+    let zip_is_zip = zip.starts_with(&[0x50, 0x4b, 0x03, 0x04]);
+    let zip_path = base_dir.join("bundle-src").join("bundsess.zip");
+    let _ = fs::write(&zip_path, &zip);
+    let rb = import_paths(&[zip_path.to_string_lossy().to_string()]);
+    let imp_dir = imports_root().join("projects").join("-bnd-cwd");
+    let sub_restored = imp_dir.join("bundsess").join("subagents").join("agent-b1.jsonl").exists()
+        && imp_dir.join("bundsess").join("subagents").join("agent-b1.meta.json").exists();
+    let bundle_sess = get_session(&imp_dir.join("bundsess.jsonl").to_string_lossy());
+    let bundle_sub_count = bundle_sess.get("meta").and_then(|m| m.get("subagentCount")).and_then(|v| v.as_i64()).unwrap_or(0);
+
     json!({
         "imported": r.get("imported"),
         "reskipped": r2.get("skipped"),
         "appearsImported": found,
         "removed": rm.get("ok"),
         "gone": !dest.exists(),
+        "bundleZip": zip_is_zip,
+        "bundleImported": rb.get("imported"),
+        "bundleSubRestored": sub_restored,
+        "bundleSubagentCount": bundle_sub_count,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Export a session-with-subagents and prove the .zip splits back into the main session + both
+    // subagent sidecars (the shape import_zip then writes into the store). Avoids mutating CCBUD_HOME
+    // so it can't race other threads under `cargo test`; the store round-trip is covered by the
+    // in-app import_selftest and confirms in review via write_imported (shared with import_one).
+    #[test]
+    fn export_bundle_round_trips_through_split() {
+        let base = std::env::temp_dir().join("ccbud-bundle-test");
+        let _ = fs::remove_dir_all(&base);
+        let proj = base.join("projects").join("-bnd-cwd");
+        fs::create_dir_all(&proj).unwrap();
+        let main = proj.join("bundsess.jsonl");
+        fs::write(&main, "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"tu9\",\"name\":\"Task\",\"input\":{}}]},\"cwd\":\"/bnd/cwd\",\"sessionId\":\"bundsess\",\"timestamp\":\"2025-01-01T10:00:00.000Z\"}\n").unwrap();
+        let sub = proj.join("bundsess").join("subagents");
+        fs::create_dir_all(&sub).unwrap();
+        fs::write(sub.join("agent-b1.jsonl"), "{\"type\":\"assistant\",\"isSidechain\":true,\"agentId\":\"b1\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"sub done\"}]},\"sessionId\":\"bundsess\",\"timestamp\":\"2025-01-01T10:00:01.000Z\"}\n").unwrap();
+        fs::write(sub.join("agent-b1.meta.json"), "{\"agentType\":\"general-purpose\",\"description\":\"d\",\"toolUseId\":\"tu9\"}").unwrap();
+
+        assert!(session_has_subagents(&main.to_string_lossy()));
+
+        let zip = export_bundle(&main.to_string_lossy()).unwrap();
+        assert!(zip.starts_with(&[0x50, 0x4b, 0x03, 0x04]), "starts with PK local header");
+
+        let (m, subs) = crate::ziputil::split_bundle(crate::ziputil::read(&zip));
+        assert_eq!(m.as_ref().map(|(n, _)| n.as_str()), Some("bundsess.jsonl"));
+        assert_eq!(subs.len(), 2);
+        assert!(subs.iter().any(|(n, d)| n == "agent-b1.jsonl" && String::from_utf8_lossy(d).contains("sub done")));
+        assert!(subs.iter().any(|(n, _)| n == "agent-b1.meta.json"));
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn merged_transcript_appends_subagent_lines() {
+        let base = std::env::temp_dir().join("ccbud-merge-test");
+        let _ = fs::remove_dir_all(&base);
+        let proj = base.join("projects").join("-m-cwd");
+        fs::create_dir_all(&proj).unwrap();
+        let main = proj.join("m.jsonl");
+        fs::write(&main, "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"hi\"},\"sessionId\":\"m\"}\n").unwrap();
+        // no subagents → None (caller uses the file as-is)
+        assert!(merged_transcript(&main.to_string_lossy()).is_none());
+
+        let sub = proj.join("m").join("subagents");
+        fs::create_dir_all(&sub).unwrap();
+        fs::write(sub.join("agent-z.jsonl"), "{\"type\":\"assistant\",\"isSidechain\":true,\"agentId\":\"z\",\"message\":{\"role\":\"assistant\",\"content\":\"sub line\"}}\n").unwrap();
+        fs::write(sub.join("agent-z.meta.json"), "{\"toolUseId\":\"t\"}").unwrap();
+
+        let merged = merged_transcript(&main.to_string_lossy()).expect("has subagents");
+        let text = String::from_utf8(merged).unwrap();
+        assert!(text.contains("\"content\":\"hi\""), "keeps main lines");
+        assert!(text.contains("sub line"), "appends subagent transcript");
+        assert!(!text.contains("\"toolUseId\":\"t\""), "does not merge the .meta.json sidecar");
+
+        let _ = fs::remove_dir_all(&base);
+    }
 }
