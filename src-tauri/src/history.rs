@@ -600,31 +600,30 @@ pub fn export_bundle(file: &str) -> std::io::Result<Vec<u8>> {
     Ok(crate::ziputil::build(&entries))
 }
 
-/// Merge a session's transcript with its subagent transcripts into one .jsonl (main lines first,
-/// then each subagent's lines — which already carry `isSidechain`/`agentId`, so the reader can tell
-/// them apart). Returns None when the session has no subagents (caller uses the file as-is). Powers
-/// "Claude 分析", so the analysis sees subagent runs, not just the main thread.
-pub fn merged_transcript(file: &str) -> Option<Vec<u8>> {
-    let path = Path::new(file);
-    let subs = read_subagent_files(path);
-    if subs.is_empty() {
-        return None;
-    }
-    let mut out = match fs::read(path) {
-        Ok(b) => b,
-        Err(_) => return None,
+/// Absolute paths of a session's subagent transcripts (`<stem>/subagents/agent-*.jsonl`), sorted.
+/// Empty when the session has no subagents. Powers "Claude 分析": every subagent transcript is
+/// attached alongside the main session in the Cowork deep link (which takes a repeated `file=` param),
+/// so the analysis covers subagent runs — not just the main thread.
+pub fn subagent_transcript_paths(file: &str) -> Vec<String> {
+    let dir = match subagent_dir(Path::new(file)) {
+        Some(d) => d,
+        None => return vec![],
     };
-    // Only merge the `.jsonl` transcripts, not the `.meta.json` sidecars.
-    for (name, bytes) in subs {
-        if !name.to_lowercase().ends_with(".jsonl") {
-            continue;
+    let mut out = vec![];
+    if let Ok(entries) = fs::read_dir(&dir) {
+        for ent in entries.flatten() {
+            let p = ent.path();
+            if !p.is_file() {
+                continue;
+            }
+            let name = ent.file_name().to_string_lossy().to_lowercase();
+            if name.starts_with("agent-") && name.ends_with(".jsonl") {
+                out.push(p.to_string_lossy().into_owned());
+            }
         }
-        if out.last() != Some(&b'\n') {
-            out.push(b'\n');
-        }
-        out.extend_from_slice(&bytes);
     }
-    Some(out)
+    out.sort();
+    out
 }
 
 /// Read the import provenance sidecar (`<stem>.import.json`) for an imported transcript.
@@ -1093,26 +1092,27 @@ mod tests {
     }
 
     #[test]
-    fn merged_transcript_appends_subagent_lines() {
-        let base = std::env::temp_dir().join("ccbud-merge-test");
+    fn subagent_transcript_paths_lists_only_agent_jsonl() {
+        let base = std::env::temp_dir().join("ccbud-subpaths-test");
         let _ = fs::remove_dir_all(&base);
         let proj = base.join("projects").join("-m-cwd");
         fs::create_dir_all(&proj).unwrap();
         let main = proj.join("m.jsonl");
         fs::write(&main, "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"hi\"},\"sessionId\":\"m\"}\n").unwrap();
-        // no subagents → None (caller uses the file as-is)
-        assert!(merged_transcript(&main.to_string_lossy()).is_none());
+        // no subagents → empty (caller attaches only the main file)
+        assert!(subagent_transcript_paths(&main.to_string_lossy()).is_empty());
 
         let sub = proj.join("m").join("subagents");
         fs::create_dir_all(&sub).unwrap();
-        fs::write(sub.join("agent-z.jsonl"), "{\"type\":\"assistant\",\"isSidechain\":true,\"agentId\":\"z\",\"message\":{\"role\":\"assistant\",\"content\":\"sub line\"}}\n").unwrap();
-        fs::write(sub.join("agent-z.meta.json"), "{\"toolUseId\":\"t\"}").unwrap();
+        fs::write(sub.join("agent-a.jsonl"), "{}\n").unwrap();
+        fs::write(sub.join("agent-b.jsonl"), "{}\n").unwrap();
+        fs::write(sub.join("agent-a.meta.json"), "{}").unwrap(); // sidecar must be excluded
 
-        let merged = merged_transcript(&main.to_string_lossy()).expect("has subagents");
-        let text = String::from_utf8(merged).unwrap();
-        assert!(text.contains("\"content\":\"hi\""), "keeps main lines");
-        assert!(text.contains("sub line"), "appends subagent transcript");
-        assert!(!text.contains("\"toolUseId\":\"t\""), "does not merge the .meta.json sidecar");
+        let paths = subagent_transcript_paths(&main.to_string_lossy());
+        assert_eq!(paths.len(), 2, "only the two agent-*.jsonl, not the .meta.json");
+        assert!(paths.iter().all(|p| p.ends_with(".jsonl")));
+        assert!(paths.iter().any(|p| p.ends_with("agent-a.jsonl")));
+        assert!(paths.iter().any(|p| p.ends_with("agent-b.jsonl")));
 
         let _ = fs::remove_dir_all(&base);
     }

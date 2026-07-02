@@ -221,22 +221,22 @@ function readSubagentFiles(file) {
   return out;
 }
 
-// Merge a session's transcript with its subagent transcripts into one .jsonl buffer (main lines
-// first, then each subagent's — which already carry isSidechain/agentId, so a reader can tell them
-// apart). null when the session has no subagents (caller uses the file as-is). Powers "Claude 分析"
-// so the analysis covers subagent runs, not just the main thread.
-function mergedTranscript(file) {
-  const subs = readSubagentFiles(file).filter((s) => /\.jsonl$/i.test(s.name));
-  if (!subs.length) return null;
-  let main;
-  try { main = fs.readFileSync(file); } catch (_) { return null; }
-  const chunks = [main];
-  for (const s of subs) {
-    const prev = chunks[chunks.length - 1];
-    if (prev.length && prev[prev.length - 1] !== 0x0a) chunks.push(Buffer.from('\n'));
-    chunks.push(s.data);
+// Absolute paths of a session's subagent transcripts (`<stem>/subagents/agent-*.jsonl`), sorted.
+// Empty when the session has no subagents. Powers "Claude 分析": every subagent transcript is
+// attached alongside the main session in the Cowork deep link (which honors a repeated `file=`
+// param), so the analysis covers subagent runs — not just the main thread.
+function subagentTranscriptPaths(file) {
+  const dir = subagentDir(file);
+  let names;
+  try { names = fs.readdirSync(dir); } catch (_) { return []; }
+  const out = [];
+  for (const name of names) {
+    if (!/^agent-.*\.jsonl$/i.test(name)) continue;
+    const p = path.join(dir, name);
+    try { if (fs.statSync(p).isFile()) out.push(p); } catch (_) {}
   }
-  return Buffer.concat(chunks);
+  out.sort();
+  return out;
 }
 
 function createHistoryWatcher(opts) {
@@ -549,4 +549,4 @@ function createHistoryWatcher(opts) {
   };
 }
 
-module.exports = { createHistoryWatcher, lineToMessage, firstUserText, decodeDirName, defaultDirs, subagentDir, readSubagentFiles, mergedTranscript };
+module.exports = { createHistoryWatcher, lineToMessage, firstUserText, decodeDirName, defaultDirs, subagentDir, readSubagentFiles, subagentTranscriptPaths };

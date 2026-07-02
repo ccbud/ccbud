@@ -339,19 +339,6 @@ fn pct(s: &str) -> String {
         })
         .collect()
 }
-/// When `file` is a session with subagents, write a merged transcript (main thread + subagent runs)
-/// to a per-session temp file and return its path; otherwise None so the caller uses `file` as-is.
-/// Lets "Claude 分析" open one file that includes the subagent dialogues.
-fn merged_replay_file(file: &str) -> Option<String> {
-    let merged = history::merged_transcript(file)?;
-    let dir = std::env::temp_dir().join("ccbud-replay");
-    std::fs::create_dir_all(&dir).ok()?;
-    let stem = std::path::Path::new(file).file_stem().and_then(|s| s.to_str()).unwrap_or("conversation");
-    let out = dir.join(format!("{}-with-subagents.jsonl", stem));
-    std::fs::write(&out, merged).ok()?;
-    Some(out.to_string_lossy().into_owned())
-}
-
 #[tauri::command]
 fn desktop_replay(file: String, prompt: Option<String>) -> Value {
     if file.is_empty() {
@@ -364,13 +351,15 @@ fn desktop_replay(file: String, prompt: Option<String>) -> Value {
     // localized; fall back to a minimal default only if the renderer didn't supply one.
     let prompt = prompt
         .filter(|p| !p.is_empty())
-        .unwrap_or_else(|| "请基于这份对话记录在 Claude 桌面版里继续。".to_string());
-    // If the session spawned subagents, hand Claude a transcript that MERGES the main thread with
-    // the subagent runs (they live in a separate subagents/ dir), so the analysis covers them and
-    // not just the main thread. Written to a temp file reused per session; falls back to the raw
-    // file if the merge or write fails.
-    let target = merged_replay_file(&file).unwrap_or_else(|| file.clone());
-    let url = format!("claude://cowork/new?q={}&file={}", pct(&prompt), pct(&target));
+        .unwrap_or_else(|| "请基于这些对话记录在 Claude 桌面版里继续。".to_string());
+    // Attach the main session AND every subagent transcript (they live in a separate subagents/ dir),
+    // each as its own `file=` — the Cowork deep link honors repeated `file=` — so the analysis covers
+    // subagent runs, not just the main thread.
+    let mut url = format!("claude://cowork/new?q={}&file={}", pct(&prompt), pct(&file));
+    for sub in history::subagent_transcript_paths(&file) {
+        url.push_str("&file=");
+        url.push_str(&pct(&sub));
+    }
     #[cfg(target_os = "macos")]
     {
         let ok = std::process::Command::new("/usr/bin/open").arg(&url).spawn().is_ok();

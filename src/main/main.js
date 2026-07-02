@@ -10,7 +10,7 @@ const claudeDesktop = require('./claudeDesktop');
 const updater = require('./updater');
 const os = require('os');
 const { formatTokens } = require('./usage');
-const { createHistoryWatcher, readSubagentFiles, mergedTranscript } = require('./history');
+const { createHistoryWatcher, readSubagentFiles, subagentTranscriptPaths } = require('./history');
 const zipStore = require('./zipStore');
 const { createInsights } = require('./insights');
 const { createMonitorStore } = require('./monitor');
@@ -409,21 +409,12 @@ function registerIpc() {
     if (!file) return { ok: false, reason: 'noFile' };
     if (process.platform === 'darwin' && !claudeDesktop.appInstalled()) return { ok: false, reason: 'notInstalled' };
     const prompt = mt('desktop.replayPrompt').slice(0, 13000); // q is truncated ~14k by Claude
-    // If the session spawned subagents, hand Claude a transcript that MERGES the main thread with
-    // the subagent runs (they live in a separate subagents/ dir) so the analysis covers them too.
-    // Written to a per-session temp file; falls back to the raw file if the merge/write fails.
-    let target = file;
-    try {
-      const merged = mergedTranscript(file);
-      if (merged) {
-        const dir = path.join(os.tmpdir(), 'ccbud-replay');
-        fs.mkdirSync(dir, { recursive: true });
-        const out = path.join(dir, path.basename(file, '.jsonl') + '-with-subagents.jsonl');
-        fs.writeFileSync(out, merged);
-        target = out;
-      }
-    } catch (_) {}
-    const url = `claude://cowork/new?q=${encodeURIComponent(prompt)}&file=${encodeURIComponent(target)}`;
+    // Attach the main session AND every subagent transcript (they live in a separate subagents/ dir),
+    // each as its own `file=` — the Cowork deep link honors repeated `file=` — so the analysis covers
+    // subagent runs, not just the main thread.
+    const files = [file].concat(subagentTranscriptPaths(file));
+    const url = `claude://cowork/new?q=${encodeURIComponent(prompt)}`
+      + files.map((f) => `&file=${encodeURIComponent(f)}`).join('');
     try { await shell.openExternal(url); return { ok: true }; }
     catch (e) { return { ok: false, reason: 'failed', message: e && e.message }; }
   });
