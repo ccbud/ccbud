@@ -10,7 +10,8 @@ const claudeDesktop = require('./claudeDesktop');
 const updater = require('./updater');
 const os = require('os');
 const { formatTokens } = require('./usage');
-const { createHistoryWatcher } = require('./history');
+const { createHistoryWatcher, readSubagentFiles, subagentTranscriptPaths } = require('./history');
+const zipStore = require('./zipStore');
 const { createInsights } = require('./insights');
 const { createMonitorStore } = require('./monitor');
 const { DICT } = require('../shared/i18n-dict');
@@ -408,7 +409,12 @@ function registerIpc() {
     if (!file) return { ok: false, reason: 'noFile' };
     if (process.platform === 'darwin' && !claudeDesktop.appInstalled()) return { ok: false, reason: 'notInstalled' };
     const prompt = mt('desktop.replayPrompt').slice(0, 13000); // q is truncated ~14k by Claude
-    const url = `claude://cowork/new?q=${encodeURIComponent(prompt)}&file=${encodeURIComponent(file)}`;
+    // Attach the main session AND every subagent transcript (they live in a separate subagents/ dir),
+    // each as its own `file=` — the Cowork deep link honors repeated `file=` — so the analysis covers
+    // subagent runs, not just the main thread.
+    const files = [file].concat(subagentTranscriptPaths(file));
+    const url = `claude://cowork/new?q=${encodeURIComponent(prompt)}`
+      + files.map((f) => `&file=${encodeURIComponent(f)}`).join('');
     try { await shell.openExternal(url); return { ok: true }; }
     catch (e) { return { ok: false, reason: 'failed', message: e && e.message }; }
   });
@@ -470,36 +476,55 @@ function registerIpc() {
     // Mirror Claude Code's lossy dir encoding (decodeDirName is the inverse): '/foo/bar' → '-foo-bar'.
     return cwd ? String(cwd).replace(/[/\\]/g, '-') : '-imported';
   }
-  function copyDirSync(src, dst) {
-    fs.mkdirSync(dst, { recursive: true });
-    for (const e of fs.readdirSync(src, { withFileTypes: true })) {
-      const s = path.join(src, e.name), d = path.join(dst, e.name);
-      if (e.isDirectory()) copyDirSync(s, d);
-      else if (e.isFile()) fs.copyFileSync(s, d);
-    }
-  }
-  function importOne(src, out) {
-    let raw;
-    try { raw = fs.readFileSync(src, 'utf8'); } catch (e) { out.failed++; return; }
+  // Snapshot a transcript (already read into `raw`) + its subagent sidecars into the import store,
+  // laid out like a native projects/ tree + a provenance sidecar. `subFiles`: [{ name, data }] to
+  // drop under `<baseId>/subagents/` (names are basename-reduced + pattern-checked). Shared by the
+  // plain-.jsonl and .zip-bundle import paths.
+  function writeImported(raw, originalPath, originalName, subFiles, out) {
     const recs = [];
-    for (const line of raw.split('\n')) { const s = line.trim(); if (!s) continue; try { recs.push(JSON.parse(s)); } catch (_) {} }
+    for (const line of String(raw).split('\n')) { const s = line.trim(); if (!s) continue; try { recs.push(JSON.parse(s)); } catch (_) {} }
     const hasMsg = recs.some((r) => r && (r.type === 'user' || r.type === 'assistant') && r.message);
     if (!hasMsg) { out.failed++; return; } // not a Claude Code transcript
     const metaRec = recs.find((r) => r && r.cwd) || recs.find((r) => r && r.sessionId) || {};
-    const baseId = metaRec.sessionId || path.basename(src, '.jsonl');
+    const baseId = metaRec.sessionId || path.basename(originalName, path.extname(originalName)) || 'import';
     const destDir = path.join(importsRoot(), 'projects', encodeCwd(metaRec.cwd));
     const destFile = path.join(destDir, baseId + '.jsonl');
     if (fs.existsSync(destFile)) { out.skipped++; return; } // same session already imported
     try {
       fs.mkdirSync(destDir, { recursive: true });
-      fs.copyFileSync(src, destFile);
-      // Bring along the session's subagent dialogues if they sit next to the source file.
-      const srcSub = path.join(path.dirname(src), path.basename(src, '.jsonl'), 'subagents');
-      try { if (fs.statSync(srcSub).isDirectory()) copyDirSync(srcSub, path.join(destDir, baseId, 'subagents')); } catch (_) {}
+      fs.writeFileSync(destFile, raw);
+      if (subFiles && subFiles.length) {
+        const subDir = path.join(destDir, baseId, 'subagents');
+        fs.mkdirSync(subDir, { recursive: true });
+        for (const f of subFiles) {
+          const safe = path.basename(f.name); // strip any dir component so the write can't escape subDir
+          if (/^agent-.*\.jsonl$/i.test(safe) || /^agent-.*\.meta\.json$/i.test(safe)) fs.writeFileSync(path.join(subDir, safe), f.data);
+        }
+      }
       fs.writeFileSync(destFile.replace(/\.jsonl$/, '.import.json'),
-        JSON.stringify({ originalPath: src, originalName: path.basename(src), sessionId: baseId, importedAt: Date.now() }, null, 2), 'utf8');
+        JSON.stringify({ originalPath, originalName, sessionId: baseId, importedAt: Date.now() }, null, 2), 'utf8');
       out.imported++;
     } catch (e) { out.failed++; }
+  }
+  // Import a plain .jsonl transcript, bringing along its on-disk subagents dir if present.
+  function importOne(src, out) {
+    let raw;
+    try { raw = fs.readFileSync(src, 'utf8'); } catch (e) { out.failed++; return; }
+    writeImported(raw, src, path.basename(src), readSubagentFiles(src), out);
+  }
+  // Import a conversation-bundle .zip (main session + `subagents/`), restoring the subagent layout.
+  function importZip(src, out) {
+    let buf;
+    try { buf = fs.readFileSync(src); } catch (e) { out.failed++; return; }
+    const { main, subagents } = zipStore.splitBundle(zipStore.readZip(buf));
+    if (!main) { out.failed++; return; }
+    writeImported(main.data.toString('utf8'), src, path.basename(src), subagents, out);
+  }
+  // Route by extension: .zip → bundle import, .jsonl → plain import, anything else → failed.
+  function importAny(src, out) {
+    if (/\.zip$/i.test(src)) importZip(src, out);
+    else if (/\.jsonl$/i.test(src)) importOne(src, out);
+    else out.failed++;
   }
   ipcMain.handle('history:import', async () => {
     const win = mainWindow && !mainWindow.isDestroyed() ? mainWindow : null;
@@ -510,22 +535,22 @@ function registerIpc() {
         defaultPath: app.getPath('downloads'),
         buttonLabel: mt('conv.importButton'),
         properties: ['openFile', 'multiSelections', 'showHiddenFiles'],
-        filters: [{ name: 'JSONL', extensions: ['jsonl'] }],
+        filters: [{ name: 'Conversation', extensions: ['jsonl', 'zip'] }],
       });
     } catch (e) { return { canceled: true, error: e && e.message }; }
     if (res.canceled || !res.filePaths || !res.filePaths.length) return { canceled: true };
     const out = { imported: 0, skipped: 0, failed: 0 };
-    for (const src of res.filePaths) importOne(src, out);
+    for (const src of res.filePaths) importAny(src, out);
     broadcast('history:changed', { files: [], active: store.get().historyActive });
     return out;
   });
-  // Import by absolute path(s) — drives the drag-and-drop entry point. importOne validates each file
-  // is a real Claude Code transcript (has user/assistant message records) before copying it in, so a
-  // non-transcript .jsonl just lands in `failed`. Mirrors history:import (which uses a file picker).
+  // Import by absolute path(s) — drives the drag-and-drop entry point. importAny routes .zip bundles
+  // and .jsonl transcripts, validating each is a real Claude Code session (has user/assistant message
+  // records) before copying it in, so anything else just lands in `failed`. Mirrors history:import.
   ipcMain.handle('history:importPaths', (_e, paths) => {
     const out = { imported: 0, skipped: 0, failed: 0 };
     for (const src of (Array.isArray(paths) ? paths : [])) {
-      if (typeof src === 'string' && /\.jsonl$/i.test(src)) importOne(src, out);
+      if (typeof src === 'string') importAny(src, out);
       else out.failed++;
     }
     if (out.imported || out.skipped || out.failed) broadcast('history:changed', { files: [], active: store.get().historyActive });
@@ -599,13 +624,29 @@ function registerIpc() {
   }
   ipcMain.handle('history:exportRaw', async (_e, file) => {
     if (!file) return { canceled: true, error: 'no file' };
+    // A session with subagents exports as a .zip bundle (main .jsonl at the top level + subagents/);
+    // a plain session stays a verbatim .jsonl. history:importPaths accepts either.
+    const subFiles = readSubagentFiles(file);
+    if (subFiles.length) {
+      let zipBuf;
+      try {
+        const entries = [{ name: path.basename(file), data: fs.readFileSync(file) }]
+          .concat(subFiles.map((s) => ({ name: 'subagents/' + s.name, data: s.data })));
+        zipBuf = zipStore.buildZip(entries);
+      } catch (e) { return { canceled: true, error: e && e.message }; }
+      let res;
+      try { res = await saveDialogPath(exportBaseName(file) + '.zip', 'zip', 'ZIP'); } catch (e) { return { canceled: true, error: e && e.message }; }
+      if (res.canceled || !res.filePath) return { canceled: true };
+      try { fs.writeFileSync(res.filePath, zipBuf); } catch (e) { return { canceled: true, error: e && e.message }; }
+      return { canceled: false, path: res.filePath, bundled: true };
+    }
     let data;
     try { data = fs.readFileSync(file, 'utf8'); } catch (e) { return { canceled: true, error: e && e.message }; }
     let res;
     try { res = await saveDialogPath(exportBaseName(file) + '.jsonl', 'jsonl', 'JSONL'); } catch (e) { return { canceled: true, error: e && e.message }; }
     if (res.canceled || !res.filePath) return { canceled: true };
     try { fs.writeFileSync(res.filePath, data, 'utf8'); } catch (e) { return { canceled: true, error: e && e.message }; }
-    return { canceled: false, path: res.filePath };
+    return { canceled: false, path: res.filePath, bundled: false };
   });
   // Build the standalone Claude-styled viewer (+ embedded subagent dialogues, read from
   // disk here since the renderer never loads them) and save it.

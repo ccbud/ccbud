@@ -1,6 +1,6 @@
 [package]
 name = "app"
-version = "1.1.5"
+version = "1.1.6"
 description = "ccbud — Claude Code Gateway"
 authors = ["loadchange <soocto@gmail.com>"]
 license = "GPL-3.0-only"
@@ -40,6 +40,9 @@ tauri-plugin-single-instance = "2"
 tauri-plugin-autostart = "2"
 rfd = "0.15"
 notify-debouncer-mini = "0.4"
+# Conversation-bundle ZIP (export/import subagents together). Pure-Rust miniz_oxide backend — no
+# system zlib, so it cross-compiles cleanly for every release target.
+flate2 = "1"
 
 # macOS-only: set NSWindow collectionBehavior so the popover floats over fullscreen apps.
 [target.'cfg(target_os = "macos")'.dependencies]

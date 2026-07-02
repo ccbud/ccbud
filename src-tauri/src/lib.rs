@@ -18,6 +18,7 @@ mod gateway;
 mod history;
 mod store;
 mod usage;
+mod ziputil;
 
 use serde_json::{json, Value};
 use tauri::{Emitter, Manager};
@@ -350,8 +351,15 @@ fn desktop_replay(file: String, prompt: Option<String>) -> Value {
     // localized; fall back to a minimal default only if the renderer didn't supply one.
     let prompt = prompt
         .filter(|p| !p.is_empty())
-        .unwrap_or_else(|| "请基于这份对话记录在 Claude 桌面版里继续。".to_string());
-    let url = format!("claude://cowork/new?q={}&file={}", pct(&prompt), pct(&file));
+        .unwrap_or_else(|| "请基于这些对话记录在 Claude 桌面版里继续。".to_string());
+    // Attach the main session AND every subagent transcript (they live in a separate subagents/ dir),
+    // each as its own `file=` — the Cowork deep link honors repeated `file=` — so the analysis covers
+    // subagent runs, not just the main thread.
+    let mut url = format!("claude://cowork/new?q={}&file={}", pct(&prompt), pct(&file));
+    for sub in history::subagent_transcript_paths(&file) {
+        url.push_str("&file=");
+        url.push_str(&pct(&sub));
+    }
     #[cfg(target_os = "macos")]
     {
         let ok = std::process::Command::new("/usr/bin/open").arg(&url).spawn().is_ok();
@@ -671,7 +679,7 @@ fn history_set_active(app: tauri::AppHandle, id: String) -> Value {
 }
 #[tauri::command]
 async fn history_import(app: tauri::AppHandle) -> Result<Value, String> {
-    match rfd::AsyncFileDialog::new().add_filter("JSONL", &["jsonl"]).set_title("导入对话记录").pick_files().await {
+    match rfd::AsyncFileDialog::new().add_filter("对话记录 (.jsonl / .zip)", &["jsonl", "zip"]).set_title("导入对话记录").pick_files().await {
         Some(files) => {
             let paths: Vec<String> = files.iter().map(|f| f.path().to_string_lossy().to_string()).collect();
             let r = history::import_paths(&paths);
@@ -719,15 +727,39 @@ fn history_delete_forever(app: tauri::AppHandle, file: String) -> Value {
 }
 #[tauri::command]
 async fn history_export_raw(file: String) -> Result<Value, String> {
-    let data = std::fs::read_to_string(&file).map_err(|e| e.to_string())?;
     let base = exporthtml::export_base_name(&file);
-    match rfd::AsyncFileDialog::new().set_file_name(format!("{}.jsonl", base)).save_file().await {
-        Some(d) => {
-            let p = d.path().to_path_buf();
-            std::fs::write(&p, data).map_err(|e| e.to_string())?;
-            Ok(json!({ "canceled": false, "path": p.to_string_lossy() }))
+    // A session with subagents exports as a .zip bundle (main .jsonl at the top level + subagents/);
+    // a plain session stays a verbatim .jsonl. import_paths accepts either.
+    if history::session_has_subagents(&file) {
+        let bytes = history::export_bundle(&file).map_err(|e| e.to_string())?;
+        match rfd::AsyncFileDialog::new()
+            .add_filter("ZIP", &["zip"])
+            .set_file_name(format!("{}.zip", base))
+            .save_file()
+            .await
+        {
+            Some(d) => {
+                let p = d.path().to_path_buf();
+                std::fs::write(&p, bytes).map_err(|e| e.to_string())?;
+                Ok(json!({ "canceled": false, "path": p.to_string_lossy(), "bundled": true }))
+            }
+            None => Ok(json!({ "canceled": true })),
         }
-        None => Ok(json!({ "canceled": true })),
+    } else {
+        let data = std::fs::read_to_string(&file).map_err(|e| e.to_string())?;
+        match rfd::AsyncFileDialog::new()
+            .add_filter("JSONL", &["jsonl"])
+            .set_file_name(format!("{}.jsonl", base))
+            .save_file()
+            .await
+        {
+            Some(d) => {
+                let p = d.path().to_path_buf();
+                std::fs::write(&p, data).map_err(|e| e.to_string())?;
+                Ok(json!({ "canceled": false, "path": p.to_string_lossy(), "bundled": false }))
+            }
+            None => Ok(json!({ "canceled": true })),
+        }
     }
 }
 #[tauri::command]

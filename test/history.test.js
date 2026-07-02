@@ -87,6 +87,17 @@ try {
   check('subagent messages shaped (2, last = "done")', !!sa && sa.messages.length === 2 && sa.messages[1].content[0].text === 'done', JSON.stringify(sa && sa.messages.length));
   check('subagent totals rolled up (in=1 out=4)', !!sa && sa.totals.out === 4 && sa.totals.in === 1, JSON.stringify(sa && sa.totals));
   check('meta.subagentCount = 1', s2.meta.subagentCount === 1, String(s2.meta.subagentCount));
+
+  // ---- readSubagentFiles (bundle export) + subagentTranscriptPaths ("Claude 分析" multi-attach) ----
+  const { readSubagentFiles, subagentTranscriptPaths } = require('../src/main/history');
+  const subFiles = readSubagentFiles(file);
+  check('readSubagentFiles returns jsonl + meta (2)', subFiles.length === 2, `n=${subFiles.length}`);
+  check('readSubagentFiles names are agent-aaa.*', subFiles.every((f) => /^agent-aaa\.(jsonl|meta\.json)$/.test(f.name)));
+  check('readSubagentFiles data is a Buffer', subFiles.every((f) => Buffer.isBuffer(f.data)));
+  const subPaths = subagentTranscriptPaths(file);
+  check('subagentTranscriptPaths returns only the agent-*.jsonl (1)', subPaths.length === 1, `n=${subPaths.length}`);
+  check('subagentTranscriptPaths excludes the .meta.json sidecar', subPaths.every((p) => /agent-aaa\.jsonl$/.test(p)));
+  check('subagentTranscriptPaths are absolute paths', subPaths.every((p) => p.startsWith(subDir)));
 } finally {
   fs.rmSync(root, { recursive: true, force: true });
 }

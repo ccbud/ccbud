@@ -196,6 +196,49 @@ function readSubagents(file) {
   return byTool;
 }
 
+// Absolute path to a session's subagents dir (`<dir>/<stem>/subagents`), regardless of existence.
+function subagentDir(file) {
+  return path.join(path.dirname(file), path.basename(file, '.jsonl'), 'subagents');
+}
+
+// A session's raw subagent sidecar files (`agent-*.jsonl` + `agent-*.meta.json`) as
+// [{ name, data:Buffer }], sorted by name. Empty when the session has no subagents. Shared by
+// bundle export/import and the replay merge (mirrors src-tauri/src/history.rs read_subagent_files).
+function readSubagentFiles(file) {
+  const dir = subagentDir(file);
+  let names;
+  try { names = fs.readdirSync(dir); } catch (_) { return []; }
+  const out = [];
+  for (const name of names) {
+    if (!/^agent-.*\.jsonl$/i.test(name) && !/^agent-.*\.meta\.json$/i.test(name)) continue;
+    try {
+      const p = path.join(dir, name);
+      if (!fs.statSync(p).isFile()) continue;
+      out.push({ name, data: fs.readFileSync(p) });
+    } catch (_) {}
+  }
+  out.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+  return out;
+}
+
+// Absolute paths of a session's subagent transcripts (`<stem>/subagents/agent-*.jsonl`), sorted.
+// Empty when the session has no subagents. Powers "Claude 分析": every subagent transcript is
+// attached alongside the main session in the Cowork deep link (which honors a repeated `file=`
+// param), so the analysis covers subagent runs — not just the main thread.
+function subagentTranscriptPaths(file) {
+  const dir = subagentDir(file);
+  let names;
+  try { names = fs.readdirSync(dir); } catch (_) { return []; }
+  const out = [];
+  for (const name of names) {
+    if (!/^agent-.*\.jsonl$/i.test(name)) continue;
+    const p = path.join(dir, name);
+    try { if (fs.statSync(p).isFile()) out.push(p); } catch (_) {}
+  }
+  out.sort();
+  return out;
+}
+
 function createHistoryWatcher(opts) {
   const getDirs = (opts && opts.getDirs) || defaultDirs;
   const emitter = new EventEmitter();
@@ -506,4 +549,4 @@ function createHistoryWatcher(opts) {
   };
 }
 
-module.exports = { createHistoryWatcher, lineToMessage, firstUserText, decodeDirName, defaultDirs };
+module.exports = { createHistoryWatcher, lineToMessage, firstUserText, decodeDirName, defaultDirs, subagentDir, readSubagentFiles, subagentTranscriptPaths };
