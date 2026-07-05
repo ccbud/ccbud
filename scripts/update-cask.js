@@ -52,10 +52,10 @@ ${shaStanza}
   url "https://github.com/ccbud/ccbud/releases/download/v#{version}/ccbud_#{version}_#{arch}.dmg",
       verified: "github.com/ccbud/ccbud/"
   name "ccbud"
-  desc "Claude Code Gateway — proxy Claude Code to any Anthropic-compatible provider"
+  desc "Coding CLI buddy — Claude Code gateway plus Claude Code/Codex session browser"
   homepage "https://github.com/ccbud/ccbud"
 
-  # ccbud applies JS-only releases in place (in-app hot update); \`brew upgrade\` handles the rest.
+  # ccbud can update itself in-app; Homebrew handles normal cask upgrades.
   auto_updates true
   depends_on macos: :big_sur
 

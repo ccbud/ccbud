@@ -1,8 +1,7 @@
 {
   "name": "ccbud",
-  "version": "1.1.6",
-  "description": "ccbud — Claude Code Gateway. A cross-platform desktop app that proxies Claude Code to any Anthropic-compatible provider, with one-click switching and model name mapping.",
-  "main": "src/main/bootstrap.js",
+  "version": "1.2.0",
+  "description": "ccbud — Coding CLI Buddy. A cross-platform desktop app that proxies Claude Code to any Anthropic-compatible provider (one-click switching, model mapping) and browses your Claude Code & Codex session history.",
   "author": {
     "name": "loadchange",
     "email": "soocto@gmail.com"
@@ -12,70 +11,26 @@
     "type": "git",
     "url": "https://github.com/ccbud/ccbud.git"
   },
-  "hotUpdate": {
-    "//": "Hot-update gate: installs whose native SHELL version is >= minShellVersion can apply this release as a JS-only hot update. Bump this to the current version ONLY in releases that change the native layer (Electron, bundled binaries, new native deps) to force a full reinstall.",
-    "minShellVersion": "1.0.16"
-  },
   "scripts": {
     "build:css": "tailwindcss -i src/renderer/input.css -o src/renderer/styles.css",
     "sync:shared": "node -e \"require('fs').cpSync('src/shared','src/renderer/shared',{recursive:true})\"",
     "tauri": "tauri",
     "release": "node scripts/release.js",
-    "start": "npm run build:css && electron .",
-    "dev": "npm run build:css && electron . --user-data-dir=.devdata",
+    "start": "tauri dev",
+    "dev": "tauri dev",
     "test": "node test/selftest.js",
-    "build:hotupdate": "node scripts/build-hotupdate.js",
-    "gen:updatekeys": "node scripts/gen-update-keys.js",
     "update:cask": "node scripts/update-cask.js",
-    "pack": "electron-builder --dir",
-    "dist": "electron-builder",
-    "dist:mac": "electron-builder --mac",
-    "dist:win": "electron-builder --win",
-    "dist:linux": "electron-builder --linux"
+    "dist": "tauri build",
+    "dist:mac": "tauri build",
+    "dist:win": "tauri build",
+    "dist:linux": "tauri build"
   },
   "devDependencies": {
     "@highlightjs/cdn-assets": "^11.11.1",
     "@tailwindcss/cli": "^4.3.1",
     "@tauri-apps/cli": "^2.11.3",
-    "electron": "^33.2.1",
-    "electron-builder": "^25.1.8",
     "marked": "^18.0.5",
     "tailwindcss": "^4.3.1"
-  },
-  "build": {
-    "appId": "dev.ccbud.gateway",
-    "productName": "ccbud",
-    "directories": {
-      "output": "dist",
-      "buildResources": "build"
-    },
-    "files": [
-      "src/**/*",
-      "!**/*.map"
-    ],
-    "mac": {
-      "category": "public.app-category.developer-tools",
-      "target": [
-        "dmg"
-      ],
-      "hardenedRuntime": true,
-      "gatekeeperAssess": false,
-      "entitlements": "build/entitlements.mac.plist",
-      "entitlementsInherit": "build/entitlements.mac.plist"
-    },
-    "win": {
-      "target": [
-        "nsis"
-      ]
-    },
-    "linux": {
-      "category": "Development",
-      "target": [
-        "AppImage",
-        "deb"
-      ]
-    },
-    "artifactName": "${productName}-${version}-${os}-${arch}.${ext}"
   },
   "dependencies": {
     "js-tiktoken": "^1.0.21"

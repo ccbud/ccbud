@@ -19,6 +19,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { EventEmitter } = require('events');
+const codex = require('./codex');
 
 function defaultDirs() {
   const root = process.env.CCBUD_HISTORY_DIR || path.join(os.homedir(), '.claude', 'projects');
@@ -250,12 +251,20 @@ function createHistoryWatcher(opts) {
 
   function dirs() { try { return getDirs() || []; } catch (e) { console.error('[history] getDirs() failed:', (e && e.message) || e); return []; } }
 
+  // A dir entry's Codex data tree: sibling `sessions/` next to its `projects/` — every work dir
+  // is probed for BOTH layouts (Claude Code writes `<dir>/projects/…`, Codex `<dir>/sessions/…`),
+  // so `~/.codex` is just another configured dir rather than a special case.
+  function sessionsDirOf(dm) {
+    const base = dm && (dm.configDir || (dm.projectsDir ? path.dirname(dm.projectsDir) : null));
+    return base ? path.join(base, 'sessions') : null;
+  }
+
   function eachSessionFile(cb) {
     for (const dm of dirs()) {
       const root = dm && dm.projectsDir;
       if (!root) continue;
       let entries;
-      try { entries = fs.readdirSync(root, { withFileTypes: true }); } catch (_) { continue; }
+      try { entries = fs.readdirSync(root, { withFileTypes: true }); } catch (_) { entries = []; }
       for (const d of entries) {
         if (!d.isDirectory()) continue;
         const pdir = path.join(root, d.name);
@@ -272,6 +281,9 @@ function createHistoryWatcher(opts) {
           }
         }
       }
+      // Codex rollouts live in a date-sharded sessions/ tree, so it gets its own walk.
+      const sdir = sessionsDirOf(dm);
+      if (sdir) codex.walkSessions(sdir, (file) => cb(file, '', false, dm));
     }
   }
 
@@ -283,6 +295,13 @@ function createHistoryWatcher(opts) {
     if (!entry || entry.mtime !== st.mtimeMs || entry.size !== st.size) {
       const head = readChunk(file, st.size, 131072);
       const recs = parseLines(head);
+      // Codex rollouts (a dir's sessions/ tree, or snapshots imported into the app store) list
+      // through the codex shaper — the record format shares nothing with Claude's.
+      if (codex.looksCodex(recs)) {
+        entry = { mtime: st.mtimeMs, size: st.size, meta: codex.sessionMetaFrom(file, recs, dm, st) };
+        metaCache.set(file, entry);
+        return entry.meta;
+      }
       const metaRec = recs.find((r) => r.cwd) || recs.find((r) => r.sessionId) || {};
       const agentRec = recs.find((r) => r.agentId) || {};
       const msgs = recs.map(lineToMessage).filter(Boolean);
@@ -359,8 +378,13 @@ function createHistoryWatcher(opts) {
     const counts = {};
     eachSessionFile((file, dirName, isSub, dm) => { const id = dm ? dm.id : 'default'; counts[id] = (counts[id] || 0) + 1; });
     return dirs().map((dm) => {
+      // A dir "exists" when EITHER data tree is on disk — ~/.codex has only sessions/.
       let exists = false;
       try { exists = fs.statSync(dm.projectsDir).isDirectory(); } catch (_) {}
+      if (!exists) {
+        const sdir = sessionsDirOf(dm);
+        try { exists = !!sdir && fs.statSync(sdir).isDirectory(); } catch (_) {}
+      }
       return { id: dm.id, label: dm.label, projectsDir: dm.projectsDir, sessions: counts[dm.id] || 0, exists, imported: !!dm.imported };
     });
   }
@@ -369,6 +393,7 @@ function createHistoryWatcher(opts) {
     let raw;
     try { raw = fs.readFileSync(file, 'utf8'); } catch (_) { return null; }
     const recs = parseLines(raw);
+    if (codex.looksCodex(recs)) return codex.sessionFromRecs(file, recs);
     const metaRec = recs.find((r) => r.cwd) || recs.find((r) => r.sessionId) || {};
     const agentRec = recs.find((r) => r.agentId) || {};
     const summaryRec = recs.find((r) => r.type === 'summary' && r.summary);
@@ -424,11 +449,31 @@ function createHistoryWatcher(opts) {
   // to the configured projects dirs so a renderer can never drive an arbitrary-path write.
   function setCcbud(file, patch) {
     patch = patch || {};
-    const within = dirs().some((dm) => dm && dm.projectsDir &&
-      path.resolve(file).startsWith(path.resolve(dm.projectsDir) + path.sep));
+    // Renderer-driven writes are confined to the configured work dirs' data trees (projects/
+    // AND sessions/) plus the imports store.
+    const resolved = path.resolve(file);
+    const within = dirs().some((dm) => {
+      if (!dm) return false;
+      const roots = [dm.projectsDir, sessionsDirOf(dm)].filter(Boolean);
+      return roots.some((r) => resolved.startsWith(path.resolve(r) + path.sep));
+    });
     if (!within) return { ok: false, reason: 'out-of-scope' };
     let raw;
     try { raw = fs.readFileSync(file, 'utf8'); } catch (_) { return { ok: false, reason: 'read' }; }
+    // Live Codex rollouts are another tool's files — their title/tags live in the app-owned
+    // sidecar instead of being written into the rollout. Imported codex COPIES sit inside our
+    // store (marked by .import.json) and take the normal in-file path below.
+    const head = [];
+    for (const line of raw.split('\n')) {
+      const s = line.trim(); if (!s) continue;
+      try { head.push(JSON.parse(s)); } catch (_) {}
+      if (head.length >= 8) break;
+    }
+    if (codex.looksCodex(head) && !codex.hasImportSidecar(file)) {
+      const r = codex.setMeta(file, patch);
+      if (r && r.ok) metaCache.delete(file); // sidecar edits don't bump the file's mtime
+      return r;
+    }
     const lines = raw.split('\n');
     let idx = -1, obj = null;
     for (let i = 0; i < lines.length; i++) {
@@ -513,9 +558,13 @@ function createHistoryWatcher(opts) {
   function syncWatches() {
     clearWatchers();
     for (const dm of dirs()) {
-      let exists = false;
-      try { exists = fs.statSync(dm.projectsDir).isDirectory(); } catch (_) {}
-      if (exists) watchers.push(watchDir(dm.projectsDir));
+      // Watch both data trees of every work dir (projects/ = Claude, sessions/ = Codex).
+      for (const root of [dm.projectsDir, sessionsDirOf(dm)]) {
+        if (!root) continue;
+        let exists = false;
+        try { exists = fs.statSync(root).isDirectory(); } catch (_) {}
+        if (exists) watchers.push(watchDir(root));
+      }
     }
     primeOffsets();
   }
@@ -549,4 +598,4 @@ function createHistoryWatcher(opts) {
   };
 }
 
-module.exports = { createHistoryWatcher, lineToMessage, firstUserText, decodeDirName, defaultDirs, subagentDir, readSubagentFiles, subagentTranscriptPaths };
+module.exports = { createHistoryWatcher, lineToMessage, firstUserText, readCcbud, decodeDirName, defaultDirs, subagentDir, readSubagentFiles, subagentTranscriptPaths };

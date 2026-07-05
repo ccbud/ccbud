@@ -649,6 +649,9 @@
   .flex-shrink-0 {
     flex-shrink: 0;
   }
+  .shrink {
+    flex-shrink: 1;
+  }
   .shrink-0 {
     flex-shrink: 0;
   }
@@ -4531,6 +4534,105 @@ body {
 .dir-chip-ico svg {
   width: 12px;
   height: 12px;
+}
+.proto-badge {
+  display: inline-flex;
+  align-items: center;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+  padding: 2px 6px;
+  border-radius: 999px;
+  white-space: nowrap;
+  letter-spacing: 0;
+  text-transform: none;
+  border: 1px solid transparent;
+}
+.proto-badge-direct {
+  background: var(--chip-bg);
+  color: var(--muted);
+}
+.proto-badge-xlate {
+  background: var(--brand-soft);
+  color: var(--brand);
+  border-color: var(--brand);
+  @supports (color: color-mix(in lab, red, red)) {
+    border-color: color-mix(in srgb, var(--brand) 30%, transparent);
+  }
+}
+.proto-seg {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 4px;
+  padding: 3px;
+  border-radius: 9px;
+  background: var(--bg-input);
+  border: 1px solid var(--border-custom);
+}
+.proto-seg-btn {
+  appearance: none;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12.5px;
+  font-weight: 500;
+  padding: 7px 6px;
+  border-radius: 7px;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: background 140ms, color 140ms, border-color 140ms;
+}
+.proto-seg-btn:hover {
+  color: var(--fg);
+  background: var(--chip-bg);
+}
+.proto-seg-btn.selected {
+  background: var(--brand-soft);
+  color: var(--brand);
+  font-weight: 600;
+  border-color: var(--brand);
+  @supports (color: color-mix(in lab, red, red)) {
+    border-color: color-mix(in srgb, var(--brand) 32%, transparent);
+  }
+}
+.dir-chip.active {
+  background: var(--brand-soft);
+  color: var(--brand);
+  border-color: var(--brand);
+  @supports (color: color-mix(in lab, red, red)) {
+    border-color: color-mix(in srgb, var(--brand) 40%, transparent);
+  }
+  font-weight: 600;
+}
+.dir-chip.active:hover {
+  background: var(--brand-soft);
+  color: var(--brand);
+}
+.dir-chip.active .dir-chip-n {
+  background: var(--brand);
+  @supports (color: color-mix(in lab, red, red)) {
+    background: color-mix(in srgb, var(--brand) 20%, transparent);
+  }
+}
+.dir-chip-trash.active {
+  background: var(--red-soft);
+  color: var(--red);
+  border-color: var(--red);
+  @supports (color: color-mix(in lab, red, red)) {
+    border-color: color-mix(in srgb, var(--red) 40%, transparent);
+  }
+}
+.dir-chip-trash.active:hover {
+  background: var(--red-soft);
+  color: var(--red);
+}
+.dir-chip-trash.active .dir-chip-n {
+  background: var(--red);
+  @supports (color: color-mix(in lab, red, red)) {
+    background: color-mix(in srgb, var(--red) 20%, transparent);
+  }
 }
 .cc-tip {
   position: fixed;

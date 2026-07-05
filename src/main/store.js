@@ -85,8 +85,10 @@ function normalize(cfg) {
     dirs.unshift('~/.claude');
   }
   c.historyDirs = dirs;
-  // '__imported__' is the synthetic, app-managed store of imported transcripts (not a user dir, so not
-  // in historyDirs) — keep it valid as an active selection so the "导入" filter persists.
+  // '__imported__' is the synthetic, app-managed store of imported transcripts (not a user dir, so
+  // not in historyDirs) — keep it valid as an active selection so the "导入" filter persists.
+  // '__codex__' is the retired synthetic Codex bucket — map it onto the real ~/.codex dir entry.
+  if (c.historyActive === '__codex__') c.historyActive = require('./codex').codexLabel();
   c.historyActive = c.historyActive === 'all' || c.historyActive === '__imported__' || dirs.includes(c.historyActive) ? c.historyActive : 'all';
   return c;
 }

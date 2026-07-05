@@ -1,21 +1,18 @@
 // ccbud Tauri backend.
 //
-// Every IPC command the renderer calls is registered here. config/provider commands are
-// now backed by real persistence (store.rs → ~/.ccbud/config.json); the rest are still
-// STUBS returning sensible empty shapes, filled in over later phases:
-//   Phase 2 — gateway (proxy.js → Rust)        Phase 4 — system (window/tray/dialogs/claude)
-//   Phase 3 — history/usage/export (in progress) Phase 5 — auto-update (tauri-plugin-updater)
-//
-// Stub params keep their real names (Tauri maps JS invoke args by name), so unused-var
-// warnings are suppressed crate-wide until the bodies are filled in.
+// Registers the IPC surface consumed by the shared renderer and wires the native runtime:
+// config persistence, localhost gateway, Claude integrations, history/usage/export, tray,
+// popover, updater, and self-check hooks.
 #![allow(unused_variables)]
 
 mod claude;
 mod claudedesktop;
+mod codex;
 mod counttokens;
 mod exporthtml;
 mod gateway;
 mod history;
+mod protocol;
 mod store;
 mod usage;
 mod ziputil;
@@ -165,25 +162,22 @@ fn provider_set_active(id: String) -> Value {
     store::write_config(cfg)
 }
 /// Build the upstream `/v1/messages` URL from a provider baseUrl.
-fn messages_url(base: &str) -> Option<String> {
-    let base = base.trim();
-    if !(base.starts_with("http://") || base.starts_with("https://")) {
-        return None;
-    }
-    Some(format!("{}/v1/messages", base.trim_end_matches('/')))
-}
-/// Live connection test (mirror of main.js testProvider): POST a tiny ping to the provider's
-/// /v1/messages and report ok / error / timeout. The renderer localizes the result message.
+/// Live connection test: POST a tiny ping to the provider, shaped for its declared wire protocol
+/// (Anthropic /v1/messages, OpenAI /chat/completions, or /responses), and report ok/error/timeout.
+/// The renderer localizes the result message.
 #[tauri::command]
 async fn provider_test(p: Value) -> Value {
     let base = p.get("baseUrl").and_then(|v| v.as_str()).unwrap_or("").trim();
     if base.is_empty() {
         return json!({ "ok": false, "reason": "baseUrlEmpty" });
     }
-    let url = match messages_url(base) {
-        Some(u) => u,
-        None => return json!({ "ok": false, "reason": "baseUrlInvalid" }),
-    };
+    if !(base.starts_with("http://") || base.starts_with("https://")) {
+        return json!({ "ok": false, "reason": "baseUrlInvalid" });
+    }
+    // Test against the provider's DECLARED protocol endpoint — an openai-chat provider must be
+    // pinged at /chat/completions with a Chat body, not the Anthropic /v1/messages default.
+    let wire = crate::protocol::Wire::from_provider(p.get("protocol").and_then(|v| v.as_str()));
+    let url = wire.upstream_url(base);
     let model = p
         .get("defaultModel")
         .and_then(|v| v.as_str())
@@ -203,11 +197,12 @@ async fn provider_test(p: Value) -> Value {
         .get("insecureSkipVerify")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
-    let body = json!({
-        "model": model,
-        "max_tokens": 16,
-        "messages": [{ "role": "user", "content": "ping" }],
-    });
+    // Protocol-shaped ping body.
+    let body = match wire {
+        crate::protocol::Wire::OpenAiResponses => json!({ "model": model, "max_output_tokens": 16, "input": "ping" }),
+        crate::protocol::Wire::OpenAiChat => json!({ "model": model, "max_tokens": 16, "messages": [{ "role": "user", "content": "ping" }] }),
+        crate::protocol::Wire::Anthropic => json!({ "model": model, "max_tokens": 16, "messages": [{ "role": "user", "content": "ping" }] }),
+    };
     let client = match reqwest::Client::builder()
         .danger_accept_invalid_certs(insecure)
         .timeout(std::time::Duration::from_secs(30))
@@ -218,26 +213,28 @@ async fn provider_test(p: Value) -> Value {
     };
     // Auth via Authorization: Bearer only. Sending both authorization and x-api-key trips
     // providers that reject having the two auth headers present at once.
-    let resp = client
+    let mut rb = client
         .post(&url)
         .header("content-type", "application/json")
-        .header("authorization", format!("Bearer {}", token))
-        .header("anthropic-version", "2023-06-01")
-        .json(&body)
-        .send()
-        .await;
+        .header("authorization", format!("Bearer {}", token));
+    if wire == crate::protocol::Wire::Anthropic {
+        rb = rb.header("anthropic-version", "2023-06-01");
+    }
+    let resp = rb.json(&body).send().await;
     match resp {
         Ok(r) => {
             let status = r.status().as_u16();
             let text = r.text().await.unwrap_or_default();
             let parsed: Option<Value> = serde_json::from_str(&text).ok();
             let http_ok = (200..300).contains(&status);
-            let is_message = parsed
-                .as_ref()
-                .and_then(|j| j.get("type"))
-                .and_then(|v| v.as_str())
-                == Some("message");
-            if http_ok && is_message {
+            // A well-shaped reply for the tested protocol: Anthropic `type:message`, Chat `choices`,
+            // Responses `output`/`id`.
+            let shape_ok = parsed.as_ref().map(|j| match wire {
+                crate::protocol::Wire::Anthropic => j.get("type").and_then(|v| v.as_str()) == Some("message"),
+                crate::protocol::Wire::OpenAiChat => j.get("choices").map(|c| c.is_array()).unwrap_or(false),
+                crate::protocol::Wire::OpenAiResponses => j.get("output").is_some() || j.get("id").is_some(),
+            }).unwrap_or(false);
+            if http_ok && shape_ok {
                 let m = parsed
                     .as_ref()
                     .and_then(|j| j.get("model"))
@@ -270,7 +267,7 @@ async fn provider_test(p: Value) -> Value {
     }
 }
 
-// ---- claude code / desktop integration (Phase 4) ----
+// ---- claude code / desktop integration ----
 #[tauri::command]
 async fn claude_connect(
     app: tauri::AppHandle,
@@ -372,7 +369,7 @@ fn desktop_replay(file: String, prompt: Option<String>) -> Value {
     }
 }
 
-// ---- server / usage / monitor / logs (Phase 2/3) ----
+// ---- server / usage / monitor / logs ----
 async fn full_status(gw: &std::sync::Arc<gateway::GatewayState>) -> Value {
     let mut s = gw.status().await;
     let port = gw
@@ -587,7 +584,7 @@ fn logs_clear(gw: tauri::State<'_, std::sync::Arc<gateway::GatewayState>>) -> Va
     Value::Null
 }
 
-// ---- window / app lifecycle (Phase 4) ----
+// ---- window / app lifecycle ----
 /// macOS Dock icon follows the main window: Regular (Dock shown) while a window is open,
 /// Accessory (menu-bar only) when it's closed. The popover floats over fullscreen apps via its
 /// NSPanel regardless of this policy, so showing the Dock icon with the main window is safe.
@@ -630,7 +627,7 @@ fn window_view_min_width(app: tauri::AppHandle, w: i64) -> Value {
     Value::Null
 }
 
-// ---- conversation history (Phase 3) ----
+// ---- conversation history ----
 #[tauri::command]
 fn history_projects() -> Value {
     let cfg = store::read_config();
@@ -655,12 +652,23 @@ fn history_dirs() -> Value {
 }
 #[tauri::command]
 async fn history_pick_dir() -> Result<Value, String> {
-    let folder = rfd::AsyncFileDialog::new().set_title("选择 Claude 配置目录").pick_folder().await;
+    let folder = rfd::AsyncFileDialog::new().set_title("选择工作目录").pick_folder().await;
     match folder {
         // Return the picked path (home-collapsed to `~/…`) and let the renderer persist it
-        // via saveConfig — mirrors the Electron `history:pickDir` contract the UI expects.
+        // via saveConfig, matching the renderer contract.
         Some(f) => {
-            let path = store::collapse_home(&f.path().to_string_lossy());
+            let mut picked = f.path().to_path_buf();
+            // If the user drilled into a data subdir (projects/ = Claude, sessions/ = Codex),
+            // store its parent (the work dir) so both trees are probed correctly.
+            let name = picked.file_name().and_then(|n| n.to_str()).map(|s| s.to_string());
+            if matches!(name.as_deref(), Some("projects") | Some("sessions"))
+                && !picked.join(name.as_deref().unwrap()).is_dir()
+            {
+                if let Some(parent) = picked.parent() {
+                    picked = parent.to_path_buf();
+                }
+            }
+            let path = store::collapse_home(&picked.to_string_lossy());
             Ok(json!({ "ok": true, "path": path }))
         }
         None => Ok(json!({ "ok": false, "canceled": true })),
@@ -786,7 +794,7 @@ async fn history_export_html(payload: Value) -> Result<Value, String> {
     }
 }
 
-// ---- utilities (Phase 4) ----
+// ---- utilities ----
 #[tauri::command]
 fn util_copy(text: String) -> bool {
     match arboard::Clipboard::new() {
@@ -817,8 +825,8 @@ fn util_open_external(url: String) -> bool {
 }
 
 // Open a local file with the OS default handler. Used to pop the freshly-exported HTML viewer in
-// the user's browser so they don't have to hunt for it in the filesystem — parity with the
-// Electron `shell.openPath` (issue #7). Best-effort: a spawn failure must not fail the export.
+// the user's browser so they don't have to hunt for it in the filesystem. Best-effort: a spawn
+// failure must not fail the export.
 fn open_path_native(path: &std::path::Path) {
     #[cfg(target_os = "macos")]
     let _ = std::process::Command::new("open").arg(path).spawn();
@@ -828,7 +836,7 @@ fn open_path_native(path: &std::path::Path) {
     let _ = std::process::Command::new("xdg-open").arg(path).spawn();
 }
 
-// ---- in-app updates (Phase 5) ----
+// ---- in-app updates ----
 // In-app update state, mapped to the shape the renderer's about/update pane expects
 // (runningVersion / latestVersion / mode / pending). Tauri's updater is in-app full → mode "hot".
 static UPDATE_LATEST: std::sync::Mutex<Option<(String, Option<String>)>> =
@@ -1196,6 +1204,10 @@ pub fn run() {
                         .build(),
                 )?;
             }
+            // One-time migration: a detected Codex install (~/.codex/sessions) joins historyDirs
+            // as a regular work dir. Runs BEFORE the history watcher so its trees get watched.
+            store::ensure_codex_dir();
+
             // Start the localhost gateway on the configured port (proxy.js parity).
             let gw = gateway::GatewayState::new(app.handle().clone());
             app.manage(gw.clone());
@@ -1328,8 +1340,7 @@ pub fn run() {
                                     // Center under the tray icon, clamped to the monitor (rect +
                                     // scale are physical px, so retina is handled correctly).
                                     //
-                                    // Pick the monitor the TRAY icon sits on — mirrors Electron's
-                                    // getDisplayMatching(trayBounds). pop.current_monitor() is the
+                                    // Pick the monitor the TRAY icon sits on. pop.current_monitor() is the
                                     // monitor the (hidden) popover window last sat on, which on a
                                     // multi-display setup is often NOT the screen whose menu bar was
                                     // clicked; using it clamps the popover to the wrong monitor's

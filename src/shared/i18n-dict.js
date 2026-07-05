@@ -13,7 +13,7 @@
   var LOCALE_TAG = { en: 'en-US', zh: 'zh-CN', 'zh-TW': 'zh-TW', ja: 'ja-JP', ko: 'ko-KR' };
 
   var en = {
-    'brand.sub': 'Claude Code Buddy',
+    'brand.sub': 'Coding CLI Buddy',
     'nav.providers': 'Services',
     'nav.conversations': 'Conversations',
     'nav.monitor': 'Monitor',
@@ -96,7 +96,7 @@
     'settings.trayUsage': 'Show usage in menu bar',
     'settings.language': 'Language',
     'settings.histDir': 'Working directories',
-    'settings.histDirDesc': 'Data source for conversations and usage — Claude Code config directories (each with projects/). Default ~/.claude; if you set another via CLAUDE_CONFIG_DIR / claude --config, add it here and switch in Conversations.',
+    'settings.histDirDesc': 'Data source for conversations and usage — each work dir is scanned for Claude Code sessions (projects/) and Codex sessions (sessions/). ~/.claude is always included and ~/.codex is added automatically when Codex is installed; add other locations (e.g. CLAUDE_CONFIG_DIR / CODEX_HOME) here and switch in Conversations.',
     'settings.histDirPlaceholder': 'Or type a path and press Enter (e.g. ~/.claude)',
     'settings.pickDir': 'Add folder…',
     'settings.dirMissing': 'Folder not found',
@@ -167,6 +167,13 @@
     'modal.hide': 'Hide',
     'modal.mainModel': 'Primary model',
     'modal.smallModel': 'Lightweight model',
+    'modal.protocol': 'Upstream protocol',
+    'modal.protoAnthropic': 'Anthropic Messages',
+    'modal.protoChat': 'OpenAI Chat',
+    'modal.protoResponses': 'OpenAI Responses',
+    'modal.protoBadgeDirect': 'Direct',
+    'modal.protoBadgeXlate': 'Auto-translate',
+    'providers.protocolTip': 'The provider\'s wire protocol; non-Anthropic requests are auto-translated.',
     'modal.autoMap': 'Auto-map Claude default model names',
     'modal.aliasSummary': 'Custom model aliases (alias ⇄ upstream)',
     'modal.aliasDesc': 'Map the client’s requested model name exactly to an upstream model; the response is renamed back automatically. Models with [1m] (1M context) etc. MUST be mapped here explicitly to a supported upstream, to avoid being auto-downgraded. Auto-mapping only kicks in when no alias matches.',
@@ -281,6 +288,8 @@
     'conv.stat.output': 'Output',
     'conv.stat.cacheRead': 'Cache read',
     'conv.stat.version': 'Version',
+    'conv.stat.tool': 'Tool',
+    'conv.patchFiles': '{n} files',
 
     'time.justNow': 'just now',
     'time.minutesAgo': '{n} min ago',
@@ -342,8 +351,8 @@
     'about.releaseNotes': 'Releases',
     'about.stagedLog': 'A new version was downloaded and will apply on next launch.',
 
-    'dialog.pickTitle': 'Choose the Claude config directory (with projects/)',
-    'dialog.pickMessage': 'Choose the Claude Code config directory; default ~/.claude (hidden directories shown)',
+    'dialog.pickTitle': 'Choose a work directory (with projects/ or sessions/)',
+    'dialog.pickMessage': 'Choose a Claude Code or Codex config directory, e.g. ~/.claude or ~/.codex (hidden directories shown)',
     'dialog.pickButton': 'Choose this folder',
 
     'err.noProvider': 'Add a service before connecting',
@@ -379,7 +388,7 @@
   };
 
   var zh = {
-    'brand.sub': 'Claude Code Buddy',
+    'brand.sub': 'Coding CLI Buddy',
     'nav.providers': '服务',
     'nav.conversations': '对话',
     'nav.monitor': '监控',
@@ -462,7 +471,7 @@
     'settings.trayUsage': '菜单栏显示用量',
     'settings.language': '语言',
     'settings.histDir': '工作目录',
-    'settings.histDirDesc': '对话与用量统计的数据来源 —— Claude Code 的配置目录（含 projects/）。默认 ~/.claude；若用 CLAUDE_CONFIG_DIR / claude --config 指定了其他目录，在此添加，可在「对话」页切换查看。',
+    'settings.histDirDesc': '对话与用量统计的数据来源 —— 每个工作目录都会同时扫描 Claude Code 会话（projects/）与 Codex 会话（sessions/）。~/.claude 始终保留，检测到 Codex 时会自动加入 ~/.codex；若用 CLAUDE_CONFIG_DIR / CODEX_HOME 等指定了其他位置，在此添加，可在「对话」页切换查看。',
     'settings.histDirPlaceholder': '或手动输入路径后回车（如 ~/.claude）',
     'settings.pickDir': '添加目录…',
     'settings.dirMissing': '目录不存在',
@@ -533,6 +542,13 @@
     'modal.hide': '隐藏',
     'modal.mainModel': '主模型',
     'modal.smallModel': '轻量模型',
+    'modal.protocol': '上游协议',
+    'modal.protoAnthropic': 'Anthropic Messages',
+    'modal.protoChat': 'OpenAI Chat',
+    'modal.protoResponses': 'OpenAI Responses',
+    'modal.protoBadgeDirect': '直连',
+    'modal.protoBadgeXlate': '自动转换',
+    'providers.protocolTip': '该服务的 API 协议；非 Anthropic 请求会被自动转换。',
     'modal.autoMap': '自动映射 Claude 默认模型名',
     'modal.aliasSummary': '自定义模型别名（别名 ⇄ 上游模型）',
     'modal.aliasDesc': '把客户端请求的模型名精确映射到上游模型，回包自动改回原名。带 [1m]（1M 上下文）等特殊模型务必在此显式映射到支持的上游，避免被自动映射降级。未命中别名时才走「自动映射」。',
@@ -647,6 +663,8 @@
     'conv.stat.output': '输出',
     'conv.stat.cacheRead': '缓存读',
     'conv.stat.version': '版本',
+    'conv.stat.tool': '工具',
+    'conv.patchFiles': '{n} 个文件',
 
     'time.justNow': '刚刚',
     'time.minutesAgo': '{n} 分钟前',
@@ -708,8 +726,8 @@
     'about.releaseNotes': '发布记录',
     'about.stagedLog': '已下载新版本，将在下次启动时生效。',
 
-    'dialog.pickTitle': '选择 Claude 配置目录（含 projects/）',
-    'dialog.pickMessage': '选择 Claude Code 的配置目录，默认 ~/.claude（已显示隐藏目录）',
+    'dialog.pickTitle': '选择工作目录（含 projects/ 或 sessions/）',
+    'dialog.pickMessage': '选择 Claude Code 或 Codex 的配置目录，如 ~/.claude、~/.codex（已显示隐藏目录）',
     'dialog.pickButton': '选择此目录',
 
     'err.noProvider': '请先添加一个服务商再接入',
@@ -745,7 +763,7 @@
   };
 
   var zhTW = {
-    'brand.sub': 'Claude Code Buddy',
+    'brand.sub': 'Coding CLI Buddy',
     'nav.providers': '服務',
     'nav.conversations': '對話',
     'nav.monitor': '監控',
@@ -809,7 +827,7 @@
     'settings.trayUsage': '選單列顯示用量',
     'settings.language': '語言',
     'settings.histDir': '工作目錄',
-    'settings.histDirDesc': '對話與用量統計的資料來源 —— Claude Code 的設定目錄（含 projects/）。預設 ~/.claude；若用 CLAUDE_CONFIG_DIR / claude --config 指定了其他目錄，在此新增，可在「對話」頁切換檢視。',
+    'settings.histDirDesc': '對話與用量統計的資料來源 —— 每個工作目錄都會同時掃描 Claude Code 工作階段（projects/）與 Codex 工作階段（sessions/）。~/.claude 一律保留，偵測到 Codex 時會自動加入 ~/.codex；若用 CLAUDE_CONFIG_DIR / CODEX_HOME 等指定了其他位置，在此新增，可在「對話」頁切換檢視。',
     'settings.histDirPlaceholder': '或手動輸入路徑後按 Enter（如 ~/.claude）',
     'settings.pickDir': '新增目錄…',
     'settings.dirMissing': '目錄不存在',
@@ -880,6 +898,13 @@
     'modal.hide': '隱藏',
     'modal.mainModel': '主要模型',
     'modal.smallModel': '輕量模型',
+    'modal.protocol': '上游協定',
+    'modal.protoAnthropic': 'Anthropic Messages',
+    'modal.protoChat': 'OpenAI Chat',
+    'modal.protoResponses': 'OpenAI Responses',
+    'modal.protoBadgeDirect': '直連',
+    'modal.protoBadgeXlate': '自動轉換',
+    'providers.protocolTip': '該服務的 API 協定；非 Anthropic 請求會被自動轉換。',
     'modal.autoMap': '自動對應 Claude 預設模型名稱',
     'modal.aliasSummary': '自訂模型別名（別名 ⇄ 上游模型）',
     'modal.aliasDesc': '把用戶端請求的模型名稱精確對應到上游模型，回應自動改回原名。帶 [1m]（1M 上下文）等特殊模型務必在此明確對應到支援的上游，避免被自動對應降級。未命中別名時才走「自動對應」。',
@@ -994,6 +1019,8 @@
     'conv.stat.output': '輸出',
     'conv.stat.cacheRead': '快取讀取',
     'conv.stat.version': '版本',
+    'conv.stat.tool': '工具',
+    'conv.patchFiles': '{n} 個檔案',
 
     'time.justNow': '剛剛',
     'time.minutesAgo': '{n} 分鐘前',
@@ -1055,8 +1082,8 @@
     'about.releaseNotes': '發佈記錄',
     'about.stagedLog': '已下載新版本，將在下次啟動時生效。',
 
-    'dialog.pickTitle': '選擇 Claude 設定目錄（含 projects/）',
-    'dialog.pickMessage': '選擇 Claude Code 的設定目錄，預設 ~/.claude（已顯示隱藏目錄）',
+    'dialog.pickTitle': '選擇工作目錄（含 projects/ 或 sessions/）',
+    'dialog.pickMessage': '選擇 Claude Code 或 Codex 的設定目錄，如 ~/.claude、~/.codex（已顯示隱藏目錄）',
     'dialog.pickButton': '選擇此目錄',
 
     'err.noProvider': '請先新增一個服務商再接入',
@@ -1111,7 +1138,7 @@
   };
 
   var ja = {
-    'brand.sub': 'Claude Code Buddy',
+    'brand.sub': 'Coding CLI Buddy',
     'nav.providers': 'サービス',
     'nav.conversations': '会話',
     'nav.monitor': 'モニター',
@@ -1175,7 +1202,7 @@
     'settings.trayUsage': 'メニューバーに使用量を表示',
     'settings.language': '言語',
     'settings.histDir': '作業ディレクトリ',
-    'settings.histDirDesc': '会話と使用量統計のデータ元 —— Claude Code の設定ディレクトリ（projects/ を含む）。既定は ~/.claude。CLAUDE_CONFIG_DIR / claude --config で別の場所を指定した場合はここに追加し、「会話」ページで切り替えできます。',
+    'settings.histDirDesc': '会話と使用量統計のデータ元 —— 各作業ディレクトリから Claude Code のセッション（projects/）と Codex のセッション（sessions/）を両方読み取ります。~/.claude は常に含まれ、Codex を検出すると ~/.codex が自動追加されます。CLAUDE_CONFIG_DIR / CODEX_HOME などで別の場所を指定した場合はここに追加し、「会話」ページで切り替えできます。',
     'settings.histDirPlaceholder': 'またはパスを入力して Enter（例: ~/.claude）',
     'settings.pickDir': 'フォルダを追加…',
     'settings.dirMissing': 'ディレクトリがありません',
@@ -1246,6 +1273,13 @@
     'modal.hide': '非表示',
     'modal.mainModel': 'メインモデル',
     'modal.smallModel': '軽量モデル',
+    'modal.protocol': 'アップストリーム プロトコル',
+    'modal.protoAnthropic': 'Anthropic Messages',
+    'modal.protoChat': 'OpenAI Chat',
+    'modal.protoResponses': 'OpenAI Responses',
+    'modal.protoBadgeDirect': '直接',
+    'modal.protoBadgeXlate': '自動変換',
+    'providers.protocolTip': 'このプロバイダーの API プロトコル。Anthropic 以外は自動変換されます。',
     'modal.autoMap': 'Claude 既定モデル名を自動マッピング',
     'modal.aliasSummary': 'カスタムモデル別名（別名 ⇄ 上流モデル）',
     'modal.aliasDesc': 'クライアントが要求したモデル名を上流モデルに正確にマッピングし、レスポンスは自動で元の名前に戻します。[1m]（1M コンテキスト）などの特殊モデルは自動ダウングレードを避けるため、ここで対応する上流に明示的にマッピングしてください。別名に一致しない場合のみ「自動マッピング」が動作します。',
@@ -1360,6 +1394,8 @@
     'conv.stat.output': '出力',
     'conv.stat.cacheRead': 'キャッシュ読取',
     'conv.stat.version': 'バージョン',
+    'conv.stat.tool': 'ツール',
+    'conv.patchFiles': '{n} ファイル',
 
     'time.justNow': 'たった今',
     'time.minutesAgo': '{n} 分前',
@@ -1421,8 +1457,8 @@
     'about.releaseNotes': 'リリース',
     'about.stagedLog': '新しいバージョンをダウンロードしました。次回起動時に適用されます。',
 
-    'dialog.pickTitle': 'Claude 設定ディレクトリを選択（projects/ を含む）',
-    'dialog.pickMessage': 'Claude Code の設定ディレクトリを選択。既定 ~/.claude（隠しディレクトリ表示済み）',
+    'dialog.pickTitle': '作業ディレクトリを選択（projects/ または sessions/ を含む）',
+    'dialog.pickMessage': 'Claude Code / Codex の設定ディレクトリを選択（例: ~/.claude、~/.codex。隠しディレクトリ表示済み）',
     'dialog.pickButton': 'このフォルダを選択',
 
     'err.noProvider': '接続する前にサービスを追加してください',
@@ -1477,7 +1513,7 @@
   };
 
   var ko = {
-    'brand.sub': 'Claude Code Buddy',
+    'brand.sub': 'Coding CLI Buddy',
     'nav.providers': '서비스',
     'nav.conversations': '대화',
     'nav.monitor': '모니터',
@@ -1541,7 +1577,7 @@
     'settings.trayUsage': '메뉴 막대에 사용량 표시',
     'settings.language': '언어',
     'settings.histDir': '작업 디렉터리',
-    'settings.histDirDesc': '대화 및 사용량 통계의 데이터 출처 —— Claude Code 설정 디렉터리(projects/ 포함). 기본값 ~/.claude. CLAUDE_CONFIG_DIR / claude --config로 다른 위치를 지정했다면 여기에 추가하고 「대화」 페이지에서 전환할 수 있습니다.',
+    'settings.histDirDesc': '대화 및 사용량 통계의 데이터 출처 —— 각 작업 디렉터리에서 Claude Code 세션(projects/)과 Codex 세션(sessions/)을 함께 읽습니다. ~/.claude는 항상 포함되며 Codex가 감지되면 ~/.codex가 자동 추가됩니다. CLAUDE_CONFIG_DIR / CODEX_HOME 등으로 다른 위치를 지정했다면 여기에 추가하고 「대화」 페이지에서 전환할 수 있습니다.',
     'settings.histDirPlaceholder': '또는 경로를 입력하고 Enter (예: ~/.claude)',
     'settings.pickDir': '폴더 추가…',
     'settings.dirMissing': '디렉터리 없음',
@@ -1612,6 +1648,13 @@
     'modal.hide': '숨기기',
     'modal.mainModel': '기본 모델',
     'modal.smallModel': '경량 모델',
+    'modal.protocol': '업스트림 프로토콜',
+    'modal.protoAnthropic': 'Anthropic Messages',
+    'modal.protoChat': 'OpenAI Chat',
+    'modal.protoResponses': 'OpenAI Responses',
+    'modal.protoBadgeDirect': '직접',
+    'modal.protoBadgeXlate': '자동 변환',
+    'providers.protocolTip': '이 공급자의 API 프로토콜. Anthropic이 아니면 자동 변환됩니다.',
     'modal.autoMap': 'Claude 기본 모델명 자동 매핑',
     'modal.aliasSummary': '사용자 지정 모델 별칭 (별칭 ⇄ 업스트림 모델)',
     'modal.aliasDesc': '클라이언트가 요청한 모델명을 업스트림 모델에 정확히 매핑하고, 응답은 자동으로 원래 이름으로 되돌립니다. [1m](1M 컨텍스트) 등 특수 모델은 자동 다운그레이드를 피하기 위해 여기서 지원되는 업스트림에 명시적으로 매핑하세요. 별칭에 맞지 않을 때만 “자동 매핑”이 동작합니다.',
@@ -1726,6 +1769,8 @@
     'conv.stat.output': '출력',
     'conv.stat.cacheRead': '캐시 읽기',
     'conv.stat.version': '버전',
+    'conv.stat.tool': '도구',
+    'conv.patchFiles': '{n}개 파일',
 
     'time.justNow': '방금',
     'time.minutesAgo': '{n}분 전',
@@ -1787,8 +1832,8 @@
     'about.releaseNotes': '릴리스',
     'about.stagedLog': '새 버전을 다운로드했으며 다음 실행 시 적용됩니다.',
 
-    'dialog.pickTitle': 'Claude 설정 디렉터리 선택 (projects/ 포함)',
-    'dialog.pickMessage': 'Claude Code 설정 디렉터리를 선택하세요. 기본값 ~/.claude (숨김 디렉터리 표시됨)',
+    'dialog.pickTitle': '작업 디렉터리 선택 (projects/ 또는 sessions/ 포함)',
+    'dialog.pickMessage': 'Claude Code 또는 Codex 설정 디렉터리를 선택하세요 (예: ~/.claude, ~/.codex, 숨김 디렉터리 표시됨)',
     'dialog.pickButton': '이 폴더 선택',
 
     'err.noProvider': '연결하기 전에 서비스를 추가하세요',

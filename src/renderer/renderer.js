@@ -18,15 +18,21 @@ function injectIcons(root) {
   });
 }
 
+// Each preset declares its wire `protocol` up front — Anthropic-native endpoints (the `/anthropic`
+// gateways) pass through directly; OpenAI-compatible endpoints are auto-translated. Picking a preset
+// sets the protocol so the user knows immediately how their requests will be handled.
 const PRESETS = {
-  glm: { name: 'GLM', baseUrl: 'https://open.bigmodel.cn/api/anthropic', defaultModel: 'glm-5.2', smallFastModel: 'glm-5.2' },
-  deepseek: { name: 'DeepSeek', baseUrl: 'https://api.deepseek.com/anthropic', defaultModel: 'deepseek-v4-pro', smallFastModel: 'deepseek-v4-flash' },
-  mimo: { name: 'MiMo', baseUrl: 'https://token-plan-sgp.xiaomimimo.com/anthropic', defaultModel: 'mimo-v2.5-pro', smallFastModel: 'mimo-v2.5' },
-  kimi: { name: 'Kimi', baseUrl: 'https://api.kimi.com/coding', defaultModel: 'kimi-for-coding', smallFastModel: 'kimi-for-coding' },
-  minimax: { name: 'MiniMax', baseUrl: 'https://api.minimax.io/anthropic', defaultModel: 'MiniMax-M3', smallFastModel: 'MiniMax-M3' },
-  custom: { name: '', baseUrl: '', defaultModel: '', smallFastModel: '' },
+  glm: { name: 'GLM', baseUrl: 'https://open.bigmodel.cn/api/anthropic', defaultModel: 'glm-5.2', smallFastModel: 'glm-5.2', protocol: 'anthropic' },
+  deepseek: { name: 'DeepSeek', baseUrl: 'https://api.deepseek.com/anthropic', defaultModel: 'deepseek-v4-pro', smallFastModel: 'deepseek-v4-flash', protocol: 'anthropic' },
+  mimo: { name: 'MiMo', baseUrl: 'https://token-plan-sgp.xiaomimimo.com/anthropic', defaultModel: 'mimo-v2.5-pro', smallFastModel: 'mimo-v2.5', protocol: 'anthropic' },
+  kimi: { name: 'Kimi', baseUrl: 'https://api.kimi.com/coding', defaultModel: 'kimi-for-coding', smallFastModel: 'kimi-for-coding', protocol: 'anthropic' },
+  minimax: { name: 'MiniMax', baseUrl: 'https://api.minimax.io/anthropic', defaultModel: 'MiniMax-M3', smallFastModel: 'MiniMax-M3', protocol: 'anthropic' },
+  nvidia: { name: 'NVIDIA', baseUrl: 'https://integrate.api.nvidia.com/v1', defaultModel: 'z-ai/glm-5.2', smallFastModel: 'z-ai/glm-5.2', protocol: 'openai-chat' },
+  openai: { name: 'OpenAI', baseUrl: 'https://api.openai.com/v1', defaultModel: 'gpt-5.2', smallFastModel: 'gpt-5.2-mini', protocol: 'openai-responses' },
+  openrouter: { name: 'OpenRouter', baseUrl: 'https://openrouter.ai/api/v1', defaultModel: '', smallFastModel: '', protocol: 'openai-chat' },
+  custom: { name: '', baseUrl: '', defaultModel: '', smallFastModel: '', protocol: 'anthropic' },
 };
-const PRESET_LABELS = { glm: 'GLM', deepseek: 'DeepSeek', mimo: 'MiMo', kimi: 'Kimi', minimax: 'MiniMax', custom: '自定义' };
+const PRESET_LABELS = { glm: 'GLM', deepseek: 'DeepSeek', mimo: 'MiMo', kimi: 'Kimi', minimax: 'MiniMax', nvidia: 'NVIDIA', openai: 'OpenAI', openrouter: 'OpenRouter', custom: '自定义' };
 
 /* ---------- helpers ---------- */
 function escapeHtml(s) {
@@ -290,8 +296,9 @@ async function renderHistoryDirs() {
   const host = $('histDirList');
   if (!host) return;
   let data; try { data = await api.historyDirs(); } catch (_) { data = { dirs: [] }; }
-  // The synthetic "导入" store is app-managed (not a user config dir) — keep it out of this list.
-  const dirs = (data.dirs || []).filter((d) => !d.imported);
+  // The synthetic buckets (导入 store / 回收站) are app-managed, not user work dirs — keep
+  // them out of this list.
+  const dirs = (data.dirs || []).filter((d) => !d.imported && !d.trash);
   host.innerHTML = dirs.map((d) => {
     const status = d.exists === false
       ? `<span class="hist-dir-warn text-red font-semibold text-[11px] shrink-0 bg-red-soft px-2.5 py-0.75 rounded-full" title="${escapeHtml(I18n.t('settings.dirMissing'))}">${escapeHtml(I18n.t('settings.dirMissing'))}</span>`
@@ -334,11 +341,21 @@ function renderProviders() {
     for (const m of p.models || []) tags.push(`<span class="tag map text-[11px] font-mono bg-brand-soft rounded-[4px] px-1.5 py-0.25 text-brand font-medium whitespace-nowrap" title="${escapeHtml(m.alias)} → ${escapeHtml(m.upstream)}">${escapeHtml(m.alias)} → ${escapeHtml(m.upstream)}</span>`);
 
     const iconData = renderProviderIcon(p.name, p.icon);
+    // Protocol badge so the wire protocol (and whether requests are translated) is visible at a
+    // glance on every provider. Anthropic (passthrough) is the quiet default; the translated ones
+    // stand out.
+    const proto = p.protocol || 'anthropic';
+    const protoMeta = proto === 'openai-chat'
+      ? { label: 'OpenAI Chat', cls: 'proto-badge-xlate' }
+      : proto === 'openai-responses'
+        ? { label: 'OpenAI Responses', cls: 'proto-badge-xlate' }
+        : { label: 'Anthropic', cls: 'proto-badge-direct' };
+    const protoBadge = `<span class="proto-badge ${protoMeta.cls}" title="${escapeHtml(I18n.t('providers.protocolTip'))}">${escapeHtml(protoMeta.label)}</span>`;
     el.innerHTML = `
       <span class="grip text-caption cursor-grab text-[12px] opacity-30 leading-none select-none group-hover:opacity-65 transition-opacity duration-150" title="${escapeHtml(I18n.t('providers.reorder'))}">⠿</span>
       <div class="prov-icon w-9 h-9 rounded-[9px] shrink-0 flex items-center justify-center text-white font-bold text-[13px] tracking-tight shadow-sm" style="${iconData.style}">${iconData.html}</div>
       <div class="pinfo min-w-0">
-        <div class="pname flex items-center gap-1.5 font-semibold text-[14.5px] tracking-tight text-fg">${escapeHtml(p.name)} ${isActive ? '<span class="badge-active text-[10.5px] font-semibold text-green bg-green-soft rounded-full px-1.75 py-0.25">' + escapeHtml(I18n.t('providers.active')) + '</span>' : ''}</div>
+        <div class="pname flex items-center gap-1.5 font-semibold text-[14.5px] tracking-tight text-fg">${escapeHtml(p.name)} ${protoBadge} ${isActive ? '<span class="badge-active text-[10.5px] font-semibold text-green bg-green-soft rounded-full px-1.75 py-0.25">' + escapeHtml(I18n.t('providers.active')) + '</span>' : ''}</div>
         <div class="pmeta mt-0.5 text-xs font-mono text-caption truncate">${escapeHtml(mask(p.authToken))} · ${escapeHtml(p.baseUrl.replace(/^https?:\/\//,''))}</div>
       </div>
       <div class="pmodels flex gap-1 flex-wrap justify-end max-w-[340px]">${tags.join('') || '<span class="caption text-caption text-xs">—</span>'}</div>
@@ -683,9 +700,37 @@ function selectPreset(key) {
   document.querySelectorAll('.preset-chip').forEach((c) => c.classList.toggle('selected', c.dataset.preset === key));
   const p = PRESETS[key] || PRESETS.custom;
   $('fName').value = p.name; $('fBaseUrl').value = p.baseUrl; $('fDefaultModel').value = p.defaultModel; $('fSmallModel').value = p.smallFastModel;
+  setProtocol(p.protocol || 'anthropic'); // preset declares its wire protocol up front
   modalIcon = null; // a preset uses its brand logo
   updateIconPreview();
   if (key !== 'custom') $('fToken').focus();
+}
+// Segmented protocol control: get/set the selected wire protocol.
+function getProtocol() {
+  const g = $('fProtocol'); if (!g) return 'anthropic';
+  const b = g.querySelector('.proto-seg-btn.selected');
+  return (b && b.dataset.proto) || 'anthropic';
+}
+function setProtocol(v) {
+  const g = $('fProtocol'); if (!g) return;
+  v = v || 'anthropic';
+  g.querySelectorAll('.proto-seg-btn').forEach((b) => b.classList.toggle('selected', b.dataset.proto === v));
+  syncProtocolHint();
+}
+// Reflect the chosen protocol as a prominent status line so the user always knows whether their
+// requests pass through directly (Anthropic) or get auto-translated (OpenAI Chat / Responses).
+function syncProtocolHint() {
+  const badge = $('protoBadge');
+  if (!badge) return;
+  const v = getProtocol();
+  const map = {
+    'anthropic': { k: 'modal.protoBadgeDirect', cls: 'proto-badge-direct' },
+    'openai-chat': { k: 'modal.protoBadgeXlate', cls: 'proto-badge-xlate' },
+    'openai-responses': { k: 'modal.protoBadgeXlate', cls: 'proto-badge-xlate' },
+  };
+  const m = map[v] || map['anthropic'];
+  badge.className = 'proto-badge ' + m.cls;
+  badge.textContent = I18n.t(m.k);
 }
 function updateIconPreview() {
   const el = $('fIconPreview');
@@ -774,6 +819,7 @@ function openModal(provider) {
   $('fDefaultModel').value = provider ? provider.defaultModel : '';
   $('fSmallModel').value = provider ? provider.smallFastModel : '';
   $('fMapDefault').checked = provider ? provider.mapDefaultModels !== false : true;
+  setProtocol((provider && provider.protocol) || 'anthropic');
   $('mapRows').innerHTML = '';
   if (provider && provider.models) provider.models.forEach((m) => addMapRow(m.alias, m.upstream));
   if (!$('mapRows').children.length) addMapRow(); // always show one empty row to add into
@@ -798,6 +844,7 @@ function collectProvider() {
     defaultModel: $('fDefaultModel').value.trim(),
     smallFastModel: $('fSmallModel').value.trim(),
     mapDefaultModels: $('fMapDefault').checked,
+    protocol: getProtocol(),
     models,
   };
   if (modalIcon) p.icon = modalIcon;
@@ -1193,6 +1240,7 @@ function bind() {
   $('modalClose').addEventListener('click', closeModal);
   $('btnCancel').addEventListener('click', closeModal);
   $('presetGrid').addEventListener('click', (e) => { if (e.target.dataset.preset) selectPreset(e.target.dataset.preset); });
+  { const fp = $('fProtocol'); if (fp) fp.addEventListener('click', (e) => { const b = e.target.closest('.proto-seg-btn'); if (b) setProtocol(b.dataset.proto); }); }
   $('fName').addEventListener('input', updateIconPreview);
   const fIconPreview = $('fIconPreview');
   if (fIconPreview && fIconPreview.parentElement) fIconPreview.parentElement.addEventListener('click', () => openIconPicker(fIconPreview));

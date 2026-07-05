@@ -3,7 +3,7 @@
 (function () {
   var DICT = {
     en: {
-      'meta.title': 'CCBUD — Claude Code Buddy',
+      'meta.title': 'CCBUD — Coding CLI Buddy',
       'nav.features': 'Features', 'nav.philosophy': 'Philosophy', 'nav.faq': 'FAQ', 'nav.download': 'Download',
       'hero.badge': 'Open source · macOS',
       'hero.title': "Claude Code,<br><span class='grad-text'>your providers.</span>",
@@ -35,7 +35,7 @@
       'f4.note': '<b>Built for scale:</b> threads with thousands of turns stay smooth because we virtualize the view and search the data, not the DOM — so even a 4,000-message session opens and searches instantly.',
       'f6.title': 'Native, quiet, in your language',
       'f6.desc': 'A real macOS app with native vibrancy, a menu-bar presence, and light & dark themes — in English, 简体中文, 繁體中文, 日本語 and 한국어.',
-      'f6.note': '<b>No Electron tax on your eyes:</b> we tuned away the jank — virtualized lists, no wasted blur — so it feels like the platform, not a web page in a window.',
+      'f6.note': '<b>Native where it matters:</b> built on Tauri with virtualized lists and restrained effects, so it feels fast, quiet, and platform-native.',
       'how.kicker': 'How it works', 'how.title': 'Three steps, then forget it’s there',
       'how.s1t': 'Add a provider', 'how.s1d': 'Paste a base URL and key, or pick a preset. Map models if you like.',
       'how.s2t': 'Press connect', 'how.s2d': 'CCBUD writes Claude Code’s settings to point at localhost. That’s it.',
@@ -62,7 +62,7 @@
       'cap.desktop': 'Point Claude Desktop at the same gateway, too'
     },
     zh: {
-      'meta.title': 'CCBUD — Claude Code Buddy',
+      'meta.title': 'CCBUD — Coding CLI Buddy',
       'nav.features': '功能', 'nav.philosophy': '理念', 'nav.faq': '常见问题', 'nav.download': '下载',
       'hero.badge': '开源 · macOS',
       'hero.title': "Claude Code，<br><span class='grad-text'>由你选择服务商。</span>",
@@ -94,7 +94,7 @@
       'f4.note': '<b>为规模而生：</b>上千轮的对话依然流畅，因为我们虚拟化了视图、搜索的是数据而非 DOM —— 即便 4000 条消息的会话，也能瞬间打开与搜索。',
       'f6.title': '原生、安静、说你的语言',
       'f6.desc': '一个真正的 macOS 应用：原生毛玻璃、菜单栏常驻、明暗主题 —— 提供 English、简体中文、繁體中文、日本語 与 한국어。',
-      'f6.note': '<b>不让 Electron 拖累观感：</b>我们把卡顿一一调掉 —— 列表虚拟化、去掉多余模糊 —— 让它像是系统的一部分，而不是套在窗口里的网页。',
+      'f6.note': '<b>该原生的地方就原生：</b>基于 Tauri，配合列表虚拟化与克制的视觉效果，让它快、静，并像系统的一部分。',
       'how.kicker': '工作方式', 'how.title': '三步，然后忘了它的存在',
       'how.s1t': '添加服务商', 'how.s1d': '粘贴 base URL 与密钥，或选个预设。需要的话再配模型映射。',
       'how.s2t': '点击接入', 'how.s2d': 'CCBUD 写好 Claude Code 的配置，指向 localhost。就这样。',
@@ -121,7 +121,7 @@
       'cap.desktop': 'Claude 桌面版也能指向同一个网关'
     },
     'zh-TW': {
-      'meta.title': 'CCBUD — Claude Code Buddy',
+      'meta.title': 'CCBUD — Coding CLI Buddy',
       'nav.features': '功能', 'nav.philosophy': '理念', 'nav.faq': '常見問題', 'nav.download': '下載',
       'hero.badge': '開源 · macOS',
       'hero.title': "Claude Code，<br><span class='grad-text'>由你選擇服務商。</span>",
@@ -153,7 +153,7 @@
       'f4.note': '<b>為規模而生：</b>上千輪的對話依然流暢，因為我們把視圖虛擬化、搜尋的是資料而非 DOM —— 即使 4000 則訊息的工作階段，也能瞬間開啟與搜尋。',
       'f6.title': '原生、安靜、說你的語言',
       'f6.desc': '一個真正的 macOS 應用：原生毛玻璃、選單列常駐、明暗主題 —— 提供 English、簡體中文、繁體中文、日本語 與 한국어。',
-      'f6.note': '<b>不讓 Electron 拖累觀感：</b>我們把卡頓一一調掉 —— 清單虛擬化、去掉多餘模糊 —— 讓它像是系統的一部分，而非套在視窗裡的網頁。',
+      'f6.note': '<b>該原生的地方就原生：</b>基於 Tauri，配合清單虛擬化與克制的視覺效果，讓它快、靜，並像系統的一部分。',
       'how.kicker': '運作方式', 'how.title': '三步，然後忘了它的存在',
       'how.s1t': '新增服務商', 'how.s1d': '貼上 base URL 與金鑰，或選個預設。需要的話再設定模型對應。',
       'how.s2t': '點擊接入', 'how.s2d': 'CCBUD 寫好 Claude Code 的設定，指向 localhost。就這樣。',
@@ -180,7 +180,7 @@
       'cap.desktop': 'Claude 桌面版也能指向同一個閘道'
     },
     ja: {
-      'meta.title': 'CCBUD — Claude Code Buddy',
+      'meta.title': 'CCBUD — Coding CLI Buddy',
       'nav.features': '機能', 'nav.philosophy': '理念', 'nav.faq': 'FAQ', 'nav.download': 'ダウンロード',
       'hero.badge': 'オープンソース · macOS',
       'hero.title': "Claude Code を、<br><span class='grad-text'>あなたのプロバイダーへ。</span>",
@@ -212,7 +212,7 @@
       'f4.note': '<b>スケール対応：</b>数千ターンのスレッドも滑らか。ビューを仮想化し、DOM ではなくデータを検索するため、4,000 メッセージのセッションでも瞬時に開いて検索できます。',
       'f6.title': 'ネイティブで、静かで、あなたの言語で',
       'f6.desc': 'ネイティブの曇りガラス、メニューバー常駐、ライト/ダークを備えた本物の macOS アプリ —— English・简体中文・繁體中文・日本語・한국어 に対応。',
-      'f6.note': '<b>Electron の負担を目に感じさせない：</b>カクつきを一つずつ取り除きました —— リスト仮想化、無駄なぼかしを排除 —— だからウィンドウ内の Web ページではなく、プラットフォームそのものに感じられます。',
+      'f6.note': '<b>ネイティブであるべきところはネイティブに：</b>Tauri ベースで、リスト仮想化と控えめな視覚効果により、速く静かでプラットフォームになじむ体験にしています。',
       'how.kicker': '使い方', 'how.title': '3 ステップ、あとは存在を忘れる',
       'how.s1t': 'プロバイダーを追加', 'how.s1d': 'base URL と鍵を貼り付けるか、プリセットを選択。必要ならモデルもマッピング。',
       'how.s2t': '接続を押す', 'how.s2d': 'CCBUD が Claude Code の設定を localhost に向けて書き込みます。それだけ。',
@@ -239,7 +239,7 @@
       'cap.desktop': 'Claude Desktop も同じゲートウェイへ'
     },
     ko: {
-      'meta.title': 'CCBUD — Claude Code Buddy',
+      'meta.title': 'CCBUD — Coding CLI Buddy',
       'nav.features': '기능', 'nav.philosophy': '철학', 'nav.faq': 'FAQ', 'nav.download': '다운로드',
       'hero.badge': '오픈소스 · macOS',
       'hero.title': "Claude Code를,<br><span class='grad-text'>당신의 프로바이더로.</span>",
@@ -271,7 +271,7 @@
       'f4.note': '<b>규모를 위한 설계:</b> 수천 턴의 스레드도 부드럽습니다. 뷰를 가상화하고 DOM이 아닌 데이터를 검색하기에, 4,000개 메시지 세션도 즉시 열리고 검색됩니다.',
       'f6.title': '네이티브하게, 조용하게, 당신의 언어로',
       'f6.desc': '네이티브 비브런시, 메뉴 막대 상주, 라이트/다크를 갖춘 진짜 macOS 앱 —— English·简体中文·繁體中文·日本語·한국어 지원.',
-      'f6.note': '<b>Electron의 부담을 눈에 남기지 않기:</b> 끊김을 하나씩 다듬었습니다 —— 리스트 가상화, 불필요한 블러 제거 —— 그래서 창 속 웹페이지가 아니라 플랫폼 그 자체처럼 느껴집니다.',
+      'f6.note': '<b>네이티브가 중요한 곳은 네이티브하게:</b> Tauri 기반에 리스트 가상화와 절제된 시각 효과를 더해 빠르고 조용하며 플랫폼에 자연스럽게 맞습니다.',
       'how.kicker': '작동 방식', 'how.title': '세 단계, 그다음엔 존재를 잊으세요',
       'how.s1t': '프로바이더 추가', 'how.s1d': 'base URL과 키를 붙여넣거나 프리셋을 고르세요. 원하면 모델도 매핑.',
       'how.s2t': '연결 누르기', 'how.s2d': 'CCBUD가 Claude Code 설정을 localhost로 향하게 씁니다. 그게 전부.',

@@ -157,8 +157,21 @@ function importsRoot() { return path.join(CCBUD_HOME, 'imports'); }
 function importedDir() {
   return { id: IMPORTED_ID, label: mt('conv.imported'), configDir: importsRoot(), projectsDir: path.join(importsRoot(), 'projects'), imported: true };
 }
-// History reader sees user dirs + the import store; usage (activeProjectsDirs) deliberately does NOT,
-// so other people's tokens never pollute your usage stats.
+// One-time migration: when a Codex install exists (its sessions tree is on disk), add its
+// config dir (`~/.codex`, CODEX_HOME-aware) to historyDirs so Codex conversations appear in
+// 对话 like any other work dir. The codexDirAutoAdded flag makes this run once — a user who
+// later REMOVES the dir isn't fighting an auto-re-add. Mirrors store.rs ensure_codex_dir.
+function ensureCodexDir() {
+  const codex = require('./codex');
+  const cfg = store.get();
+  if (cfg.codexDirAutoAdded || !codex.rootExists()) return;
+  const dirs = (cfg.historyDirs || []).slice();
+  const label = codex.codexLabel();
+  if (!dirs.includes(label)) dirs.push(label);
+  store.save(Object.assign(JSON.parse(JSON.stringify(cfg)), { historyDirs: dirs, codexDirAutoAdded: true }));
+}
+// History reader sees user dirs + the import store; usage (activeProjectsDirs) deliberately
+// keeps to the Claude projects/ trees, so other tools' tokens never pollute your usage stats.
 function historyDirsList() { return configDirs().concat([importedDir()]); }
 // Active selection ('all' or one dir id) → list of projects dirs for the usage engine.
 function activeProjectsDirs() {
@@ -451,9 +464,12 @@ function registerIpc() {
     }
     if (res.canceled || !res.filePaths || !res.filePaths.length) return { canceled: true };
     let picked = res.filePaths[0];
-    // If the user drilled into the projects/ dir itself, store its parent (the config dir).
+    // If the user drilled into the projects/ (Claude) or sessions/ (Codex) data dir itself,
+    // store its parent (the config dir).
     try {
-      if (path.basename(picked) === 'projects' && !fs.existsSync(path.join(picked, 'projects'))) {
+      const base = path.basename(picked);
+      if ((base === 'projects' && !fs.existsSync(path.join(picked, 'projects'))) ||
+          (base === 'sessions' && !fs.existsSync(path.join(picked, 'sessions')))) {
         picked = path.dirname(picked);
       }
     } catch (_) {}
@@ -481,13 +497,16 @@ function registerIpc() {
   // drop under `<baseId>/subagents/` (names are basename-reduced + pattern-checked). Shared by the
   // plain-.jsonl and .zip-bundle import paths.
   function writeImported(raw, originalPath, originalName, subFiles, out) {
+    const codex = require('./codex');
     const recs = [];
     for (const line of String(raw).split('\n')) { const s = line.trim(); if (!s) continue; try { recs.push(JSON.parse(s)); } catch (_) {} }
+    const isCodex = codex.looksCodex(recs);
     const hasMsg = recs.some((r) => r && (r.type === 'user' || r.type === 'assistant') && r.message);
-    if (!hasMsg) { out.failed++; return; } // not a Claude Code transcript
-    const metaRec = recs.find((r) => r && r.cwd) || recs.find((r) => r && r.sessionId) || {};
-    const baseId = metaRec.sessionId || path.basename(originalName, path.extname(originalName)) || 'import';
-    const destDir = path.join(importsRoot(), 'projects', encodeCwd(metaRec.cwd));
+    if (!hasMsg && !isCodex) { out.failed++; return; } // not a Claude Code / Codex transcript
+    // Codex rollouts keep cwd/session id inside the session_meta payload, not on the records.
+    const ids = isCodex ? codex.headIds(recs) : (recs.find((r) => r && r.cwd) || recs.find((r) => r && r.sessionId) || {});
+    const baseId = ids.sessionId || path.basename(originalName, path.extname(originalName)) || 'import';
+    const destDir = path.join(importsRoot(), 'projects', encodeCwd(ids.cwd));
     const destFile = path.join(destDir, baseId + '.jsonl');
     if (fs.existsSync(destFile)) { out.skipped++; return; } // same session already imported
     try {
@@ -839,7 +858,7 @@ function createWindow() {
     vibrancy: 'under-window',
     visualEffectState: 'active',
     backgroundColor: '#00000000',
-    title: 'ccbud — Claude Code Gateway',
+    title: 'ccbud — Coding CLI Buddy',
     webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false },
   });
   mainWindow.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
@@ -884,6 +903,9 @@ if (gotLock) {
     if (!store.get().language) {
       try { store.save(Object.assign({}, store.get(), { language: mapLocale(app.getLocale()) })); } catch (_) {}
     }
+    // A detected Codex install joins historyDirs as a regular work dir (one-time, before the
+    // history watcher starts so its trees get watched).
+    try { ensureCodexDir(); } catch (_) {}
     monitor = createMonitorStore({ max: 30 });
     gateway = createGateway({ getConfig: () => store.get() });
     gateway.on('log', (l) => pushGatewayLog(l));
@@ -939,7 +961,7 @@ if (gotLock) {
         img = nativeImage.createFromPath(path.join(__dirname, 'icon.png')).resize({ width: 18, height: 18 });
       }
       tray = new Tray(img);
-      tray.setToolTip('ccbud — Claude Code Gateway');
+      tray.setToolTip('ccbud — Coding CLI Buddy');
       // Wire the handlers right after creating the Tray so a later failure (e.g. popover) can't
       // leave the menu-bar icon inert. The popover is best-effort.
       tray.on('click', () => togglePopover());

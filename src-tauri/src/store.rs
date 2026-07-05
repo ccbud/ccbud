@@ -1,9 +1,8 @@
-// Config persistence — Rust port of src/main/store.js.
+// Config persistence.
 //
 // All settings live under ~/.ccbud/config.json (override the dir with CCBUD_HOME, used by
 // tests/self-check). Writes are atomic (temp file + rename, mode 0600) so a crash mid-write
-// never tears the file. `normalize` mirrors store.js exactly so a config written by either
-// the Electron build or this one round-trips identically.
+// never tears the file. `normalize` keeps the on-disk schema stable across releases.
 
 use serde_json::{json, Value};
 use std::fs;
@@ -98,6 +97,14 @@ pub fn normalize(input: Value) -> Value {
                     }
                 }
             }
+            // Upstream wire protocol. Default 'anthropic' = today's verbatim passthrough; the
+            // other two make the gateway translate Claude Code's Anthropic Messages into the
+            // provider's format (see src/protocol/). Anything unrecognized falls back to anthropic.
+            let protocol = match p.get("protocol").and_then(|v| v.as_str()) {
+                Some("openai-chat") => "openai-chat",
+                Some("openai-responses") => "openai-responses",
+                _ => "anthropic",
+            };
             let mut np = json!({
                 "id": p.get("id").cloned().unwrap_or(Value::Null),
                 "name": name,
@@ -106,6 +113,7 @@ pub fn normalize(input: Value) -> Value {
                 "defaultModel": str_of(p.get("defaultModel")),
                 "smallFastModel": str_of(p.get("smallFastModel")),
                 "mapDefaultModels": map_default,
+                "protocol": protocol,
                 "models": models,
             });
             if let Some(ic) = p.get("icon").and_then(|v| v.as_str()) {
@@ -199,8 +207,10 @@ pub fn normalize(input: Value) -> Value {
     }
     obj.insert("historyDirs".into(), json!(dirs));
 
-    // historyActive: 'all' | '__imported__' | '__trash__' (recycle bin) | a configured dir, else 'all'
+    // historyActive: 'all' | '__imported__' | '__trash__' (recycle bin) | a configured dir, else 'all'.
+    // '__codex__' is the retired synthetic Codex bucket — map it onto the real ~/.codex dir entry.
     let ha = obj.get("historyActive").and_then(|v| v.as_str()).unwrap_or("all").to_string();
+    let ha = if ha == "__codex__" { crate::codex::codex_label() } else { ha };
     let ha_ok = ha == "all" || ha == "__imported__" || ha == "__trash__" || dirs.iter().any(|d| *d == ha);
     obj.insert("historyActive".into(), json!(if ha_ok { ha } else { "all".to_string() }));
 
@@ -233,6 +243,35 @@ pub fn write_config(next: Value) -> Value {
     normalized
 }
 
+/// One-time startup migration: when a Codex install exists (its sessions tree is on disk),
+/// add its config dir (`~/.codex`, CODEX_HOME-aware) to historyDirs so Codex conversations
+/// appear in 对话 like any other work dir. The `codexDirAutoAdded` flag makes this run once —
+/// a user who later REMOVES the dir isn't fighting an auto-re-add. Returns true if it changed
+/// the config (caller refreshes the history views). Mirrors main.js ensureCodexDir.
+pub fn ensure_codex_dir() -> bool {
+    let mut cfg = read_config();
+    if cfg.get("codexDirAutoAdded").and_then(|v| v.as_bool()).unwrap_or(false) {
+        return false;
+    }
+    if !crate::codex::root_exists() {
+        return false; // no Codex install yet — keep probing on future launches
+    }
+    let label = crate::codex::codex_label();
+    let obj = cfg.as_object_mut().unwrap();
+    let mut dirs: Vec<String> = obj
+        .get("historyDirs")
+        .and_then(|v| v.as_array())
+        .map(|a| a.iter().filter_map(|d| d.as_str().map(|s| s.to_string())).collect())
+        .unwrap_or_default();
+    if !dirs.iter().any(|d| *d == label) {
+        dirs.push(label);
+    }
+    obj.insert("historyDirs".into(), json!(dirs));
+    obj.insert("codexDirAutoAdded".into(), json!(true));
+    write_config(cfg);
+    true
+}
+
 #[cfg(unix)]
 fn set_0600(p: &PathBuf) {
     use std::os::unix::fs::PermissionsExt;
@@ -258,6 +297,16 @@ mod tests {
         assert_eq!(n["providers"][0]["models"].as_array().unwrap().len(), 1, "empty model dropped");
         assert_eq!(n["activeProviderId"], n["providers"][0]["id"], "active auto-set to first provider");
         assert!(n["historyDirs"].as_array().unwrap().iter().any(|d| d == "~/.claude"));
+        assert_eq!(n["providers"][0]["protocol"], "anthropic", "protocol defaults to anthropic (passthrough)");
+    }
+
+    #[test]
+    fn provider_protocol_normalized() {
+        let ok = normalize(json!({ "providers": [{ "name": "O", "protocol": "openai-chat" }] }));
+        assert_eq!(ok["providers"][0]["protocol"], "openai-chat");
+        // unrecognized → safe passthrough default
+        let bad = normalize(json!({ "providers": [{ "name": "B", "protocol": "grpc" }] }));
+        assert_eq!(bad["providers"][0]["protocol"], "anthropic");
     }
     #[test]
     fn normalize_clamps_retry() {

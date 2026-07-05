@@ -4,12 +4,12 @@
 
 # CCBUD
 
-### Claude Code Buddy
+### Coding CLI Buddy
 
 **Point Claude Code at any Anthropic-compatible provider — one click, all local.**
 
 [![Platform](https://img.shields.io/badge/platform-macOS%20%C2%B7%20Windows%20%C2%B7%20Linux-5b6cff?style=flat-square)](#-installation)
-[![Built with Electron](https://img.shields.io/badge/built%20with-Electron-47848F?style=flat-square&logo=electron&logoColor=white)](https://www.electronjs.org/)
+[![Built with Tauri](https://img.shields.io/badge/built%20with-Tauri-24C8DB?style=flat-square&logo=tauri&logoColor=white)](https://tauri.app/)
 [![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-3b82f6?style=flat-square)](./LICENSE)
 
 [Installation](#-installation) · [Quick Start](#-quick-start) · [How it works](#-how-it-works)
@@ -20,7 +20,7 @@
 
 ---
 
-**CCBUD** (`cc` Claude Code + `bud` buddy) is a cross-platform desktop app that runs a tiny **local gateway** between Claude Code and any Anthropic-compatible provider — Kimi, DeepSeek, GLM, MiMo and more. Add your providers once, switch with a single click, and let CCBUD wire up Claude Code for you. **You never touch an environment variable.**
+**CCBUD** (`cc` coding CLI + `bud` buddy) is a cross-platform desktop app that runs a tiny **local gateway** between Claude Code and any Anthropic-compatible provider — Kimi, DeepSeek, GLM, MiMo and more. Add your providers once, switch with a single click, and let CCBUD wire up Claude Code for you. **You never touch an environment variable.**
 
 <div align="center">
   <img src="docs/img/services.jpg" alt="CCBUD — services view" width="820">
@@ -35,7 +35,7 @@
 
 ### Download (recommended)
 
-Grab the latest build for your platform from the **[Releases page](https://github.com/loadchange/clawdy/releases)**:
+Grab the latest build for your platform from the **[Releases page](https://github.com/ccbud/ccbud/releases)**:
 
 | Platform | File |
 | :-- | :-- |
@@ -55,20 +55,15 @@ brew upgrade --cask ccbud             # later upgrades
 
 ### Staying up to date
 
-CCBUD checks for new releases on launch (and daily) and surfaces them under **Settings → About & Updates**:
-
-- **Hot update** — releases that only change the app's JS/UI layer download and apply **in place**, no reinstall. They take effect on the next launch; you can also hit **Restart now**. With *Auto-download hot updates* on (default), eligible updates are fetched in the background.
-- **Full update** — releases that change native components (Electron, bundled binaries) prompt a normal reinstall (download the installer, or `brew upgrade --cask ccbud`).
-
-Hot updates are SHA-256-verified against the release manifest (and optionally Ed25519-signed). See [docs/HOT-UPDATE.md](docs/HOT-UPDATE.md).
+CCBUD checks for new releases on launch (and daily) and surfaces them under **Settings → About & Updates**. App updates are delivered through the Tauri updater when available; Homebrew users can also run `brew upgrade --cask ccbud`.
 
 ### Build from source
 
 ```bash
-git clone https://github.com/loadchange/clawdy.git
-cd clawdy
+git clone https://github.com/ccbud/ccbud.git
+cd ccbud
 npm install
-npm start                 # run in development
+npm start                 # run the Tauri app in development
 
 # package a distributable for your OS:
 npm run dist:mac          # or: dist:win · dist:linux

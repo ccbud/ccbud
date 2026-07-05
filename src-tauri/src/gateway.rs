@@ -1,12 +1,9 @@
-// Gateway core — Rust port of proxy.js. Phase 2.
+// Gateway core.
 //
-// Implements: deterministic ROUTING (resolve_routing + routing_selftest, 8/8 parity with
-// test/selftest.js) AND the localhost reverse proxy — header sanitizing, upstream forwarding
-// (reqwest, auto gzip/br/deflate decode), 429 retry, SSE streaming with model rewrite + usage
-// sniffing, buffered-JSON model rewrite, /v1/models merge/synthesize, and HEAD / 404→200.
-// TODO (next): local count_tokens estimate, full monitor exchange capture.
-
-// Phase 2 in progress: a few pub items are consumed once everything is wired; silence until then.
+// Implements deterministic model routing and the localhost reverse proxy: header sanitizing,
+// upstream forwarding, 429 retry, SSE streaming with model rewrite + usage sniffing, buffered-JSON
+// model rewrite, /v1/models merge/synthesize, count_tokens fallback, HEAD / fallback, and bounded
+// monitor exchange capture.
 #![allow(dead_code)]
 
 use axum::{
@@ -612,7 +609,7 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
         }
     }
 
-    let target = match build_target(base_url, &uri) {
+    let mut target = match build_target(base_url, &uri) {
         Some(t) => t,
         None => return error_response(StatusCode::BAD_GATEWAY, "ccbud: invalid provider baseUrl", "api_error"),
     };
@@ -620,6 +617,50 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
     let is_head_root = method == Method::HEAD && req_path == "/";
     let is_count_tokens = method == Method::POST
         && (req_path.ends_with("/v1/messages/count_tokens") || req_path.ends_with("/v1/messages/count_tokens/"));
+
+    // ---- protocol translation ----
+    // When the client's wire protocol (inferred from the request path) differs from the provider's
+    // declared protocol, translate the request into the provider's format and remember to translate
+    // the response back. Same-protocol requests skip this entirely and keep the verbatim passthrough
+    // fast path below (so Anthropic→Anthropic behavior is byte-for-byte unchanged). First cut: we
+    // force the upstream to buffered (stream=false) and synthesize the client SSE from the full
+    // response — true incremental transcoding is a follow-up.
+    let client_wire = crate::protocol::Wire::from_request_path(&uri);
+    let provider_wire =
+        crate::protocol::Wire::from_provider(provider.get("protocol").and_then(|v| v.as_str()));
+    // translate ctx: (client_wire, provider_wire, client_facing_model, client_wanted_stream, incremental)
+    // `incremental` = we can transcode the upstream stream event-by-event to the client (true
+    // token-by-token). Otherwise we force the upstream buffered and synthesize the client response.
+    let mut translate: Option<(crate::protocol::Wire, crate::protocol::Wire, String, bool, bool)> = None;
+    if client_wire != provider_wire && method == Method::POST && !is_models_list && !is_count_tokens {
+        if let Some(p) = parsed.as_ref() {
+            let wanted_stream = p.get("stream").and_then(|v| v.as_bool()).unwrap_or(false);
+            let incremental = wanted_stream
+                && crate::protocol::can_transcode_stream(provider_wire, client_wire);
+            let client_model = routing.client_facing_model.clone().unwrap_or_default();
+            let outgoing = routing.outgoing_model.clone().unwrap_or_default();
+            match crate::protocol::decode_client_request(client_wire, p).and_then(|ir| {
+                crate::protocol::encode_upstream_request(provider_wire, &ir, &outgoing, incremental)
+            }) {
+                Ok(mut body) => {
+                    // Ask OpenAI-family upstreams to include usage in the final stream chunk.
+                    if incremental && provider_wire == crate::protocol::Wire::OpenAiChat {
+                        body["stream_options"] = json!({ "include_usage": true });
+                    }
+                    if let Ok(b) = serde_json::to_vec(&body) {
+                        out_body = Bytes::from(b);
+                    }
+                    // Send to the provider protocol's endpoint (drop the inbound path/query).
+                    target = provider_wire.upstream_url(base_url);
+                    translate = Some((client_wire, provider_wire, client_model, wanted_stream, incremental));
+                }
+                Err(e) => {
+                    st.log("error", format!("protocol translate ({:?}→{:?}) failed: {}", client_wire, provider_wire, e));
+                    return error_response(StatusCode::BAD_GATEWAY, &format!("ccbud protocol translation failed: {}", e), "api_error");
+                }
+            }
+        }
+    }
 
     // upstream headers (sanitized + provider token swapped in)
     let mut up_headers = HeaderMap::new();
@@ -735,6 +776,76 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
 
     // streaming SSE — rewrite model + sniff usage, line-buffered
     if ct.contains("text/event-stream") {
+        // Incremental cross-protocol transcode: feed each upstream SSE line through a stateful
+        // transcoder that emits the client protocol's events as they arrive (true token-by-token).
+        if let Some((client_wire, provider_wire, client_model)) =
+            translate.as_ref().filter(|t| t.4).map(|t| (t.0, t.1, t.2.clone()))
+        {
+            let st2 = st.clone();
+            let method2 = method.clone();
+            let path2 = req_path.clone();
+            let pname2 = provider_name.clone();
+            let routing2 = routing.clone();
+            let status_code = status.as_u16();
+            let ex_id2 = ex_id;
+            let started2 = started;
+            let ex_url2 = ex_url.clone();
+            let ex_rh = ex_req_headers.clone();
+            let ex_rb = ex_req_body.clone();
+            let xlabel = format!("{:?}->{:?}", provider_wire, client_wire);
+            let body_stream = async_stream::stream! {
+                // Only OpenAI-Chat→Anthropic is wired today (can_transcode_stream guards it).
+                let mut tc = crate::protocol::stream::ChatToAnthropic::new(&client_model);
+                let mut s = resp.bytes_stream();
+                let mut buf = String::new();
+                let mut res_cap = String::new();
+                while let Some(chunk) = s.next().await {
+                    match chunk {
+                        Ok(bytes) => {
+                            buf.push_str(&String::from_utf8_lossy(&bytes));
+                            let mut out = String::new();
+                            while let Some(idx) = buf.find('\n') {
+                                let line: String = buf.drain(..=idx).collect();
+                                out.push_str(&tc.push(&line));
+                            }
+                            if !out.is_empty() {
+                                if res_cap.len() < 2 * 1024 * 1024 { res_cap.push_str(&out); }
+                                yield Ok::<Bytes, std::io::Error>(Bytes::from(out));
+                            }
+                        }
+                        Err(_) => break,
+                    }
+                }
+                let mut tail = String::new();
+                if !buf.is_empty() { tail.push_str(&tc.push(&buf)); }
+                tail.push_str(&tc.finish());
+                if !tail.is_empty() {
+                    if res_cap.len() < 2 * 1024 * 1024 { res_cap.push_str(&tail); }
+                    yield Ok(Bytes::from(tail));
+                }
+                let mut usage = UsageAcc::default();
+                usage.input = tc.input_tokens();
+                usage.output = tc.output_tokens();
+                usage.saw = true;
+                st2.emit_request(ex_id2, started2, &method2, &path2, &pname2, &routing2, status_code, Some(&usage));
+                st2.record_exchange(json!({
+                    "id": ex_id2, "ts": now_ms(), "ms": started2.elapsed().as_millis() as u64,
+                    "method": method2.as_str(), "path": path2, "url": ex_url2,
+                    "provider": pname2, "requestedModel": routing2.client_facing_model,
+                    "outgoingModel": routing2.outgoing_model, "clientFacingModel": routing2.client_facing_model,
+                    "status": status_code, "reqHeaders": ex_rh, "reqBody": ex_rb,
+                    "resHeaders": json!({ "content-type": "text/event-stream", "x-ccbud-translated": xlabel }),
+                    "resBody": json!({ "text": res_cap.clone(), "bytes": res_cap.len(), "truncated": 0 }),
+                }))
+                .await;
+            };
+            return Response::builder()
+                .status(status.as_u16())
+                .header("content-type", "text/event-stream")
+                .header("x-ccbud-translated", format!("{:?}->{:?}", provider_wire, client_wire))
+                .body(Body::from_stream(body_stream))
+                .unwrap();
+        }
         let rewrite_model = if need_rewrite { routing.client_facing_model.clone() } else { None };
         let st2 = st.clone();
         let method2 = method.clone();
@@ -877,6 +988,59 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
             .unwrap();
     }
 
+    // Translated response: decode the (buffered) upstream reply → IR → re-encode to the client's
+    // protocol. We forced stream=false upstream, so the reply is always buffered here.
+    if let Some((client_wire, provider_wire, ref client_model, wanted_stream, _incremental)) = translate {
+        let text = String::from_utf8_lossy(&buf);
+        if !status.is_success() {
+            st.log("warn", format!("upstream {} on translated request ({})", status.as_u16(), provider_name));
+            st.emit_request(ex_id, started, &method, &req_path, &provider_name, &routing, status.as_u16(), None);
+            return error_response(
+                StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY),
+                &format!("ccbud upstream error: {}", text.chars().take(400).collect::<String>()),
+                "api_error",
+            );
+        }
+        let ir = match crate::protocol::decode_upstream_response(provider_wire, &text) {
+            Ok(ir) => ir,
+            Err(e) => {
+                st.log("error", format!("response translate ({:?}→{:?}) failed: {}", provider_wire, client_wire, e));
+                st.emit_request(ex_id, started, &method, &req_path, &provider_name, &routing, 502, None);
+                return error_response(StatusCode::BAD_GATEWAY, &format!("ccbud response translation failed: {}", e), "api_error");
+            }
+        };
+        let mut usage = UsageAcc::default();
+        if let Some(u) = ir.usage.as_ref() {
+            usage.input = u.prompt_tokens as i64;
+            usage.output = u.completion_tokens as i64;
+            usage.saw = true;
+        }
+        let (ct_out, body_bytes) = if wanted_stream {
+            let sse = crate::protocol::encode_client_response_sse(client_wire, &ir, client_model).unwrap_or_default();
+            ("text/event-stream", Bytes::from(sse))
+        } else {
+            let j = crate::protocol::encode_client_response(client_wire, &ir, client_model).unwrap_or_else(|_| json!({}));
+            ("application/json", Bytes::from(serde_json::to_vec(&j).unwrap_or_default()))
+        };
+        st.emit_request(ex_id, started, &method, &req_path, &provider_name, &routing, status.as_u16(), Some(&usage));
+        st.record_exchange(json!({
+            "id": ex_id, "ts": now_ms(), "ms": started.elapsed().as_millis() as u64,
+            "method": method.as_str(), "path": req_path, "url": ex_url,
+            "provider": provider_name, "requestedModel": routing.client_facing_model,
+            "outgoingModel": routing.outgoing_model, "clientFacingModel": routing.client_facing_model,
+            "status": status.as_u16(), "reqHeaders": ex_req_headers, "reqBody": ex_req_body,
+            "resHeaders": json!({ "content-type": ct_out, "x-ccbud-translated": format!("{:?}->{:?}", provider_wire, client_wire) }),
+            "resBody": cap_text(&body_bytes, 2 * 1024 * 1024),
+        }))
+        .await;
+        return Response::builder()
+            .status(status.as_u16())
+            .header("content-type", ct_out)
+            .header("x-ccbud-translated", format!("{:?}->{:?}", provider_wire, client_wire))
+            .body(Body::from(body_bytes))
+            .unwrap();
+    }
+
     let mut out_buf = buf.clone();
     let mut usage = UsageAcc::default();
     if ct.contains("application/json") {
@@ -948,6 +1112,51 @@ async fn mock_handler(req: axum::extract::Request) -> Response {
     let v: Value = serde_json::from_slice(&bytes).unwrap_or_else(|_| json!({}));
     let stream = v.get("stream").and_then(|s| s.as_bool()).unwrap_or(false);
     let model = v.get("model").and_then(|m| m.as_str()).unwrap_or("upstream-model").to_string();
+    // OpenAI Chat endpoint: answer in Chat Completions shape so the gateway's protocol translation
+    // (Anthropic→chat request, chat→Anthropic response) can be exercised end-to-end. The gateway
+    // forces stream=false upstream when translating, so we only need the buffered form here.
+    if path.contains("/chat/completions") {
+        if stream {
+            // OpenAI Chat streaming chunks (text split across two chunks + a usage-bearing final
+            // chunk), so the incremental transcoder is exercised end-to-end.
+            let sse = format!(
+                "data: {{\"choices\":[{{\"index\":0,\"delta\":{{\"role\":\"assistant\"}}}}]}}\n\n\
+                 data: {{\"choices\":[{{\"index\":0,\"delta\":{{\"content\":\"hi \"}}}}]}}\n\n\
+                 data: {{\"choices\":[{{\"index\":0,\"delta\":{{\"content\":\"from chat\"}}}}]}}\n\n\
+                 data: {{\"choices\":[{{\"index\":0,\"delta\":{{}},\"finish_reason\":\"stop\"}}],\"usage\":{{\"prompt_tokens\":12,\"completion_tokens\":5}}}}\n\n\
+                 data: [DONE]\n\n"
+            );
+            let _ = &model;
+            return Response::builder()
+                .status(200)
+                .header("content-type", "text/event-stream")
+                .body(Body::from(sse))
+                .unwrap();
+        }
+        return json_response(
+            StatusCode::OK,
+            &json!({
+                "id": "chatcmpl-mock", "object": "chat.completion", "created": 1, "model": model,
+                "choices": [{ "index": 0, "finish_reason": "stop",
+                    "message": { "role": "assistant", "content": "hi from chat" } }],
+                "usage": { "prompt_tokens": 12, "completion_tokens": 5, "total_tokens": 17 },
+            }),
+        );
+    }
+    // OpenAI Responses endpoint: reply in Responses shape (buffered) so messages→responses can be
+    // exercised end-to-end. (The gateway forces stream=false upstream for the responses direction.)
+    if path.ends_with("/responses") || path.ends_with("/responses/") {
+        return json_response(
+            StatusCode::OK,
+            &json!({
+                "id": "resp-mock", "object": "response", "created_at": 1, "model": model, "status": "completed",
+                "output": [{ "type": "message", "role": "assistant",
+                    "content": [{ "type": "output_text", "text": "hi from responses" }] }],
+                "output_text": "hi from responses",
+                "usage": { "input_tokens": 14, "output_tokens": 6, "total_tokens": 20 },
+            }),
+        );
+    }
     if stream {
         let sse = format!(
             "event: message_start\ndata: {{\"type\":\"message_start\",\"message\":{{\"model\":\"{m}\",\"usage\":{{\"input_tokens\":10,\"cache_read_input_tokens\":0,\"cache_creation_input_tokens\":0}}}}}}\n\nevent: message_delta\ndata: {{\"type\":\"message_delta\",\"usage\":{{\"output_tokens\":7}}}}\n\nevent: message_stop\ndata: {{\"type\":\"message_stop\"}}\n\n",
@@ -961,7 +1170,7 @@ async fn mock_handler(req: axum::extract::Request) -> Response {
     } else {
         json_response(
             StatusCode::OK,
-            &json!({ "type":"message", "model":model, "content":[{"type":"text","text":"hi"}], "usage":{"input_tokens":10,"output_tokens":7} }),
+            &json!({ "id":"msg_mock", "type":"message", "role":"assistant", "model":model, "content":[{"type":"text","text":"hi"}], "stop_reason":"end_turn", "usage":{"input_tokens":10,"output_tokens":7} }),
         )
     }
 }
@@ -1025,16 +1234,118 @@ pub async fn gateway_selftest(gport: u16) -> Value {
         Err(_) => (0, -1, false),
     };
 
+    // ---- protocol translation: Claude Code (Anthropic /v1/messages) → an OpenAI-Chat provider ----
+    // Reconfigure the mock provider to speak openai-chat, then hit /v1/messages and prove the
+    // response comes back Anthropic-shaped (non-stream) and as a valid Anthropic SSE (stream).
+    let cfg2 = json!({ "port": gport, "activeProviderId":"mockoa", "providers":[
+        { "id":"mockoa","name":"MockOpenAI","baseUrl":format!("http://127.0.0.1:{}", mock),"authToken":"k","protocol":"openai-chat","defaultModel":"gpt-mock","smallFastModel":"gpt-mock","mapDefaultModels":true,"models":[{"alias":"test-alias","upstream":"gpt-mock"}] }
+    ]});
+    store::write_config(cfg2);
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    let tx_ns = client
+        .post(&base)
+        .json(&json!({ "model":"test-alias","max_tokens":8,"messages":[{"role":"user","content":"hi"}] }))
+        .send()
+        .await;
+    let (tx_ns_status, tx_ns_anthropic, tx_ns_text, tx_ns_model) = match tx_ns {
+        Ok(r) => {
+            let s = r.status().as_u16();
+            let j: Value = r.json().await.unwrap_or_else(|_| json!({}));
+            let is_msg = j.get("type").and_then(|v| v.as_str()) == Some("message");
+            let text = j.get("content").and_then(|c| c.as_array()).and_then(|a| a.first())
+                .and_then(|b| b.get("text")).and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let model = j.get("model").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            (s, is_msg, text, model)
+        }
+        Err(e) => (0, false, format!("ERR:{}", e), String::new()),
+    };
+
+    let tx_st = client
+        .post(&base)
+        .json(&json!({ "model":"test-alias","stream":true,"max_tokens":8,"messages":[{"role":"user","content":"hi"}] }))
+        .send()
+        .await;
+    let (tx_st_status, tx_st_text) = match tx_st {
+        Ok(r) => (r.status().as_u16(), r.text().await.unwrap_or_default()),
+        Err(e) => (0, format!("ERR:{}", e)),
+    };
+
+    // ---- protocol translation: Claude Code (Anthropic /v1/messages) → an OpenAI-Responses provider ----
+    let cfg3 = json!({ "port": gport, "activeProviderId":"mockre", "providers":[
+        { "id":"mockre","name":"MockResponses","baseUrl":format!("http://127.0.0.1:{}", mock),"authToken":"k","protocol":"openai-responses","defaultModel":"gpt-mock","smallFastModel":"gpt-mock","mapDefaultModels":true,"models":[{"alias":"test-alias","upstream":"gpt-mock"}] }
+    ]});
+    store::write_config(cfg3);
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let rx = client
+        .post(&base)
+        .json(&json!({ "model":"test-alias","max_tokens":8,"messages":[{"role":"user","content":"hi"}] }))
+        .send()
+        .await;
+    let (rx_status, rx_anthropic, rx_text) = match rx {
+        Ok(r) => {
+            let s = r.status().as_u16();
+            let j: Value = r.json().await.unwrap_or_else(|_| json!({}));
+            let is_msg = j.get("type").and_then(|v| v.as_str()) == Some("message");
+            let text = j.get("content").and_then(|c| c.as_array()).and_then(|a| a.first())
+                .and_then(|b| b.get("text")).and_then(|v| v.as_str()).unwrap_or("").to_string();
+            (s, is_msg, text)
+        }
+        Err(e) => (0, false, format!("ERR:{}", e)),
+    };
+
+    // ---- reverse: an OpenAI-Chat client (/v1/chat/completions) → an Anthropic provider ----
+    let cfg4 = json!({ "port": gport, "activeProviderId":"mockan", "providers":[
+        { "id":"mockan","name":"MockAnthropic","baseUrl":format!("http://127.0.0.1:{}", mock),"authToken":"k","protocol":"anthropic","defaultModel":"claude-mock","smallFastModel":"claude-mock","mapDefaultModels":true,"models":[{"alias":"test-alias","upstream":"claude-mock"}] }
+    ]});
+    store::write_config(cfg4);
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let rev = client
+        .post(format!("http://127.0.0.1:{}/v1/chat/completions", gport))
+        .json(&json!({ "model":"test-alias","messages":[{"role":"user","content":"hi"}] }))
+        .send()
+        .await;
+    let (rev_status, rev_is_chat, rev_text) = match rev {
+        Ok(r) => {
+            let s = r.status().as_u16();
+            let j: Value = r.json().await.unwrap_or_else(|_| json!({}));
+            let is_chat = j.get("object").and_then(|v| v.as_str()) == Some("chat.completion");
+            let text = j.get("choices").and_then(|c| c.as_array()).and_then(|a| a.first())
+                .and_then(|c| c.get("message")).and_then(|m| m.get("content")).and_then(|v| v.as_str()).unwrap_or("").to_string();
+            (s, is_chat, text)
+        }
+        Err(e) => (0, false, format!("ERR:{}", e)),
+    };
+
     json!({
         "nonStreamStatus": ns_status,
         "nonStreamModel": ns_model,
         "nonStreamRewritten": ns_model == "test-alias",
+        "xlateResponsesStatus": rx_status,
+        "xlateResponsesIsAnthropic": rx_anthropic,
+        "xlateResponsesText": rx_text,
+        "revChatStatus": rev_status,
+        "revChatIsChatCompletion": rev_is_chat,
+        "revChatText": rev_text,
         "streamStatus": st_status,
         "streamHasStart": st_text.contains("message_start"),
         "streamRewritten": st_text.contains("\"test-alias\"") && !st_text.contains("upstream-model"),
         "countTokensStatus": ct_status,
         "countTokensEstimated": ct_estimated,
         "countTokens": ct_tokens,
+        // protocol translation (messages→chat)
+        "xlateNonStreamStatus": tx_ns_status,
+        "xlateNonStreamIsAnthropic": tx_ns_anthropic,
+        "xlateNonStreamText": tx_ns_text,
+        "xlateNonStreamModel": tx_ns_model,
+        "xlateStreamStatus": tx_st_status,
+        "xlateStreamHasStart": tx_st_text.contains("message_start"),
+        "xlateStreamHasStop": tx_st_text.contains("message_stop"),
+        // incremental transcode: OpenAI chunks → Anthropic text_delta events (text split across
+        // chunks), a real content_block_delta, and end_turn stop.
+        "xlateStreamIncremental": tx_st_text.contains("content_block_delta") && tx_st_text.contains("text_delta"),
+        "xlateStreamText": tx_st_text.contains("from chat"),
+        "xlateStreamStop": tx_st_text.contains("\"stop_reason\":\"end_turn\""),
     })
 }
 

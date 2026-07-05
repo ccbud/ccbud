@@ -4,12 +4,12 @@
 
 # CCBUD
 
-### Claude Code 伙伴
+### 编码 CLI 好搭子
 
 **让 Claude Code 接到任意 Anthropic 兼容服务商 —— 一键接入，全程本地。**
 
 [![Platform](https://img.shields.io/badge/platform-macOS%20%C2%B7%20Windows%20%C2%B7%20Linux-5b6cff?style=flat-square)](#-安装)
-[![Built with Electron](https://img.shields.io/badge/built%20with-Electron-47848F?style=flat-square&logo=electron&logoColor=white)](https://www.electronjs.org/)
+[![Built with Tauri](https://img.shields.io/badge/built%20with-Tauri-24C8DB?style=flat-square&logo=tauri&logoColor=white)](https://tauri.app/)
 [![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-3b82f6?style=flat-square)](./LICENSE)
 
 [安装](#-安装) · [快速开始](#-快速开始) · [工作原理](#-工作原理)
@@ -20,7 +20,7 @@
 
 ---
 
-**CCBUD**（`cc` Claude Code + `bud` buddy 伙伴）是一个跨平台桌面应用，在 Claude Code 和任意 Anthropic 兼容服务商（Kimi、DeepSeek、GLM、MiMo 等）之间起一个**本地网关**。服务商添加一次，点一下卡片就切换，Claude Code 的配置由 CCBUD 自动写好 —— **你不用碰任何环境变量。**
+**CCBUD**（`cc` coding CLI + `bud` buddy 伙伴）是一个跨平台桌面应用，在 Claude Code 和任意 Anthropic 兼容服务商（Kimi、DeepSeek、GLM、MiMo 等）之间起一个**本地网关**。服务商添加一次，点一下卡片就切换，Claude Code 的配置由 CCBUD 自动写好 —— **你不用碰任何环境变量。**
 
 <div align="center">
   <img src="docs/img/services.jpg" alt="CCBUD — 服务商" width="820">
@@ -35,7 +35,7 @@
 
 ### 下载（推荐）
 
-从 **[Releases 页面](https://github.com/loadchange/clawdy/releases)** 下载对应平台的安装包：
+从 **[Releases 页面](https://github.com/ccbud/ccbud/releases)** 下载对应平台的安装包：
 
 | 平台 | 文件 |
 | :-- | :-- |
@@ -55,20 +55,15 @@ brew upgrade --cask ccbud             # 后续升级
 
 ### 保持最新（应用内更新）
 
-CCBUD 会在启动时（以及每天）检查新版本，并在 **设置 → 关于与更新** 中提示：
-
-- **热更新** —— 仅改动 JS/界面层的版本会**原地**下载并应用，无需重装，下次启动生效（也可点「立即重启更新」）。默认开启「热更自动下载」，符合条件的更新会在后台自动拉取。
-- **完整更新** —— 涉及原生组件（Electron、内置二进制）的版本会提示重新安装（下载安装包，或 `brew upgrade --cask ccbud`）。
-
-热更新会用发布清单做 SHA-256 校验（并可选 Ed25519 签名）。详见 [docs/HOT-UPDATE.md](docs/HOT-UPDATE.md)。
+CCBUD 会在启动时（以及每天）检查新版本，并在 **设置 → 关于与更新** 中提示。可用时应用内通过 Tauri updater 更新；Homebrew 用户也可以执行 `brew upgrade --cask ccbud`。
 
 ### 从源码构建
 
 ```bash
-git clone https://github.com/loadchange/clawdy.git
-cd clawdy
+git clone https://github.com/ccbud/ccbud.git
+cd ccbud
 npm install
-npm start                 # 开发模式运行
+npm start                 # 开发模式运行 Tauri 应用
 
 # 打包当前系统的发行版：
 npm run dist:mac          # 或：dist:win · dist:linux

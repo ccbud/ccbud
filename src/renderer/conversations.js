@@ -296,8 +296,8 @@
     const trashEntry = allDirs.find((d) => d.id === '__trash__' || d.trash);
     const trashN = trashEntry ? (trashEntry.sessions || 0) : 0;
     const showTrash = trashN > 0 || active === '__trash__';
-    // Hide the synthetic 导入 chip until something is actually imported (keeps the bar clean / unchanged
-    // for single-dir users). The + button is the import entry point regardless.
+    // Hide the synthetic 导入 chip until something is actually imported (keeps the bar clean /
+    // unchanged for single-dir users). The + button is the import entry point regardless.
     const dirs = allDirs.filter((d) => d.id !== '__trash__' && !d.trash && !(d.imported && !d.sessions));
     const showDirs = dirs.length > 1;
     if (!showDirs && !showTrash) { host.classList.add('hidden'); host.innerHTML = ''; return; }
@@ -365,8 +365,13 @@
     // Recycle bin rows swap the import-remove affordance for restore + delete-forever; everywhere else
     // imported copies (which live only in the app store) keep their remove affordance.
     const inTrash = activeDir === '__trash__';
+    // A LIVE Codex session (source codex, not an imported copy) is another tool's file — it can be
+    // restored but NEVER permanently deleted, since the app must not rm ~/.codex's rollouts.
+    const foreign = c.source === 'codex' && !c.imported;
+    const restoreBtn = `<button class="conv-restore ml-auto shrink-0 opacity-55 group-hover:opacity-100 text-caption hover:text-brand hover:bg-chip-bg rounded text-[12px] leading-none w-[18px] h-[18px] flex items-center justify-center transition-all" data-restore="${esc(c.file || '')}" title="${esc(L('conv.restore'))}">${ICN.refresh || '↺'}</button>`;
+    const deleteForeverBtn = `<button class="conv-delete-forever shrink-0 opacity-55 group-hover:opacity-100 text-caption hover:text-red hover:bg-chip-bg rounded text-[12px] leading-none w-[18px] h-[18px] flex items-center justify-center transition-all" data-delete-forever="${esc(c.file || '')}" title="${esc(L('conv.deleteForever'))}">${ICN.trash || '✕'}</button>`;
     const rm = inTrash
-      ? `<button class="conv-restore ml-auto shrink-0 opacity-55 group-hover:opacity-100 text-caption hover:text-brand hover:bg-chip-bg rounded text-[12px] leading-none w-[18px] h-[18px] flex items-center justify-center transition-all" data-restore="${esc(c.file || '')}" title="${esc(L('conv.restore'))}">${ICN.refresh || '↺'}</button><button class="conv-delete-forever shrink-0 opacity-55 group-hover:opacity-100 text-caption hover:text-red hover:bg-chip-bg rounded text-[12px] leading-none w-[18px] h-[18px] flex items-center justify-center transition-all" data-delete-forever="${esc(c.file || '')}" title="${esc(L('conv.deleteForever'))}">${ICN.trash || '✕'}</button>`
+      ? restoreBtn + (foreign ? '' : deleteForeverBtn)
       : (c.imported ? `<button class="conv-remove-import ml-auto shrink-0 opacity-55 group-hover:opacity-100 text-caption hover:text-red hover:bg-chip-bg rounded text-[12px] leading-none w-[18px] h-[18px] flex items-center justify-center transition-all" data-remove-import="${esc(c.file || '')}" title="${esc(L('conv.removeImport'))}">✕</button>` : '');
     const model = c.model ? `<span class="conv-model text-brand">${esc(c.model)}</span>` : '';
     // User tags (deletable: x; double-click to edit; click to filter). The import badge stays
@@ -531,7 +536,11 @@
       else body += `<pre class="pre bg-[#0c0e12] border border-white/7 rounded-[7px] p-2.5 overflow-x-auto font-mono text-[11px] leading-[1.48] text-[#e8edf4] whitespace-pre-wrap break-all">${esc(JSON.stringify(b))}</pre>`;
     });
     if (!body) return '';
-    return `<div class="msg assistant group flex flex-col gap-1.25 animate-[panelIn_0.18s_cubic-bezier(0.23,1,0.32,1)] w-full ${m.isSidechain ? 'sidechain' : ''}"${mid}><div class="msg-role text-[10px] font-bold uppercase tracking-wider text-caption flex items-center gap-1.25">✦ Claude${m.isSidechain && !inSub ? ` <span class="conv-badge text-[10.5px] px-1.5 py-0.25 rounded-full bg-chip-bg text-fg font-sans">${esc(L('conv.subagent'))}</span>` : ''}</div><div class="msg-body text-[13px] leading-[1.58] py-0.5 pr-0 pl-3 border-l-2 border-border-strong group-[.streaming]:border-green">${body}${turnMeta(m)}</div></div>`;
+    return `<div class="msg assistant group flex flex-col gap-1.25 animate-[panelIn_0.18s_cubic-bezier(0.23,1,0.32,1)] w-full ${m.isSidechain ? 'sidechain' : ''}"${mid}><div class="msg-role text-[10px] font-bold uppercase tracking-wider text-caption flex items-center gap-1.25">✦ ${esc(assistantName())}${m.isSidechain && !inSub ? ` <span class="conv-badge text-[10.5px] px-1.5 py-0.25 rounded-full bg-chip-bg text-fg font-sans">${esc(L('conv.subagent'))}</span>` : ''}</div><div class="msg-body text-[13px] leading-[1.58] py-0.5 pr-0 pl-3 border-l-2 border-border-strong group-[.streaming]:border-green">${body}${turnMeta(m)}</div></div>`;
+  }
+  // Assistant display name for the open session — "Codex" for codex rollouts, else Claude.
+  function assistantName() {
+    return (currentDetail && currentDetail.meta && currentDetail.meta.assistant) || 'Claude';
   }
   function winBtn(dir, n) {
     const lbl = esc(L('conv.loadEarlier', { n }));
@@ -607,7 +616,7 @@
   function renderUserBlock(b) {
     if (b.type === 'image') {
       const s = b.source || {};
-      if (s.data) return `<img class="msg-img max-w-[300px] rounded-lg border border-border-custom my-1" src="data:${esc(s.media_type || 'image/png')};base64,${s.data}" />`;
+      if (s.data) return `<img class="msg-img max-w-[300px] rounded-lg border border-border-custom my-1" src="data:${esc(s.media_type || 'image/png')};base64,${esc(s.data)}" />`;
       return `<div class="img-redacted text-[11px] text-muted p-[7px] px-2.25 bg-chip-bg rounded-[6px] inline-block">🖼 ${esc(L('conv.image'))}</div>`;
     }
     return `<div class="blk-text">${md(b.text)}</div>`;
@@ -692,7 +701,17 @@
   function shortPath(p) { if (!p) return ''; const s = String(p).split('/'); return s.length > 3 ? '…/' + s.slice(-2).join('/') : p; }
   function resultSummary(txt) { const b = txt ? txt.length : 0; if (!b) return ''; return b < 1024 ? b + ' B' : (b / 1024).toFixed(1) + ' KB'; }
   const PRE = 'pre bg-[#0c0e12] border border-white/7 rounded-[7px] p-2.5 overflow-x-auto font-mono text-[11px] leading-[1.48] text-[#e8edf4] whitespace-pre-wrap break-all';
-  const TOOL_CLS = { Bash: 'exec', Read: 'read', Edit: 'write', MultiEdit: 'write', Write: 'write', Grep: 'search', Glob: 'search', TodoWrite: 'todo', Task: 'task', WebSearch: 'net', WebFetch: 'net' };
+  const TOOL_CLS = { Bash: 'exec', Read: 'read', Edit: 'write', MultiEdit: 'write', Write: 'write', ApplyPatch: 'write', Grep: 'search', Glob: 'search', TodoWrite: 'todo', Task: 'task', WebSearch: 'net', WebFetch: 'net' };
+  // Codex apply_patch envelope: "*** Update File: x" headers → the card's target (file, or "N files").
+  function patchTarget(patch) {
+    const files = [];
+    String(patch || '').split('\n').forEach((l) => {
+      const m = /^\*\*\*\s+(?:Add|Update|Delete)\s+File:\s+(.+)$/.exec(l.trim());
+      if (m) files.push(m[1].trim());
+    });
+    if (!files.length) return '';
+    return files.length === 1 ? shortPath(files[0]) : L('conv.patchFiles', { n: files.length });
+  }
   function renderToolCard(tu, resBlock) {
     const name = tu.name || 'tool';
     const input = (tu.input && typeof tu.input === 'object') ? tu.input : {};
@@ -703,6 +722,7 @@
     else if (name === 'Edit') { icon = '✏️'; label = 'Edit'; target = shortPath(input.file_path); bodyInput = diff(input.old_string, input.new_string); }
     else if (name === 'MultiEdit') { icon = '✏️'; label = 'MultiEdit'; target = shortPath(input.file_path); bodyInput = Array.isArray(input.edits) && input.edits.length ? input.edits.map((e) => diff(e.old_string, e.new_string)).join('') : `<div class="text-muted text-[11px]">${esc(L('conv.noEdits'))}</div>`; }
     else if (name === 'Write') { icon = '📝'; label = 'Write'; target = shortPath(input.file_path); const c = truncate(input.content || '', 12000); bodyInput = isMdPath(input.file_path) ? mdDoc(c) : codeBlock(c, langFromPath(input.file_path)); }
+    else if (name === 'ApplyPatch') { icon = '✏️'; label = 'ApplyPatch'; target = patchTarget(input.patch); bodyInput = codeBlock(truncate(input.patch || '', 12000), 'diff'); }
     else if (name === 'Grep') { icon = '🔎'; label = 'Grep'; target = input.pattern || ''; if (input.path) bodyInput = `<div class="text-muted text-[11px]">in ${esc(input.path)}</div>`; }
     else if (name === 'Glob') { icon = '🔎'; label = 'Glob'; target = input.pattern || ''; }
     else if (name === 'TodoWrite') { icon = '✅'; label = 'Todos'; bodyInput = todos(input.todos); }
@@ -885,6 +905,7 @@
     const t = m.totals || {};
     const rows = [
       [L('conv.stat.title'), m.title],
+      [L('conv.stat.tool'), m.assistant === 'Codex' ? 'Codex' : 'Claude Code'],
       [L('conv.stat.model'), m.model],
       ...(m.isSubagent ? [[L('conv.stat.type'), L('conv.subagentSession')]] : []),
       ...(m.imported ? [[L('conv.imported'), m.importedFrom || '✓']] : []),
@@ -1145,10 +1166,14 @@
       });
     }
     ctxMenuEl._file = file; ctxMenuEl._id = id;
+    // A live Codex session can be restored but never permanently deleted (its rollout is another
+    // tool's file); imported copies live in our store and keep delete-forever.
+    const s = findSession(id, file);
+    const foreign = s && s.source === 'codex' && !s.imported;
     // Recycle-bin rows offer restore / delete-forever; everywhere else it's rename / add-tag / delete.
     ctxMenuEl.innerHTML = (activeDir === '__trash__')
       ? `<button type="button" class="conv-ctx-item" data-ctx="restore">↺ ${esc(L('conv.restore'))}</button>` +
-        `<button type="button" class="conv-ctx-item conv-ctx-danger" data-ctx="deleteforever">${ICN.trash || '🗑'} ${esc(L('conv.deleteForever'))}</button>`
+        (foreign ? '' : `<button type="button" class="conv-ctx-item conv-ctx-danger" data-ctx="deleteforever">${ICN.trash || '🗑'} ${esc(L('conv.deleteForever'))}</button>`)
       : `<button type="button" class="conv-ctx-item" data-ctx="rename">✎ ${esc(L('conv.ctxRename'))}</button>` +
         `<button type="button" class="conv-ctx-item" data-ctx="addtag"># ${esc(L('conv.ctxAddTag'))}</button>` +
         `<button type="button" class="conv-ctx-item conv-ctx-danger" data-ctx="delete">${ICN.trash || '🗑'} ${esc(L('conv.ctxDelete'))}</button>`;
