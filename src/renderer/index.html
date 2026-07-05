@@ -16,7 +16,7 @@
           <div class="logo w-[30px] h-[30px] flex-shrink-0 drop-shadow-[0_2px_8px_var(--brand-glow)]" id="appLogo" aria-hidden="true"></div>
           <div class="brand-text group-[.collapsed]/sidebar:hidden">
             <div class="brand-title text-[15px] font-semibold tracking-[-0.02em] leading-[1.15] transition-colors duration-200 [&.running]:text-green" id="brandTitle">CCBUD</div>
-            <div class="brand-sub" data-i18n="brand.sub">Claude Code Buddy</div>
+            <div class="brand-sub" data-i18n="brand.sub">Coding CLI Buddy</div>
           </div>
         </header>
 
@@ -160,6 +160,19 @@
                 <span class="caption text-[12px] text-caption" id="claudePath"></span>
               </div>
               <p class="caption warn text-[12px] text-caption [&.warn]:text-amber" data-i18n="settings.exportWarn">若曾在终端 export ANTHROPIC_BASE_URL，请删除以免覆盖。</p>
+            </div>
+            <div class="settings-card bg-bg-elev border border-border-custom rounded-xl shadow-card p-7 flex flex-col gap-6 transition-all duration-300">
+              <h3 class="settings-card-title text-[13px] font-semibold text-fg" data-i18n="settings.connectTargets">接入目标</h3>
+              <p class="caption text-[12px] text-caption" data-i18n="settings.connectTargetsDesc">选择「一键接入」要接管的编程 CLI；接入时自动写入各自的配置文件。</p>
+              <div class="flex items-center justify-between gap-3">
+                <div class="min-w-0 flex items-center gap-2"><div class="text-[12.5px] font-medium text-fg">Claude Code</div><span id="tgtClaudeChip" class="proto-badge proto-badge-direct"></span></div>
+                <label class="switch inline-flex items-center cursor-pointer no-drag shrink-0"><input id="fTargetClaude" type="checkbox" class="hidden peer" /><span class="track w-8 h-[17px] rounded-full bg-border-strong relative transition-colors duration-180 ease-[cubic-bezier(0.23,1,0.32,1)] shrink-0 peer-checked:bg-primary after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:w-[13px] after:h-[13px] after:rounded-full after:bg-white after:shadow-[0_1px_2px_rgba(0,0,0,0.18)] after:transition-transform after:duration-180 after:ease-[cubic-bezier(0.23,1,0.32,1)] peer-checked:after:translate-x-[15px]"></span></label>
+              </div>
+              <div class="flex items-center justify-between gap-3 pt-4 border-t border-border-custom" id="targetCodexRow">
+                <div class="min-w-0 flex items-center gap-2"><div class="text-[12.5px] font-medium text-fg">Codex</div><span id="tgtCodexChip" class="proto-badge proto-badge-direct"></span></div>
+                <label class="switch inline-flex items-center cursor-pointer no-drag shrink-0"><input id="fTargetCodex" type="checkbox" class="hidden peer" /><span class="track w-8 h-[17px] rounded-full bg-border-strong relative transition-colors duration-180 ease-[cubic-bezier(0.23,1,0.32,1)] shrink-0 peer-checked:bg-primary after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:w-[13px] after:h-[13px] after:rounded-full after:bg-white after:shadow-[0_1px_2px_rgba(0,0,0,0.18)] after:transition-transform after:duration-180 after:ease-[cubic-bezier(0.23,1,0.32,1)] peer-checked:after:translate-x-[15px]"></span></label>
+              </div>
+              <p class="caption text-[12px] text-caption" id="targetCodexNote" data-i18n="settings.codexUnavailable" style="display:none">未检测到 Codex（~/.codex）。安装 Codex CLI 后可在此接入。</p>
             </div>
             <div class="settings-card bg-bg-elev border border-border-custom rounded-xl shadow-card p-7 flex flex-col gap-6 transition-all duration-300">
               <h3 class="settings-card-title text-[13px] font-semibold text-fg" data-i18n="settings.advanced">高级</h3>
@@ -434,6 +447,18 @@
               <span class="field-label text-[11px] font-semibold text-caption uppercase tracking-[0.03em]" data-i18n="modal.apiUrl">API 地址</span>
               <input id="fBaseUrl" class="bg-bg-input border border-border-custom rounded-[7px] px-2.75 py-2 text-fg text-[13px] font-mono w-full outline-none transition-colors duration-120 focus:border-primary" type="text" placeholder="https://open.bigmodel.cn/api/anthropic" />
             </label>
+          </div>
+
+          <div class="field flex flex-col gap-1.25">
+            <span class="field-label text-[11px] font-semibold text-caption uppercase tracking-[0.03em] flex items-center gap-2">
+              <span data-i18n="modal.protocol">上游协议</span>
+              <span id="protoBadge" class="proto-badge proto-badge-direct"></span>
+            </span>
+            <div id="fProtocol" class="proto-seg no-drag" role="radiogroup">
+              <button type="button" class="proto-seg-btn" data-proto="anthropic" data-i18n="modal.protoAnthropic">Anthropic Messages</button>
+              <button type="button" class="proto-seg-btn" data-proto="openai-chat" data-i18n="modal.protoChat">OpenAI Chat</button>
+              <button type="button" class="proto-seg-btn" data-proto="openai-responses" data-i18n="modal.protoResponses">OpenAI Responses</button>
+            </div>
           </div>
 
           <label class="field flex flex-col gap-1.25 flex-1">

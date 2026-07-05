@@ -23,14 +23,22 @@
   var USED = {}; // subagent keys embedded inline under their spawn tool
 
   var TOOL = {
-    Bash: ['⌘', 'exec'], Read: ['📖', 'read'], Edit: ['✏️', 'write'], MultiEdit: ['✏️', 'write'], Write: ['📝', 'write'],
+    Bash: ['⌘', 'exec'], Read: ['📖', 'read'], Edit: ['✏️', 'write'], MultiEdit: ['✏️', 'write'], Write: ['📝', 'write'], ApplyPatch: ['✏️', 'write'],
     Grep: ['🔎', 'search'], Glob: ['🔎', 'search'], TodoWrite: ['✅', 'todo'], TaskCreate: ['✅', 'todo'], TaskUpdate: ['✅', 'todo'], TaskList: ['✅', 'todo'],
     Agent: ['🤖', 'agent'], Task: ['🤖', 'agent'], Workflow: ['🛠️', 'agent'], WebSearch: ['🌐', 'net'], WebFetch: ['🌐', 'net'], AskUserQuestion: ['❓', 'ask']
   };
   function toolMeta(n) { if (TOOL[n]) return TOOL[n]; if (/^mcp__/.test(n)) return ['🧩', 'mcp']; return ['🔧', 'default']; }
+  // Codex apply_patch envelope: "*** Update File: x" headers → the card's target (file, or "N files").
+  function patchTarget(patch) {
+    var files = [];
+    String(patch || '').split('\n').forEach(function (l) { var m = /^\*\*\*\s+(?:Add|Update|Delete)\s+File:\s+(.+)$/.exec(l.trim()); if (m) files.push(m[1].trim()); });
+    if (!files.length) return '';
+    return files.length === 1 ? shortPath(files[0]) : files.length + ' files';
+  }
   function toolTarget(n, i) {
     if (n === 'Bash') return i.description || '';
     if (n === 'Read' || n === 'Edit' || n === 'MultiEdit' || n === 'Write') return shortPath(i.file_path);
+    if (n === 'ApplyPatch') return patchTarget(i.patch);
     if (n === 'Grep' || n === 'Glob') return i.pattern || '';
     if (n === 'Agent' || n === 'Task') return i.subagent_type || 'agent';
     if (n === 'WebSearch') return i.query || ''; if (n === 'WebFetch') return i.url || ''; if (n === 'Workflow') return i.name || '';
@@ -47,6 +55,7 @@
     var label = /^mcp__/.test(name) ? ('MCP · ' + name.replace(/^mcp__/, '')) : name;
     var target = toolTarget(name, inp), body = '';
     if (name === 'Bash') body += '<pre class="code"><code>$ ' + esc(inp.command || '') + '</code></pre>';
+    else if (name === 'ApplyPatch') body += codePre(inp.patch || '', 'diff');
     else if (name === 'Edit') body += diff(inp.old_string, inp.new_string);
     else if (name === 'MultiEdit') body += (Array.isArray(inp.edits) ? inp.edits : []).map(function (e) { return diff(e.old_string, e.new_string); }).join('');
     else if (name === 'Write') body += codePre(inp.content || '');
@@ -78,7 +87,7 @@
       if (b.type === 'text') { if (b.text && b.text.trim()) out += '<div class="prose">' + md(b.text) + '</div>'; }
       else if (b.type === 'thinking') { if (b.thinking && b.thinking.trim()) { var first = b.thinking.split('\n').filter(function (x) { return x.trim(); })[0] || ''; out += '<details class="thinking"><summary>💭 思考 · ' + esc(trunc(first, 64)) + '</summary><div class="prose">' + md(b.thinking) + '</div></details>'; } }
       else if (b.type === 'tool_use') out += renderTool(b);
-      else if (b.type === 'image') { var s = b.source || {}; out += s.data ? '<img class="msg-img" style="max-width:340px;border-radius:10px;border:1px solid var(--border);margin:6px 0" src="data:' + esc(s.media_type || 'image/png') + ';base64,' + s.data + '">' : '<div class="tool-desc">🖼 image' + (s.oversized ? ' (large, omitted)' : '') + '</div>'; }
+      else if (b.type === 'image') { var s = b.source || {}; out += s.data ? '<img class="msg-img" style="max-width:340px;border-radius:10px;border:1px solid var(--border);margin:6px 0" src="data:' + esc(s.media_type || 'image/png') + ';base64,' + esc(s.data) + '">' : '<div class="tool-desc">🖼 image' + (s.oversized ? ' (large, omitted)' : '') + '</div>'; }
     });
     return out;
   }
@@ -103,13 +112,14 @@
       if (!msgVisible(m)) return;
       var body = renderBlocks(m.content); if (!body) return;
       if (m.role === 'user') out += '<div class="msg user" data-role="user"><div class="msg-name">👤 你</div><div class="bubble">' + body + '</div></div>';
-      else { var tg = msgTags(m); out += '<div class="msg assistant" data-role="assistant" data-tool="' + (tg.tool ? 1 : 0) + '" data-sub="' + (tg.sub ? 1 : 0) + '"><div class="msg-name"><span class="dot">✦</span>Claude</div><div class="body">' + body + turnMeta(m) + '</div></div>'; }
+      else { var tg = msgTags(m); out += '<div class="msg assistant" data-role="assistant" data-tool="' + (tg.tool ? 1 : 0) + '" data-sub="' + (tg.sub ? 1 : 0) + '"><div class="msg-name"><span class="dot">✦</span>' + esc(AST) + '</div><div class="body">' + body + turnMeta(m) + '</div></div>'; }
     });
     return out;
   }
 
   // ===== build shell =====
   var meta = D.meta || {};
+  var AST = meta.assistant || 'Claude'; // assistant display name (Codex rollouts export with "Codex")
   function metaLine() {
     var p = [];
     if (meta.model) p.push('<b>' + esc(meta.model) + '</b>');
@@ -166,7 +176,7 @@
       if (el.getAttribute('data-sub') === '1') tags += '<span class="tt sub">🤖 子代理</span>';
       if (ntool) tags += '<span class="tt">' + ntool + ' 工具</span>';
     }
-    tocHtml += '<a class="toc-item ' + role + '" data-target="m' + i + '"><span class="toc-role">' + (role === 'user' ? '你' : '✦ CLAUDE') + '</span><span class="toc-text">' + esc(preview || '…') + '</span>' + (tags ? '<span class="toc-tags">' + tags + '</span>' : '') + '</a>';
+    tocHtml += '<a class="toc-item ' + role + '" data-target="m' + i + '"><span class="toc-role">' + (role === 'user' ? '你' : '✦ ' + esc(AST.toUpperCase())) + '</span><span class="toc-text">' + esc(preview || '…') + '</span>' + (tags ? '<span class="toc-tags">' + tags + '</span>' : '') + '</a>';
   });
   document.getElementById('toc').innerHTML = tocHtml;
 

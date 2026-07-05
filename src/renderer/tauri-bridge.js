@@ -1,8 +1,8 @@
 'use strict';
 /*
- * Tauri IPC bridge — recreates the Electron `window.ccbud` preload surface on top of
- * Tauri's invoke()/listen(), so the existing renderer runs UNCHANGED inside the system
- * WebView. Loaded before renderer.js (which does `const api = window.ccbud` at line 1).
+ * Tauri IPC bridge — exposes the `window.ccbud` API consumed by the renderer on top of
+ * Tauri's invoke()/listen(). Loaded before renderer.js (which does `const api = window.ccbud`
+ * at line 1).
  *
  * Backend commands are snake_case Tauri commands (see src-tauri/src/lib.rs); event names
  * keep their original "namespace:event" form so the renderer's onX handlers are untouched.
@@ -14,6 +14,21 @@
   const listen = T.event.listen;
   const inv = (cmd, args) => invoke(cmd, args || {});
   const on = (event, cb) => { listen(event, (e) => cb(e.payload)); };
+  let droppedPaths = [];
+
+  function fileName(path) {
+    return String(path || '').split(/[\\/]/).filter(Boolean).pop() || '';
+  }
+  function rememberDrop(payload) {
+    const paths = Array.isArray(payload && payload.paths) ? payload.paths
+      : Array.isArray(payload) ? payload
+        : [];
+    if (paths.length) droppedPaths = paths.map(String);
+  }
+  try {
+    listen('tauri://drag-drop', (e) => rememberDrop(e.payload));
+    listen('tauri://file-drop', (e) => rememberDrop(e.payload));
+  } catch (_) {}
 
   window.ccbud = {
     getConfig: () => inv('config_get'),
@@ -26,6 +41,7 @@
 
     connect: () => inv('claude_connect'),
     disconnect: () => inv('claude_disconnect'),
+    setConnectTarget: (target, on) => inv('set_connect_target', { target, on }),
 
     desktopStatus: () => inv('desktop_status'),
     desktopConnect: () => inv('desktop_connect'),
@@ -58,9 +74,11 @@
     historyDeleteForever: (file) => inv('history_delete_forever', { file }),
     historyExportRaw: (file) => inv('history_export_raw', { file }),
     historyExportHtml: (payload) => inv('history_export_html', { payload }),
-    // Electron used webUtils.getPathForFile on a dragged File; under Tauri the real path
-    // arrives via the window file-drop event (wired in Phase 1 follow-up). Placeholder name.
-    pathForFile: (file) => (file && file.name) || '',
+    pathForFile: (file) => {
+      const name = file && file.name;
+      if (!name) return '';
+      return droppedPaths.find((p) => fileName(p) === name) || '';
+    },
     onHistoryChanged: (cb) => on('history:changed', cb),
 
     copy: (t) => inv('util_copy', { text: t }),
@@ -81,8 +99,7 @@
     onPopoverShow: (cb) => on('popover:show', cb),
   };
 
-  // Window dragging: Electron's `-webkit-app-region: drag` is Chromium-only and does nothing in
-  // WKWebView. Map the existing `.drag-region` elements onto Tauri's `data-tauri-drag-region`
+  // Window dragging: map the existing `.drag-region` elements onto Tauri's `data-tauri-drag-region`
   // (its bundled handler starts a window drag on mousedown over an element carrying that attr;
   // `.no-drag` children like buttons/inputs are untouched since the event target is the child).
   function wireDrag(root) {

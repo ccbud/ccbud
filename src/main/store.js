@@ -15,6 +15,7 @@ function defaultConfig() {
     language: null, // ui language ('en'|'zh'|'zh-TW'|'ja'|'ko'); null = derive from system on first run
     historyDirs: ['~/.claude'], // Claude config dirs to read history/usage from (each has projects/)
     historyActive: 'all',       // which configured dir the conversation/usage views show ('all' or a path)
+    connectTargets: ['claude'], // which coding CLIs 一键接入 wires to the gateway (subset of claude/codex)
     // Auto-retry upstream 429s before surfacing them to the client (gives low-concurrency
     // providers a moment to recover instead of failing the request outright).
     retry429: { enabled: true, max: 3, baseMs: 500 },
@@ -85,8 +86,14 @@ function normalize(cfg) {
     dirs.unshift('~/.claude');
   }
   c.historyDirs = dirs;
-  // '__imported__' is the synthetic, app-managed store of imported transcripts (not a user dir, so not
-  // in historyDirs) — keep it valid as an active selection so the "导入" filter persists.
+  // '__imported__' is the synthetic, app-managed store of imported transcripts (not a user dir, so
+  // not in historyDirs) — keep it valid as an active selection so the "导入" filter persists.
+  // '__codex__' is the retired synthetic Codex bucket — map it onto the real ~/.codex dir entry.
+  // connectTargets: subset of {claude, codex}, deduped. Empty is valid (all disconnected); only a
+  // fresh config gets ['claude'] via defaultConfig — an explicit [] is preserved.
+  c.connectTargets = [...new Set((Array.isArray(c.connectTargets) ? c.connectTargets : [])
+    .filter((t) => t === 'claude' || t === 'codex'))];
+  if (c.historyActive === '__codex__') c.historyActive = require('./codex').codexLabel();
   c.historyActive = c.historyActive === 'all' || c.historyActive === '__imported__' || dirs.includes(c.historyActive) ? c.historyActive : 'all';
   return c;
 }

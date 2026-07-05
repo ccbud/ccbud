@@ -79,6 +79,10 @@ fn cap_content(content: &Value) -> Value {
                             let c = cap(p, CAP_CONTENT);
                             obj.insert("content".into(), json!(c));
                         }
+                        if let Some(p) = obj.get("patch").and_then(|v| v.as_str()) {
+                            let c = cap(p, CAP_CONTENT); // codex ApplyPatch envelopes can be huge
+                            obj.insert("patch".into(), json!(c));
+                        }
                     }
                     json!({ "type": "tool_use", "id": b.get("id").cloned().unwrap_or(Value::Null), "name": b.get("name").cloned().unwrap_or(Value::Null), "input": input })
                 }
@@ -281,9 +285,76 @@ fn read_subagents(file: &Path) -> Value {
     Value::Object(by_tool)
 }
 
+// Codex rollout → the same export data shape (messages re-capped + field names the viewer
+// runtime reads: model / usage{in,out,cacheRead} / stop), with meta.assistant = "Codex" so the
+// exported page labels turns correctly.
+fn build_codex_data(file: &str, recs: &[Value]) -> Value {
+    let sess = crate::codex::session_from_recs(file, recs);
+    let m = sess.get("meta").cloned().unwrap_or_else(|| json!({}));
+    let messages: Vec<Value> = sess
+        .get("messages")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .map(|msg| {
+                    let mut out = json!({
+                        "role": msg.get("role").cloned().unwrap_or(Value::Null),
+                        "content": cap_content(msg.get("content").unwrap_or(&Value::Null)),
+                        "ts": msg.get("ts").cloned().unwrap_or(Value::Null),
+                        "meta": false,
+                    });
+                    let o = out.as_object_mut().unwrap();
+                    if let Some(md) = msg.get("modelActual") {
+                        o.insert("model".into(), md.clone());
+                    }
+                    if let Some(u) = msg.get("usage") {
+                        o.insert(
+                            "usage".into(),
+                            json!({
+                                "in": u.get("inputTokens").and_then(|v| v.as_i64()).unwrap_or(0),
+                                "out": u.get("outputTokens").and_then(|v| v.as_i64()).unwrap_or(0),
+                                "cacheRead": u.get("cacheRead").and_then(|v| v.as_i64()).unwrap_or(0),
+                                "cacheCreation": u.get("cacheCreation").and_then(|v| v.as_i64()).unwrap_or(0),
+                            }),
+                        );
+                    }
+                    out
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let t = m.get("totals").cloned().unwrap_or_else(|| json!({}));
+    let title = m.get("title").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    json!({
+        "meta": {
+            "title": if title.is_empty() { "(conversation)".to_string() } else { title },
+            "assistant": "Codex",
+            "model": m.get("model").cloned().unwrap_or(Value::Null),
+            "project": m.get("project").cloned().unwrap_or(Value::Null),
+            "cwd": m.get("cwd").cloned().unwrap_or(Value::Null),
+            "branch": m.get("gitBranch").cloned().unwrap_or(Value::Null),
+            "sessionId": m.get("sessionId").cloned().unwrap_or(Value::Null),
+            "version": m.get("version").cloned().unwrap_or(Value::Null),
+            "count": messages.len(),
+            "turns": t.get("turns").cloned().unwrap_or(json!(0)),
+            "inTok": t.get("in").cloned().unwrap_or(json!(0)),
+            "outTok": t.get("out").cloned().unwrap_or(json!(0)),
+            "cacheTok": t.get("cacheRead").cloned().unwrap_or(json!(0)),
+            "subagentCount": 0,
+            "firstTs": m.get("firstTs").cloned().unwrap_or(Value::Null),
+            "lastTs": m.get("lastTs").cloned().unwrap_or(Value::Null),
+        },
+        "messages": messages,
+        "subagents": {},
+    })
+}
+
 pub fn build_data(file: &str) -> Value {
     let path = Path::new(file);
     let recs = parse_jsonl(path);
+    if crate::codex::looks_codex(&recs) {
+        return build_codex_data(file, &recs);
+    }
     let meta_rec = recs.iter().find(|r| r.get("cwd").is_some()).or_else(|| recs.iter().find(|r| r.get("sessionId").is_some()));
     let s = shape_session(&recs);
     let cwd = meta_rec.and_then(|r| r.get("cwd")).and_then(|v| v.as_str());
@@ -321,17 +392,26 @@ pub fn html_from_data(data: &Value) -> String {
         .and_then(|v| v.as_str())
         .unwrap_or("Conversation")
         .replace(['<', '>'], "");
+    // The exported viewer is a static file opened in a plain browser (no app CSP). A nonce-based
+    // CSP lets ONLY these four generator-emitted <script> blocks run: an injected inline handler
+    // (e.g. an <img onerror> from a crafted image data-URL) or a `javascript:` link in a message
+    // carries no nonce, so the browser refuses to execute it. img-src data: keeps inline images;
+    // style-src 'unsafe-inline' keeps the embedded skin. Nonce is static (a local file has no
+    // replay threat model — it only separates our scripts from attacker-injected markup).
+    let csp = "default-src 'none'; script-src 'nonce-ccbudexport'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'";
     format!(
         "<!doctype html><html lang=\"zh\" data-theme=\"light\"><head><meta charset=\"utf-8\">\
+<meta http-equiv=\"Content-Security-Policy\" content=\"{csp}\">\
 <meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\
 <title>{title} · ccbud</title>\
 <style>{skin}\n{hljscss}</style>\
 </head><body><div id=\"app\"></div>\
-<script>{marked}</script>\
-<script>{hljs}</script>\
-<script>window.__CONV__={json};</script>\
-<script>{runtime}</script>\
+<script nonce=\"ccbudexport\">{marked}</script>\
+<script nonce=\"ccbudexport\">{hljs}</script>\
+<script nonce=\"ccbudexport\">window.__CONV__={json};</script>\
+<script nonce=\"ccbudexport\">{runtime}</script>\
 </body></html>",
+        csp = csp,
         title = title,
         skin = SKIN,
         hljscss = HLJS_CSS,
@@ -348,12 +428,11 @@ pub fn build_export_html(file: &str) -> String {
 
 // ---- export filename ----
 // Default export base name: `<project>-<convStart>-<exportedAt>`, both timestamps as YYMMDDHHmm
-// (local time). Port of the Electron `exportBaseName`: earlier the JSONL kept the on-disk basename
-// (a UUID) and the HTML used the first user message — both collided when exporting many
-// conversations from the same project.
+// (local time). Earlier exports used collision-prone names (UUID-only JSONL or first-message HTML);
+// this keeps bulk exports stable and sortable.
 
 // path/url-hostile chars + whitespace runs collapse to a single `_`; leading/trailing `_ . -` are
-// trimmed; result capped at 60 chars. Mirrors the JS sanitize() in src/main/main.js.
+// trimmed; result capped at 60 chars.
 fn sanitize_name(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut prev_underscore = false;

@@ -1,7 +1,7 @@
 [package]
 name = "app"
-version = "1.1.6"
-description = "ccbud — Claude Code Gateway"
+version = "1.2.0"
+description = "ccbud — Coding CLI Buddy"
 authors = ["loadchange <soocto@gmail.com>"]
 license = "GPL-3.0-only"
 repository = "https://github.com/ccbud/ccbud"
@@ -23,7 +23,7 @@ serde = { version = "1.0", features = ["derive"] }
 log = "0.4"
 tauri = { version = "2.11.3", features = ["tray-icon", "image-png"] }
 tauri-plugin-log = "2"
-# Gateway core (proxy.js → Rust): localhost HTTP server + upstream client + streaming.
+# Gateway core: localhost HTTP server + upstream client + streaming.
 axum = "0.8"
 reqwest = { version = "0.12", features = ["stream", "gzip", "brotli", "deflate", "json"] }
 tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "macros", "io-util", "time"] }
@@ -43,6 +43,14 @@ notify-debouncer-mini = "0.4"
 # Conversation-bundle ZIP (export/import subagents together). Pure-Rust miniz_oxide backend — no
 # system zlib, so it cross-compiles cleanly for every release target.
 flate2 = "1"
+# Protocol translation (chat / responses / messages互转). Reused as the IR + OpenAI/Responses
+# codec engine; we add only the Anthropic server-side halves (request-decode / response-encode).
+# default-features off to avoid pulling a second reqwest/tls stack (we use our own client); keep
+# `streaming` for the SSE stream parsers.
+llm-connector = { version = "1.4", default-features = false, features = ["streaming"] }
+# Edit Codex's ~/.codex/config.toml in place while preserving the user's formatting + comments
+# (connect/disconnect injects a [model_providers.ccbud] block).
+toml_edit = "0.22"
 
 # macOS-only: set NSWindow collectionBehavior so the popover floats over fullscreen apps.
 [target.'cfg(target_os = "macos")'.dependencies]

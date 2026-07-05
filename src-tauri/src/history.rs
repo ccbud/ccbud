@@ -1,9 +1,8 @@
-// Conversation history — Rust port of history.js (browse path).
+// Conversation history.
 //
-// Reads Claude Code's on-disk sessions across the configured dirs (each a
-// `<dir>/projects/<enc-cwd>/<uuid>.jsonl` tree). Implements the BROWSE path the renderer needs:
-// list_sessions / list_projects / dir_stats / get_session, plus __ccbud__ custom title+tags.
-// TODO (follow-up): subagents nesting, fs.watch live tail, imported-snapshot dir, set_meta writer.
+// Reads Claude Code and Codex on-disk sessions across configured dirs, imported snapshots, and
+// the app-managed recycle bin. Shapes list/detail payloads for the renderer, including subagents,
+// custom title/tags/delete metadata, bundle import/export helpers, and live-watch roots.
 
 #![allow(dead_code)]
 
@@ -42,7 +41,7 @@ fn config_dirs(config: &Value) -> Vec<(String, String, PathBuf)> {
     out
 }
 
-fn base_name(p: &str) -> String {
+pub(crate) fn base_name(p: &str) -> String {
     p.split('/').filter(|s| !s.is_empty()).last().unwrap_or(p).to_string()
 }
 
@@ -55,7 +54,7 @@ fn decode_dir_name(name: &str) -> Option<String> {
     Some(format!("/{}", trimmed.replace('-', "/")))
 }
 
-fn parse_lines(text: &str) -> Vec<Value> {
+pub(crate) fn parse_lines(text: &str) -> Vec<Value> {
     let mut out = vec![];
     for line in text.split('\n') {
         let s = line.trim();
@@ -123,7 +122,7 @@ fn command_label(raw: &str) -> String {
 }
 
 /// First human prose turn (skips slash-command XML / meta / interrupt notices), capped at 90 chars.
-fn first_user_text(messages: &[Value]) -> String {
+pub(crate) fn first_user_text(messages: &[Value]) -> String {
     let mut fallback_cmd = String::new();
     for m in messages {
         if m.get("role").and_then(|r| r.as_str()) != Some("user") {
@@ -154,7 +153,7 @@ fn first_user_text(messages: &[Value]) -> String {
 }
 
 /// __ccbud__ customization (custom title + tags + soft-delete flag) from any record carrying it.
-fn read_ccbud(recs: &[Value]) -> (Option<String>, Vec<String>, bool) {
+pub(crate) fn read_ccbud(recs: &[Value]) -> (Option<String>, Vec<String>, bool) {
     let c = recs.iter().find_map(|r| r.get("__ccbud__"));
     let title = c
         .and_then(|c| c.get("title"))
@@ -176,32 +175,55 @@ fn read_ccbud(recs: &[Value]) -> (Option<String>, Vec<String>, bool) {
     (title, tags, deleted)
 }
 
-/// Process-lifetime memo of soft-delete status, keyed `path -> (mtime, deleted)`. mtime is the
-/// invalidation signal: set_ccbud rewrites the file (bumping mtime) whenever the flag flips, so a
-/// matching mtime means the cached answer is still valid. This lets dir_stats *stat* unchanged
-/// sessions on each refresh instead of re-reading them — only new/changed files get parsed.
-fn deleted_cache() -> &'static std::sync::Mutex<std::collections::HashMap<PathBuf, (f64, bool)>> {
-    static CACHE: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<PathBuf, (f64, bool)>>> =
+/// Cached soft-delete verdict for one file: a Claude session's flag (rides its first line, so it's
+/// final for a given mtime), or "this is a Codex rollout" (whose flag lives in the sidecar and can
+/// flip WITHOUT touching the file — so only the format verdict is cached, never the flag).
+#[derive(Clone, Copy)]
+enum DelKind {
+    Claude(bool),
+    Codex,
+}
+
+/// Process-lifetime memo of soft-delete status, keyed `path -> (mtime, kind)`. mtime is the
+/// invalidation signal: set_ccbud rewrites a Claude file (bumping mtime) whenever the flag flips,
+/// so a matching mtime means the cached answer is still valid. This lets dir_stats *stat*
+/// unchanged sessions on each refresh instead of re-reading them.
+fn deleted_cache() -> &'static std::sync::Mutex<std::collections::HashMap<PathBuf, (f64, DelKind)>> {
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<PathBuf, (f64, DelKind)>>> =
         std::sync::OnceLock::new();
     CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
 }
 
-/// Cheap soft-delete probe for counting, memoized by mtime. The `__ccbud__.delete` flag rides on the
-/// first parseable line, so a small head read suffices (the full meta read happens later in session_meta).
+/// Cheap soft-delete probe for counting, memoized by mtime. A Claude session's `__ccbud__.delete`
+/// rides on the first parseable line, so a small head read suffices; a Codex rollout's flag is
+/// re-read from the sidecar every time (itself mtime-cached and cheap).
 fn is_session_deleted(file: &Path) -> bool {
     let mt = mtime_ms(file);
-    if let Ok(cache) = deleted_cache().lock() {
-        if let Some(&(cmt, del)) = cache.get(file) {
-            if cmt == mt {
-                return del;
-            }
+    let cached: Option<DelKind> = deleted_cache()
+        .lock()
+        .ok()
+        .and_then(|c| c.get(file).filter(|(cmt, _)| *cmt == mt).map(|(_, k)| *k));
+    let kind = cached.unwrap_or_else(|| {
+        // Read the same window session_meta uses: a Codex rollout's first (session_meta) line
+        // embeds the full system prompt (~22 KB), so a smaller head truncates it, parse yields
+        // nothing, and the session mis-sniffs as Claude — desyncing dir vs trash counts.
+        let recs = parse_lines(&read_head(file, 131072));
+        // Imported codex COPIES carry the flag in-file like Claude sessions (see set_ccbud) —
+        // only live rollouts (no .import.json) use the sidecar.
+        let kind = if crate::codex::looks_codex(&recs) && read_import_meta(&file.to_string_lossy()).is_none() {
+            DelKind::Codex
+        } else {
+            DelKind::Claude(read_ccbud(&recs).2)
+        };
+        if let Ok(mut cache) = deleted_cache().lock() {
+            cache.insert(file.to_path_buf(), (mt, kind));
         }
+        kind
+    });
+    match kind {
+        DelKind::Claude(del) => del,
+        DelKind::Codex => crate::codex::is_deleted(file),
     }
-    let del = read_ccbud(&parse_lines(&read_head(file, 16384))).2;
-    if let Ok(mut cache) = deleted_cache().lock() {
-        cache.insert(file.to_path_buf(), (mt, del));
-    }
-    del
 }
 
 fn line_to_message(rec: &Value) -> Option<Value> {
@@ -302,6 +324,19 @@ fn mtime_ms(file: &Path) -> f64 {
         .unwrap_or(0.0)
 }
 
+/// File creation (birth) time in ms. Stable across in-place rewrites (a `__ccbud__` tag/title edit
+/// bumps mtime but not this), so the list order doesn't shuffle when you tag a conversation. Falls
+/// back to mtime on filesystems that don't record a birth time.
+pub(crate) fn created_ms(file: &Path) -> f64 {
+    fs::metadata(file)
+        .and_then(|m| m.created())
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as f64)
+        .filter(|v| *v > 0.0)
+        .unwrap_or_else(|| mtime_ms(file))
+}
+
 fn imports_root() -> PathBuf {
     crate::store::ccbud_home().join("imports")
 }
@@ -311,34 +346,51 @@ fn all_dirs(config: &Value) -> Vec<(String, String, PathBuf)> {
     dirs.push(("__imported__".to_string(), "导入".to_string(), imports_root().join("projects")));
     dirs
 }
-/// Projects dirs to watch for live history changes.
+/// A dir entry's Codex data tree: sibling `sessions/` next to its `projects/` — every work dir
+/// is probed for BOTH layouts (Claude Code writes `<dir>/projects/…`, Codex `<dir>/sessions/…`),
+/// so `~/.codex` is just another configured dir rather than a special case.
+fn sessions_dir(projects_dir: &Path) -> Option<PathBuf> {
+    projects_dir.parent().map(|b| b.join("sessions"))
+}
+
+/// Dirs to watch for live history changes — each work dir's projects/ AND sessions/ tree.
 pub fn watch_roots(config: &Value) -> Vec<PathBuf> {
-    all_dirs(config).into_iter().map(|(_, _, r)| r).collect()
+    let mut roots: Vec<PathBuf> = vec![];
+    for (_, _, pd) in all_dirs(config) {
+        if let Some(sd) = sessions_dir(&pd) {
+            roots.push(sd);
+        }
+        roots.push(pd);
+    }
+    roots
 }
 
 /// Walk every session .jsonl across the configured dirs (+ imports), invoking
-/// `cb(file, dir_name, dir_id, dir_label)`.
+/// `cb(file, dir_name, dir_id, dir_label)` — both the Claude projects/ tree and the
+/// Codex sessions/ tree of each dir.
 fn each_session_file<F: FnMut(PathBuf, String, &str, &str)>(config: &Value, mut cb: F) {
     for (id, label, root) in all_dirs(config) {
-        let entries = match fs::read_dir(&root) {
-            Ok(e) => e,
-            Err(_) => continue,
-        };
-        for ent in entries.flatten() {
-            if !ent.path().is_dir() {
-                continue;
-            }
-            let dir_name = ent.file_name().to_string_lossy().into_owned();
-            let pfiles = match fs::read_dir(ent.path()) {
-                Ok(f) => f,
-                Err(_) => continue,
-            };
-            for f in pfiles.flatten() {
-                let p = f.path();
-                if p.is_file() && p.extension().and_then(|e| e.to_str()) == Some("jsonl") {
-                    cb(p, dir_name.clone(), &id, &label);
+        if let Ok(entries) = fs::read_dir(&root) {
+            for ent in entries.flatten() {
+                if !ent.path().is_dir() {
+                    continue;
+                }
+                let dir_name = ent.file_name().to_string_lossy().into_owned();
+                let pfiles = match fs::read_dir(ent.path()) {
+                    Ok(f) => f,
+                    Err(_) => continue,
+                };
+                for f in pfiles.flatten() {
+                    let p = f.path();
+                    if p.is_file() && p.extension().and_then(|e| e.to_str()) == Some("jsonl") {
+                        cb(p, dir_name.clone(), &id, &label);
+                    }
                 }
             }
+        }
+        // Codex rollouts live in a date-sharded sessions/ tree, so it gets its own walk.
+        if let Some(sd) = sessions_dir(&root) {
+            crate::codex::walk_sessions(&sd, |p| cb(p, String::new(), &id, &label));
         }
     }
 }
@@ -348,6 +400,11 @@ fn session_meta(file: &Path, dir_name: &str, dir_id: &str, dir_label: &str) -> O
     let size = meta.len();
     let head = read_head(file, 131072);
     let recs = parse_lines(&head);
+    // Codex rollouts (a dir's sessions/ tree, or snapshots imported into the app store) list
+    // through the codex shaper — the record format shares nothing with Claude's.
+    if crate::codex::looks_codex(&recs) {
+        return crate::codex::session_meta_from(file, &recs, dir_id, dir_label);
+    }
     let meta_rec = recs
         .iter()
         .find(|r| r.get("cwd").is_some())
@@ -389,6 +446,7 @@ fn session_meta(file: &Path, dir_name: &str, dir_id: &str, dir_label: &str) -> O
         "isSubagent": subagent,
         "imported": dir_id == "__imported__",
         "deleted": cc_deleted,
+        "createdAt": created_ms(file),
         "lastActivity": mt,
         "sizeKB": (size as f64 / 1024.0).round() as i64,
     }))
@@ -403,8 +461,10 @@ pub fn list_sessions(config: &Value, active: &str, limit: usize) -> Vec<Value> {
         if !trash && active != "all" && id != active {
             return;
         }
-        let mt = mtime_ms(&file);
-        files.push((file, dir_name, id.to_string(), label.to_string(), mt));
+        // Sort by creation time (stable): tagging/renaming rewrites the file and bumps mtime, which
+        // would otherwise reshuffle the list on every edit.
+        let ct = created_ms(&file);
+        files.push((file, dir_name, id.to_string(), label.to_string(), ct));
     });
     files.sort_by(|a, b| b.4.partial_cmp(&a.4).unwrap_or(std::cmp::Ordering::Equal));
     // Walk newest-first, reading until `limit` rows land on the right side of the deleted/active
@@ -430,28 +490,28 @@ pub fn list_projects(config: &Value, active: &str) -> Vec<Value> {
     for s in sessions {
         let cwd = s.get("cwd").and_then(|v| v.as_str()).unwrap_or("(unknown)").to_string();
         let la = s.get("lastActivity").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        let ct = s.get("createdAt").and_then(|v| v.as_f64()).unwrap_or(la);
         let g = groups.entry(cwd.clone()).or_insert_with(|| {
             order.push(cwd.clone());
-            json!({ "cwd": s.get("cwd").cloned().unwrap_or(Value::Null), "name": s.get("project").cloned().unwrap_or(Value::Null), "sessions": [], "lastActivity": 0.0 })
+            json!({ "cwd": s.get("cwd").cloned().unwrap_or(Value::Null), "name": s.get("project").cloned().unwrap_or(Value::Null), "sessions": [], "lastActivity": 0.0, "createdAt": 0.0 })
         });
         g["sessions"].as_array_mut().unwrap().push(s.clone());
         if la > g["lastActivity"].as_f64().unwrap_or(0.0) {
             g["lastActivity"] = json!(la);
         }
+        if ct > g["createdAt"].as_f64().unwrap_or(0.0) {
+            g["createdAt"] = json!(ct);
+        }
     }
+    // Sort sessions + groups by creation time (stable across tag/title edits), newest first.
+    let sort_key = |v: &Value| v.get("createdAt").and_then(|x| x.as_f64()).unwrap_or(0.0);
     let mut arr: Vec<Value> = order.into_iter().filter_map(|k| groups.remove(&k)).collect();
     for g in &mut arr {
         g["sessions"].as_array_mut().unwrap().sort_by(|a, b| {
-            b.get("lastActivity").and_then(|v| v.as_f64()).unwrap_or(0.0)
-                .partial_cmp(&a.get("lastActivity").and_then(|v| v.as_f64()).unwrap_or(0.0))
-                .unwrap_or(std::cmp::Ordering::Equal)
+            sort_key(b).partial_cmp(&sort_key(a)).unwrap_or(std::cmp::Ordering::Equal)
         });
     }
-    arr.sort_by(|a, b| {
-        b.get("lastActivity").and_then(|v| v.as_f64()).unwrap_or(0.0)
-            .partial_cmp(&a.get("lastActivity").and_then(|v| v.as_f64()).unwrap_or(0.0))
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
+    arr.sort_by(|a, b| sort_key(b).partial_cmp(&sort_key(a)).unwrap_or(std::cmp::Ordering::Equal));
     arr
 }
 
@@ -470,7 +530,8 @@ pub fn dir_stats(config: &Value) -> Vec<Value> {
     let mut out: Vec<Value> = all_dirs(config)
         .into_iter()
         .map(|(id, label, pd)| {
-            let exists = pd.is_dir();
+            // A dir "exists" when EITHER data tree is on disk — ~/.codex has only sessions/.
+            let exists = pd.is_dir() || sessions_dir(&pd).map(|s| s.is_dir()).unwrap_or(false);
             let imported = id == "__imported__";
             json!({
                 "id": id.clone(), "label": label, "projectsDir": pd.to_string_lossy(),
@@ -627,7 +688,7 @@ pub fn subagent_transcript_paths(file: &str) -> Vec<String> {
 }
 
 /// Read the import provenance sidecar (`<stem>.import.json`) for an imported transcript.
-fn read_import_meta(file: &str) -> Option<Value> {
+pub(crate) fn read_import_meta(file: &str) -> Option<Value> {
     let p = Path::new(file);
     let stem = p.file_stem().and_then(|s| s.to_str())?;
     let dir = p.parent()?;
@@ -642,6 +703,9 @@ pub fn get_session(file: &str) -> Value {
         Err(_) => return Value::Null,
     };
     let recs = parse_lines(&raw);
+    if crate::codex::looks_codex(&recs) {
+        return crate::codex::session_from_recs(file, &recs);
+    }
     let meta_rec = recs
         .iter()
         .find(|r| r.get("cwd").is_some())
@@ -711,14 +775,20 @@ pub fn get_session(file: &str) -> Value {
 /// too — mirrors history.js setCcbud, whose getDirs() includes the imported dir).
 pub fn set_ccbud(file: &str, patch: &Value, config: &Value) -> Value {
     let target = Path::new(file);
-    let within = all_dirs(config).iter().any(|(_, _, pd)| target.starts_with(pd));
-    if !within {
+    if !within_scope(target, config) {
         return json!({ "ok": false, "reason": "out-of-scope" });
     }
     let raw = match fs::read_to_string(file) {
         Ok(s) => s,
         Err(_) => return json!({ "ok": false, "reason": "read" }),
     };
+    // Live Codex rollouts are another tool's files — their title/tags/delete flag live in the
+    // app-owned sidecar instead of being written into the rollout. Imported codex COPIES sit
+    // inside our store (marked by .import.json) and take the normal in-file path below.
+    let head: Vec<Value> = raw.lines().take(8).filter_map(|l| serde_json::from_str(l.trim()).ok()).collect();
+    if crate::codex::looks_codex(&head) && read_import_meta(file).is_none() {
+        return crate::codex::set_meta(file, patch);
+    }
     let mut lines: Vec<String> = raw.split('\n').map(|s| s.to_string()).collect();
     let mut found: Option<(usize, Value)> = None;
     for (i, l) in lines.iter().enumerate() {
@@ -795,18 +865,34 @@ pub fn set_ccbud(file: &str, patch: &Value, config: &Value) -> Value {
 /// Permanently remove a session's .jsonl from disk (recycle-bin "delete forever"). Guarded to the
 /// configured dirs + the imports store exactly like set_ccbud, and also drops the session's
 /// `<stem>/` subagents tree and any import sidecar (mirrors remove_import's cleanup).
+/// Renderer-driven writes/deletes are confined to the configured work dirs' data trees
+/// (projects/ AND sessions/) plus the imports store.
+fn within_scope(target: &Path, config: &Value) -> bool {
+    all_dirs(config).iter().any(|(_, _, pd)| {
+        target.starts_with(pd) || sessions_dir(pd).map(|sd| target.starts_with(sd)).unwrap_or(false)
+    })
+}
+
 pub fn delete_session_file(file: &str, config: &Value) -> Value {
     let target = Path::new(file);
-    let within = all_dirs(config).iter().any(|(_, _, pd)| target.starts_with(pd));
-    if !within {
+    if !within_scope(target, config) {
         return json!({ "ok": false, "reason": "out-of-scope" });
     }
     if !target.is_file() {
         return json!({ "ok": false, "reason": "missing" });
     }
+    // A LIVE Codex rollout is another tool's file — the app only ever soft-deletes it via the
+    // sidecar and never rewrites it (see set_ccbud), so "delete forever" must not rm the source
+    // either. Imported codex COPIES (marked by an .import.json) are our own snapshots and stay
+    // hard-deletable, like Claude sessions the app manages in the configured dirs.
+    let head = parse_lines(&read_head(target, 131072));
+    if crate::codex::looks_codex(&head) && read_import_meta(file).is_none() {
+        return json!({ "ok": false, "reason": "foreign" });
+    }
     if fs::remove_file(target).is_err() {
         return json!({ "ok": false, "reason": "remove" });
     }
+    crate::codex::remove_meta(file); // drop any codex sidecar entry (no-op for Claude sessions)
     let dir = target.parent().unwrap_or(Path::new("."));
     let stem = target.file_stem().and_then(|s| s.to_str()).unwrap_or("");
     if !stem.is_empty() {
@@ -887,20 +973,31 @@ fn now_ms() -> i64 {
 /// 0 = failed/not-a-transcript. Shared by the plain-.jsonl and .zip-bundle import paths.
 fn write_imported(raw: &str, original_path: &str, original_name: &str, subagents: &[(String, Vec<u8>)]) -> i32 {
     let recs = parse_lines(raw);
+    let is_codex = crate::codex::looks_codex(&recs);
     let has_msg = recs.iter().any(|r| {
         let t = r.get("type").and_then(|v| v.as_str());
         (t == Some("user") || t == Some("assistant")) && r.get("message").is_some()
     });
-    if !has_msg {
+    if !has_msg && !is_codex {
         return 0;
     }
-    let meta_rec = recs.iter().find(|r| r.get("cwd").is_some()).or_else(|| recs.iter().find(|r| r.get("sessionId").is_some()));
-    let cwd = meta_rec.and_then(|r| r.get("cwd")).and_then(|v| v.as_str());
-    let base_id = meta_rec
-        .and_then(|r| r.get("sessionId"))
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| Path::new(original_name).file_stem().and_then(|s| s.to_str()).unwrap_or("import").to_string());
+    let name_stem = || Path::new(original_name).file_stem().and_then(|s| s.to_str()).unwrap_or("import").to_string();
+    // Codex rollouts keep cwd/session id inside the session_meta payload, not on the records.
+    let (cwd_owned, base_id) = if is_codex {
+        let (c, s) = crate::codex::head_ids(&recs);
+        (c, s.unwrap_or_else(name_stem))
+    } else {
+        let meta_rec = recs.iter().find(|r| r.get("cwd").is_some()).or_else(|| recs.iter().find(|r| r.get("sessionId").is_some()));
+        (
+            meta_rec.and_then(|r| r.get("cwd")).and_then(|v| v.as_str()).map(|s| s.to_string()),
+            meta_rec
+                .and_then(|r| r.get("sessionId"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+                .unwrap_or_else(name_stem),
+        )
+    };
+    let cwd = cwd_owned.as_deref();
     let dest_dir = imports_root().join("projects").join(encode_cwd(cwd));
     let dest_file = dest_dir.join(format!("{}.jsonl", base_id));
     if dest_file.exists() {
@@ -1059,6 +1156,44 @@ pub fn import_selftest(base_dir: &Path) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // A live Codex rollout (a work dir's sessions/ tree, no .import.json) must NEVER be hard-deleted
+    // by "delete forever" — it's another tool's file. delete_session_file must refuse and leave it on
+    // disk. A Claude session in the same dir's projects/ tree is still deletable.
+    #[test]
+    fn delete_forever_refuses_live_codex_rollout() {
+        let base = std::env::temp_dir().join("ccbud-codex-del-test");
+        let _ = fs::remove_dir_all(&base);
+        // codex rollout under <base>/sessions/…
+        let sdir = base.join("sessions").join("2026").join("07").join("04");
+        fs::create_dir_all(&sdir).unwrap();
+        let codex_file = sdir.join("rollout-x.jsonl");
+        fs::write(
+            &codex_file,
+            "{\"timestamp\":\"2026-07-04T00:00:00Z\",\"type\":\"session_meta\",\"payload\":{\"session_id\":\"x\",\"cwd\":\"/x\"}}\n\
+             {\"timestamp\":\"2026-07-04T00:00:01Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"hi\"}]}}\n",
+        )
+        .unwrap();
+        // claude session under <base>/projects/…
+        let pdir = base.join("projects").join("-x");
+        fs::create_dir_all(&pdir).unwrap();
+        let claude_file = pdir.join("s1.jsonl");
+        fs::write(&claude_file, "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"hi\"},\"cwd\":\"/x\",\"sessionId\":\"s1\"}\n").unwrap();
+
+        let config = json!({ "historyDirs": [ base.to_string_lossy() ] });
+
+        // live codex → refused, file survives
+        let r = delete_session_file(&codex_file.to_string_lossy(), &config);
+        assert_eq!(r.get("reason").and_then(|v| v.as_str()), Some("foreign"), "live codex must be refused");
+        assert!(codex_file.is_file(), "codex rollout must NOT be deleted");
+
+        // claude session → deleted
+        let r2 = delete_session_file(&claude_file.to_string_lossy(), &config);
+        assert_eq!(r2.get("ok").and_then(|v| v.as_bool()), Some(true));
+        assert!(!claude_file.is_file(), "claude session should be gone");
+
+        let _ = fs::remove_dir_all(&base);
+    }
 
     // Export a session-with-subagents and prove the .zip splits back into the main session + both
     // subagent sidecars (the shape import_zip then writes into the store). Avoids mutating CCBUD_HOME

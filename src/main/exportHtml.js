@@ -51,6 +51,7 @@ function capContent(content) {
       const input = Object.assign({}, b.input || {});
       if (typeof input.prompt === 'string') input.prompt = cap(input.prompt, CAP.prompt);
       if (typeof input.content === 'string') input.content = cap(input.content, CAP.content);
+      if (typeof input.patch === 'string') input.patch = cap(input.patch, CAP.content); // codex ApplyPatch envelopes can be huge
       return { type: 'tool_use', id: b.id, name: b.name, input };
     }
     if (b.type === 'tool_result') {
@@ -153,8 +154,54 @@ function readSubagents(file) {
   return byTool;
 }
 
+// Codex rollout → the same export data shape (messages re-capped + field names the viewer
+// runtime reads: model / usage{in,out,cacheRead}), with meta.assistant = "Codex" so the
+// exported page labels turns correctly.
+function buildCodexData(file, recs) {
+  const sess = require('./codex').sessionFromRecs(file, recs);
+  const m = sess.meta || {};
+  const messages = (sess.messages || []).map((msg) => {
+    const out = { role: msg.role, content: capContent(msg.content), ts: msg.ts || null, meta: false };
+    if (msg.modelActual) out.model = msg.modelActual;
+    if (msg.usage) {
+      out.usage = {
+        in: msg.usage.inputTokens || 0,
+        out: msg.usage.outputTokens || 0,
+        cacheRead: msg.usage.cacheRead || 0,
+        cacheCreation: msg.usage.cacheCreation || 0,
+      };
+    }
+    return out;
+  });
+  const t = m.totals || {};
+  return {
+    meta: {
+      title: m.title || '(conversation)',
+      assistant: 'Codex',
+      model: m.model || null,
+      project: m.project || null,
+      cwd: m.cwd || null,
+      branch: m.gitBranch || null,
+      sessionId: m.sessionId || null,
+      version: m.version || null,
+      count: messages.length,
+      turns: t.turns || 0,
+      inTok: t.in || 0,
+      outTok: t.out || 0,
+      cacheTok: t.cacheRead || 0,
+      subagentCount: 0,
+      firstTs: m.firstTs || null,
+      lastTs: m.lastTs || null,
+    },
+    messages,
+    subagents: {},
+  };
+}
+
 function buildData(file) {
   const recs = parseJsonl(file);
+  const codex = require('./codex');
+  if (codex.looksCodex(recs)) return buildCodexData(file, recs);
   const s = shapeSession(recs);
   const cwd = s.metaRec.cwd || null;
   const subagents = readSubagents(file);
@@ -194,15 +241,21 @@ function htmlFromData(data) {
   const hljsCss = readAsset(path.join('..', 'renderer', 'vendor', 'hljs-dark.css')); // code blocks are dark in both themes
   const json = JSON.stringify(data).replace(/</g, '\\u003c');
   const title = (data.meta.title || 'Conversation').replace(/[<>]/g, '');
+  // Nonce-based CSP so the standalone exported file (opened in a plain browser, no app CSP) runs
+  // ONLY these four generator scripts — an injected <img onerror> / javascript: link carries no
+  // nonce and can't execute. Mirrors exporthtml.rs. (Kept in sync for parity; the shipped export
+  // is the Rust path.)
+  const csp = "default-src 'none'; script-src 'nonce-ccbudexport'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'";
   return '<!doctype html><html lang="zh" data-theme="light"><head><meta charset="utf-8">'
+    + '<meta http-equiv="Content-Security-Policy" content="' + csp + '">'
     + '<meta name="viewport" content="width=device-width,initial-scale=1">'
     + '<title>' + title + ' · ccbud</title>'
     + '<style>' + skin + '\n' + hljsCss + '</style>'
     + '</head><body><div id="app"></div>'
-    + '<script>' + marked + '</script>'
-    + '<script>' + hljs + '</script>'
-    + '<script>window.__CONV__=' + json + ';</script>'
-    + '<script>' + runtime + '</script>'
+    + '<script nonce="ccbudexport">' + marked + '</script>'
+    + '<script nonce="ccbudexport">' + hljs + '</script>'
+    + '<script nonce="ccbudexport">window.__CONV__=' + json + ';</script>'
+    + '<script nonce="ccbudexport">' + runtime + '</script>'
     + '</body></html>';
 }
 

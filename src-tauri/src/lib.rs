@@ -1,21 +1,19 @@
 // ccbud Tauri backend.
 //
-// Every IPC command the renderer calls is registered here. config/provider commands are
-// now backed by real persistence (store.rs → ~/.ccbud/config.json); the rest are still
-// STUBS returning sensible empty shapes, filled in over later phases:
-//   Phase 2 — gateway (proxy.js → Rust)        Phase 4 — system (window/tray/dialogs/claude)
-//   Phase 3 — history/usage/export (in progress) Phase 5 — auto-update (tauri-plugin-updater)
-//
-// Stub params keep their real names (Tauri maps JS invoke args by name), so unused-var
-// warnings are suppressed crate-wide until the bodies are filled in.
+// Registers the IPC surface consumed by the shared renderer and wires the native runtime:
+// config persistence, localhost gateway, Claude integrations, history/usage/export, tray,
+// popover, updater, and self-check hooks.
 #![allow(unused_variables)]
 
 mod claude;
 mod claudedesktop;
+mod codex;
+mod codexconnect;
 mod counttokens;
 mod exporthtml;
 mod gateway;
 mod history;
+mod protocol;
 mod store;
 mod usage;
 mod ziputil;
@@ -58,6 +56,7 @@ async fn config_save(
         .map(|p| p as u16)
         .unwrap_or(prev_port);
     let was_connected = claude::is_connected(prev_port);
+    let codex_was_connected = codexconnect::is_connected(prev_port);
     let prev_dirs = prev.get("historyDirs").cloned();
 
     // If the gateway is running and the port changed, bind the NEW port BEFORE committing so a bad
@@ -80,10 +79,16 @@ async fn config_save(
     let mgr = app.autolaunch();
     let _ = if want { mgr.enable() } else { mgr.disable() };
 
-    // Keep Claude Code's settings.json in sync if connected (port/token may have changed).
-    if was_connected {
+    // Keep each connected CLI's config in sync if connected (port/token may have changed).
+    if was_connected || codex_was_connected {
         let port = saved.get("port").and_then(|v| v.as_u64()).unwrap_or(8788) as u16;
-        claude::connect(port, &claude::current_token(&saved));
+        let token = claude::current_token(&saved);
+        if was_connected {
+            claude::connect(port, &token);
+        }
+        if codex_was_connected {
+            codexconnect::connect(port, &token, &codex_model(&saved));
+        }
     }
 
     // History dirs changed → invalidate + re-warm the usage cache and notify the renderer.
@@ -165,25 +170,22 @@ fn provider_set_active(id: String) -> Value {
     store::write_config(cfg)
 }
 /// Build the upstream `/v1/messages` URL from a provider baseUrl.
-fn messages_url(base: &str) -> Option<String> {
-    let base = base.trim();
-    if !(base.starts_with("http://") || base.starts_with("https://")) {
-        return None;
-    }
-    Some(format!("{}/v1/messages", base.trim_end_matches('/')))
-}
-/// Live connection test (mirror of main.js testProvider): POST a tiny ping to the provider's
-/// /v1/messages and report ok / error / timeout. The renderer localizes the result message.
+/// Live connection test: POST a tiny ping to the provider, shaped for its declared wire protocol
+/// (Anthropic /v1/messages, OpenAI /chat/completions, or /responses), and report ok/error/timeout.
+/// The renderer localizes the result message.
 #[tauri::command]
 async fn provider_test(p: Value) -> Value {
     let base = p.get("baseUrl").and_then(|v| v.as_str()).unwrap_or("").trim();
     if base.is_empty() {
         return json!({ "ok": false, "reason": "baseUrlEmpty" });
     }
-    let url = match messages_url(base) {
-        Some(u) => u,
-        None => return json!({ "ok": false, "reason": "baseUrlInvalid" }),
-    };
+    if !(base.starts_with("http://") || base.starts_with("https://")) {
+        return json!({ "ok": false, "reason": "baseUrlInvalid" });
+    }
+    // Test against the provider's DECLARED protocol endpoint — an openai-chat provider must be
+    // pinged at /chat/completions with a Chat body, not the Anthropic /v1/messages default.
+    let wire = crate::protocol::Wire::from_provider(p.get("protocol").and_then(|v| v.as_str()));
+    let url = wire.upstream_url(base);
     let model = p
         .get("defaultModel")
         .and_then(|v| v.as_str())
@@ -203,11 +205,12 @@ async fn provider_test(p: Value) -> Value {
         .get("insecureSkipVerify")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
-    let body = json!({
-        "model": model,
-        "max_tokens": 16,
-        "messages": [{ "role": "user", "content": "ping" }],
-    });
+    // Protocol-shaped ping body.
+    let body = match wire {
+        crate::protocol::Wire::OpenAiResponses => json!({ "model": model, "max_output_tokens": 16, "input": "ping" }),
+        crate::protocol::Wire::OpenAiChat => json!({ "model": model, "max_tokens": 16, "messages": [{ "role": "user", "content": "ping" }] }),
+        crate::protocol::Wire::Anthropic => json!({ "model": model, "max_tokens": 16, "messages": [{ "role": "user", "content": "ping" }] }),
+    };
     let client = match reqwest::Client::builder()
         .danger_accept_invalid_certs(insecure)
         .timeout(std::time::Duration::from_secs(30))
@@ -218,26 +221,28 @@ async fn provider_test(p: Value) -> Value {
     };
     // Auth via Authorization: Bearer only. Sending both authorization and x-api-key trips
     // providers that reject having the two auth headers present at once.
-    let resp = client
+    let mut rb = client
         .post(&url)
         .header("content-type", "application/json")
-        .header("authorization", format!("Bearer {}", token))
-        .header("anthropic-version", "2023-06-01")
-        .json(&body)
-        .send()
-        .await;
+        .header("authorization", format!("Bearer {}", token));
+    if wire == crate::protocol::Wire::Anthropic {
+        rb = rb.header("anthropic-version", "2023-06-01");
+    }
+    let resp = rb.json(&body).send().await;
     match resp {
         Ok(r) => {
             let status = r.status().as_u16();
             let text = r.text().await.unwrap_or_default();
             let parsed: Option<Value> = serde_json::from_str(&text).ok();
             let http_ok = (200..300).contains(&status);
-            let is_message = parsed
-                .as_ref()
-                .and_then(|j| j.get("type"))
-                .and_then(|v| v.as_str())
-                == Some("message");
-            if http_ok && is_message {
+            // A well-shaped reply for the tested protocol: Anthropic `type:message`, Chat `choices`,
+            // Responses `output`/`id`.
+            let shape_ok = parsed.as_ref().map(|j| match wire {
+                crate::protocol::Wire::Anthropic => j.get("type").and_then(|v| v.as_str()) == Some("message"),
+                crate::protocol::Wire::OpenAiChat => j.get("choices").map(|c| c.is_array()).unwrap_or(false),
+                crate::protocol::Wire::OpenAiResponses => j.get("output").is_some() || j.get("id").is_some(),
+            }).unwrap_or(false);
+            if http_ok && shape_ok {
                 let m = parsed
                     .as_ref()
                     .and_then(|j| j.get("model"))
@@ -270,24 +275,86 @@ async fn provider_test(p: Value) -> Value {
     }
 }
 
-// ---- claude code / desktop integration (Phase 4) ----
+// ---- claude code / desktop integration ----
+/// The literal selected CLIs from config `connectTargets` (subset of {claude, codex}, deduped).
+/// Empty is a valid state ("nothing connected") — the hero Connect button substitutes a default.
+fn connect_targets(cfg: &Value) -> Vec<String> {
+    let mut out: Vec<String> = vec![];
+    if let Some(a) = cfg.get("connectTargets").and_then(|v| v.as_array()) {
+        for v in a {
+            if let Some(s) = v.as_str() {
+                if (s == "claude" || s == "codex") && !out.iter().any(|x| x == s) {
+                    out.push(s.to_string());
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The model Codex should request through the gateway — the active provider's default model (the
+/// gateway then routes/maps it), falling back to a generic name.
+fn codex_model(cfg: &Value) -> String {
+    let active = cfg.get("activeProviderId").and_then(|v| v.as_str());
+    cfg.get("providers")
+        .and_then(|v| v.as_array())
+        .and_then(|arr| arr.iter().find(|p| p.get("id").and_then(|v| v.as_str()) == active).or_else(|| arr.first()))
+        .and_then(|p| p.get("defaultModel").and_then(|v| v.as_str()))
+        .filter(|s| !s.is_empty())
+        .unwrap_or("gpt-5")
+        .to_string()
+}
+
+/// Make each CLI's actual connection match the selected `connectTargets`: connect the selected ones,
+/// disconnect the rest, and run the gateway iff at least one is selected. Idempotent.
+async fn apply_connections(
+    gw: &std::sync::Arc<gateway::GatewayState>,
+    cfg: &Value,
+) -> Result<(), String> {
+    let selected = connect_targets(cfg);
+    let claude_on = selected.iter().any(|t| t == "claude");
+    let codex_on = selected.iter().any(|t| t == "codex");
+    let port = cfg.get("port").and_then(|v| v.as_u64()).unwrap_or(8788) as u16;
+    if claude_on || codex_on {
+        gw.start(port).await.map_err(|e| format!("port {} failed: {}", port, e))?;
+        let token = claude::current_token(cfg);
+        if claude_on {
+            claude::connect(port, &token);
+        } else {
+            claude::disconnect();
+        }
+        if codex_on {
+            codexconnect::connect(port, &token, &codex_model(cfg));
+        } else {
+            codexconnect::disconnect();
+        }
+    } else {
+        claude::disconnect();
+        codexconnect::disconnect();
+        gw.stop().await;
+    }
+    Ok(())
+}
+
 #[tauri::command]
 async fn claude_connect(
     app: tauri::AppHandle,
     gw: tauri::State<'_, std::sync::Arc<gateway::GatewayState>>,
 ) -> Result<Value, String> {
-    let cfg = store::read_config();
+    let mut cfg = store::read_config();
     let n = cfg.get("providers").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0);
     if n == 0 {
-        // reason code → renderer i18n (parity with desktop_connect), not a hardcoded English string.
         return Ok(json!({ "ok": false, "reason": "noProvider" }));
     }
-    let port = cfg.get("port").and_then(|v| v.as_u64()).unwrap_or(8788) as u16;
-    if let Err(e) = gw.start(port).await {
-        // reason for i18n + message keeps the diagnostic detail for this rare path.
-        return Ok(json!({ "ok": false, "reason": "portFailed", "message": format!("port {} failed: {}", port, e) }));
+    // Hero "一键接入" with nothing selected connects Claude Code by default (and persists it, so the
+    // toggle reflects it).
+    if connect_targets(&cfg).is_empty() {
+        cfg["connectTargets"] = json!(["claude"]);
+        cfg = store::write_config(cfg);
     }
-    claude::connect(port, &claude::current_token(&cfg));
+    if let Err(e) = apply_connections(&gw, &cfg).await {
+        return Ok(json!({ "ok": false, "reason": "portFailed", "message": e }));
+    }
     let status = full_status(&gw).await;
     gw.emit("gateway:status", status);
     refresh_tray_menu(&app);
@@ -298,8 +365,39 @@ async fn claude_disconnect(
     app: tauri::AppHandle,
     gw: tauri::State<'_, std::sync::Arc<gateway::GatewayState>>,
 ) -> Result<Value, String> {
+    // Master off: restore BOTH CLIs' configs (idempotent) and stop the gateway.
     claude::disconnect();
+    codexconnect::disconnect();
     gw.stop().await;
+    let status = full_status(&gw).await;
+    gw.emit("gateway:status", status);
+    refresh_tray_menu(&app);
+    Ok(json!({ "ok": true }))
+}
+
+/// Live per-CLI switch: flip one target on/off, persist the selection, and immediately connect or
+/// disconnect that CLI (starting/stopping the gateway as the overall selection requires).
+#[tauri::command]
+async fn set_connect_target(
+    app: tauri::AppHandle,
+    gw: tauri::State<'_, std::sync::Arc<gateway::GatewayState>>,
+    target: String,
+    on: bool,
+) -> Result<Value, String> {
+    let mut cfg = store::read_config();
+    if on && cfg.get("providers").and_then(|v| v.as_array()).map(|a| a.is_empty()).unwrap_or(true) {
+        return Ok(json!({ "ok": false, "reason": "noProvider" }));
+    }
+    let mut targets = connect_targets(&cfg);
+    targets.retain(|t| t != &target);
+    if on && (target == "claude" || target == "codex") {
+        targets.push(target.clone());
+    }
+    cfg["connectTargets"] = json!(targets);
+    let saved = store::write_config(cfg);
+    if let Err(e) = apply_connections(&gw, &saved).await {
+        return Ok(json!({ "ok": false, "reason": "portFailed", "message": e }));
+    }
     let status = full_status(&gw).await;
     gw.emit("gateway:status", status);
     refresh_tray_menu(&app);
@@ -372,7 +470,7 @@ fn desktop_replay(file: String, prompt: Option<String>) -> Value {
     }
 }
 
-// ---- server / usage / monitor / logs (Phase 2/3) ----
+// ---- server / usage / monitor / logs ----
 async fn full_status(gw: &std::sync::Arc<gateway::GatewayState>) -> Value {
     let mut s = gw.status().await;
     let port = gw
@@ -380,7 +478,13 @@ async fn full_status(gw: &std::sync::Arc<gateway::GatewayState>) -> Value {
         .await
         .unwrap_or_else(|| store::read_config().get("port").and_then(|v| v.as_u64()).unwrap_or(8788) as u16);
     if let Some(o) = s.as_object_mut() {
-        o.insert("connected".into(), json!(claude::is_connected(port)));
+        let claude_on = claude::is_connected(port);
+        let codex_on = codexconnect::is_connected(port);
+        // `connected` = any CLI wired to the gateway (drives the tray "已接入" indicator).
+        o.insert("connected".into(), json!(claude_on || codex_on));
+        o.insert("connectedClaude".into(), json!(claude_on));
+        o.insert("connectedCodex".into(), json!(codex_on));
+        o.insert("codexAvailable".into(), json!(codexconnect::is_available()));
         o.insert(
             "lastStartError".into(),
             LAST_START_ERROR
@@ -587,7 +691,7 @@ fn logs_clear(gw: tauri::State<'_, std::sync::Arc<gateway::GatewayState>>) -> Va
     Value::Null
 }
 
-// ---- window / app lifecycle (Phase 4) ----
+// ---- window / app lifecycle ----
 /// macOS Dock icon follows the main window: Regular (Dock shown) while a window is open,
 /// Accessory (menu-bar only) when it's closed. The popover floats over fullscreen apps via its
 /// NSPanel regardless of this policy, so showing the Dock icon with the main window is safe.
@@ -630,7 +734,7 @@ fn window_view_min_width(app: tauri::AppHandle, w: i64) -> Value {
     Value::Null
 }
 
-// ---- conversation history (Phase 3) ----
+// ---- conversation history ----
 #[tauri::command]
 fn history_projects() -> Value {
     let cfg = store::read_config();
@@ -655,12 +759,23 @@ fn history_dirs() -> Value {
 }
 #[tauri::command]
 async fn history_pick_dir() -> Result<Value, String> {
-    let folder = rfd::AsyncFileDialog::new().set_title("选择 Claude 配置目录").pick_folder().await;
+    let folder = rfd::AsyncFileDialog::new().set_title("选择工作目录").pick_folder().await;
     match folder {
         // Return the picked path (home-collapsed to `~/…`) and let the renderer persist it
-        // via saveConfig — mirrors the Electron `history:pickDir` contract the UI expects.
+        // via saveConfig, matching the renderer contract.
         Some(f) => {
-            let path = store::collapse_home(&f.path().to_string_lossy());
+            let mut picked = f.path().to_path_buf();
+            // If the user drilled into a data subdir (projects/ = Claude, sessions/ = Codex),
+            // store its parent (the work dir) so both trees are probed correctly.
+            let name = picked.file_name().and_then(|n| n.to_str()).map(|s| s.to_string());
+            if matches!(name.as_deref(), Some("projects") | Some("sessions"))
+                && !picked.join(name.as_deref().unwrap()).is_dir()
+            {
+                if let Some(parent) = picked.parent() {
+                    picked = parent.to_path_buf();
+                }
+            }
+            let path = store::collapse_home(&picked.to_string_lossy());
             Ok(json!({ "ok": true, "path": path }))
         }
         None => Ok(json!({ "ok": false, "canceled": true })),
@@ -786,7 +901,7 @@ async fn history_export_html(payload: Value) -> Result<Value, String> {
     }
 }
 
-// ---- utilities (Phase 4) ----
+// ---- utilities ----
 #[tauri::command]
 fn util_copy(text: String) -> bool {
     match arboard::Clipboard::new() {
@@ -817,8 +932,8 @@ fn util_open_external(url: String) -> bool {
 }
 
 // Open a local file with the OS default handler. Used to pop the freshly-exported HTML viewer in
-// the user's browser so they don't have to hunt for it in the filesystem — parity with the
-// Electron `shell.openPath` (issue #7). Best-effort: a spawn failure must not fail the export.
+// the user's browser so they don't have to hunt for it in the filesystem. Best-effort: a spawn
+// failure must not fail the export.
 fn open_path_native(path: &std::path::Path) {
     #[cfg(target_os = "macos")]
     let _ = std::process::Command::new("open").arg(path).spawn();
@@ -828,7 +943,7 @@ fn open_path_native(path: &std::path::Path) {
     let _ = std::process::Command::new("xdg-open").arg(path).spawn();
 }
 
-// ---- in-app updates (Phase 5) ----
+// ---- in-app updates ----
 // In-app update state, mapped to the shape the renderer's about/update pane expects
 // (runningVersion / latestVersion / mode / pending). Tauri's updater is in-app full → mode "hot".
 static UPDATE_LATEST: std::sync::Mutex<Option<(String, Option<String>)>> =
@@ -1196,6 +1311,10 @@ pub fn run() {
                         .build(),
                 )?;
             }
+            // One-time migration: a detected Codex install (~/.codex/sessions) joins historyDirs
+            // as a regular work dir. Runs BEFORE the history watcher so its trees get watched.
+            store::ensure_codex_dir();
+
             // Start the localhost gateway on the configured port (proxy.js parity).
             let gw = gateway::GatewayState::new(app.handle().clone());
             app.manage(gw.clone());
@@ -1328,8 +1447,7 @@ pub fn run() {
                                     // Center under the tray icon, clamped to the monitor (rect +
                                     // scale are physical px, so retina is handled correctly).
                                     //
-                                    // Pick the monitor the TRAY icon sits on — mirrors Electron's
-                                    // getDisplayMatching(trayBounds). pop.current_monitor() is the
+                                    // Pick the monitor the TRAY icon sits on. pop.current_monitor() is the
                                     // monitor the (hidden) popover window last sat on, which on a
                                     // multi-display setup is often NOT the screen whose menu bar was
                                     // clicked; using it clamps the popover to the wrong monitor's
@@ -1534,7 +1652,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             config_get, config_save, provider_upsert, provider_delete, provider_set_active, provider_test,
-            claude_connect, claude_disconnect, desktop_status, desktop_connect, desktop_disconnect, desktop_replay,
+            claude_connect, claude_disconnect, set_connect_target, desktop_status, desktop_connect, desktop_disconnect, desktop_replay,
             server_status, usage_get, monitor_get, monitor_clear, logs_get, logs_clear,
             app_open_main, app_quit, window_settings_mode, window_view_min_width,
             history_projects, history_list, history_get, history_dirs, history_pick_dir, history_set_active,
