@@ -79,6 +79,13 @@
     return (n / 1e6).toFixed(1).replace(/\.0$/, '') + 'M';
   }
   function truncate(s, n) { s = String(s == null ? '' : s); return s.length > n ? s.slice(0, n) + L('conv.charsMore', { n: s.length - n }) : s; }
+  // Size shown in KB until it's large enough to read better as MB / GB.
+  function fmtSizeKB(kb) {
+    kb = kb || 0;
+    if (kb < 1024) return kb + ' KB';
+    if (kb < 1024 * 1024) return (kb / 1024).toFixed(1).replace(/\.0$/, '') + ' MB';
+    return (kb / 1024 / 1024).toFixed(2).replace(/\.0+$/, '') + ' GB';
+  }
   function md(text) { try { return window.marked ? window.marked.parse(String(text || '')) : esc(text); } catch (_) { return esc(text); } }
   function normContent(c) {
     if (typeof c === 'string') return c ? [{ type: 'text', text: c }] : [];
@@ -358,6 +365,16 @@
     }).join('');
   }
 
+  // Two timestamps: the session's start (createdAt, the sort key) and — only when it meaningfully
+  // differs — the last-updated time, so an edited/active session shows both without redundancy.
+  function metaTimes(c) {
+    const created = c.createdAt || c.lastActivity;
+    const start = `<span data-tip="${esc(L('conv.startedAt'))}">${esc(relTime(created))}</span>`;
+    const updated = (c.lastActivity && created && c.lastActivity - created > 60000)
+      ? `<span data-tip="${esc(L('conv.updatedAt'))}">${esc(L('conv.updatedPrefix'))} ${esc(relTime(c.lastActivity))}</span>`
+      : '';
+    return start + updated;
+  }
   function sessionItem(c) {
     const live = isLive(c.lastActivity) ? '<span class="conv-live w-1.25 h-1.25 rounded-full bg-green animate-[pulse_1.6s_infinite] shrink-0"></span>' : '';
     const sub = c.isSubagent ? `<span class="conv-badge text-[10.5px] px-1.5 py-0.25 rounded-full bg-chip-bg text-fg font-sans">${esc(L('conv.subagent'))}</span>` : '';
@@ -386,7 +403,7 @@
       <div class="conv-item-top flex items-center gap-1.25">${live}<span class="conv-title text-[13.5px] font-semibold truncate min-w-0" data-tip="${esc(tip)}">${esc(fullTitle)}</span>${rm}</div>
       <div class="conv-item-sub flex items-center gap-1.5 text-[11.5px] text-caption font-mono truncate">${model}${sub}${imp}</div>
       ${tagsRow}
-      <div class="conv-item-meta flex items-center gap-1.5 text-[11px] text-caption"><span>${esc(relTime(c.lastActivity))}</span>${c.sizeKB ? '<span>' + c.sizeKB + ' KB</span>' : ''}</div>
+      <div class="conv-item-meta flex items-center gap-1.5 text-[11px] text-caption">${metaTimes(c)}${c.sizeKB ? '<span>' + fmtSizeKB(c.sizeKB) + '</span>' : ''}</div>
     </div>`;
   }
 
@@ -905,7 +922,6 @@
     const t = m.totals || {};
     const rows = [
       [L('conv.stat.title'), m.title],
-      [L('conv.stat.tool'), m.assistant === 'Codex' ? 'Codex' : 'Claude Code'],
       [L('conv.stat.model'), m.model],
       ...(m.isSubagent ? [[L('conv.stat.type'), L('conv.subagentSession')]] : []),
       ...(m.imported ? [[L('conv.imported'), m.importedFrom || '✓']] : []),
@@ -917,6 +933,7 @@
       [L('conv.stat.input'), t.in != null ? fmtTok(t.in) : null],
       [L('conv.stat.output'), t.out != null ? fmtTok(t.out) : null],
       [L('conv.stat.cacheRead'), t.cacheRead ? fmtTok(t.cacheRead) : null],
+      [L('conv.stat.tool'), m.assistant === 'Codex' ? 'Codex' : 'Claude Code'],
       [L('conv.stat.version'), m.version],
     ].filter((r) => r[1] != null && r[1] !== '');
     $('convStats').innerHTML = rows.map((r) => `<div class="stat-row flex justify-between gap-2 text-xs py-1.25 border-b border-border-custom last:border-b-0"><span class="k text-caption">${esc(r[0])}</span><span class="v font-mono text-[11.5px] text-fg truncate max-w-[120px]" data-tip="${esc(r[1])}">${esc(r[1])}</span></div>`).join('');

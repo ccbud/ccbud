@@ -8,6 +8,7 @@
 mod claude;
 mod claudedesktop;
 mod codex;
+mod codexconnect;
 mod counttokens;
 mod exporthtml;
 mod gateway;
@@ -55,6 +56,7 @@ async fn config_save(
         .map(|p| p as u16)
         .unwrap_or(prev_port);
     let was_connected = claude::is_connected(prev_port);
+    let codex_was_connected = codexconnect::is_connected(prev_port);
     let prev_dirs = prev.get("historyDirs").cloned();
 
     // If the gateway is running and the port changed, bind the NEW port BEFORE committing so a bad
@@ -77,10 +79,16 @@ async fn config_save(
     let mgr = app.autolaunch();
     let _ = if want { mgr.enable() } else { mgr.disable() };
 
-    // Keep Claude Code's settings.json in sync if connected (port/token may have changed).
-    if was_connected {
+    // Keep each connected CLI's config in sync if connected (port/token may have changed).
+    if was_connected || codex_was_connected {
         let port = saved.get("port").and_then(|v| v.as_u64()).unwrap_or(8788) as u16;
-        claude::connect(port, &claude::current_token(&saved));
+        let token = claude::current_token(&saved);
+        if was_connected {
+            claude::connect(port, &token);
+        }
+        if codex_was_connected {
+            codexconnect::connect(port, &token, &codex_model(&saved));
+        }
     }
 
     // History dirs changed → invalidate + re-warm the usage cache and notify the renderer.
@@ -268,23 +276,85 @@ async fn provider_test(p: Value) -> Value {
 }
 
 // ---- claude code / desktop integration ----
+/// The literal selected CLIs from config `connectTargets` (subset of {claude, codex}, deduped).
+/// Empty is a valid state ("nothing connected") — the hero Connect button substitutes a default.
+fn connect_targets(cfg: &Value) -> Vec<String> {
+    let mut out: Vec<String> = vec![];
+    if let Some(a) = cfg.get("connectTargets").and_then(|v| v.as_array()) {
+        for v in a {
+            if let Some(s) = v.as_str() {
+                if (s == "claude" || s == "codex") && !out.iter().any(|x| x == s) {
+                    out.push(s.to_string());
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The model Codex should request through the gateway — the active provider's default model (the
+/// gateway then routes/maps it), falling back to a generic name.
+fn codex_model(cfg: &Value) -> String {
+    let active = cfg.get("activeProviderId").and_then(|v| v.as_str());
+    cfg.get("providers")
+        .and_then(|v| v.as_array())
+        .and_then(|arr| arr.iter().find(|p| p.get("id").and_then(|v| v.as_str()) == active).or_else(|| arr.first()))
+        .and_then(|p| p.get("defaultModel").and_then(|v| v.as_str()))
+        .filter(|s| !s.is_empty())
+        .unwrap_or("gpt-5")
+        .to_string()
+}
+
+/// Make each CLI's actual connection match the selected `connectTargets`: connect the selected ones,
+/// disconnect the rest, and run the gateway iff at least one is selected. Idempotent.
+async fn apply_connections(
+    gw: &std::sync::Arc<gateway::GatewayState>,
+    cfg: &Value,
+) -> Result<(), String> {
+    let selected = connect_targets(cfg);
+    let claude_on = selected.iter().any(|t| t == "claude");
+    let codex_on = selected.iter().any(|t| t == "codex");
+    let port = cfg.get("port").and_then(|v| v.as_u64()).unwrap_or(8788) as u16;
+    if claude_on || codex_on {
+        gw.start(port).await.map_err(|e| format!("port {} failed: {}", port, e))?;
+        let token = claude::current_token(cfg);
+        if claude_on {
+            claude::connect(port, &token);
+        } else {
+            claude::disconnect();
+        }
+        if codex_on {
+            codexconnect::connect(port, &token, &codex_model(cfg));
+        } else {
+            codexconnect::disconnect();
+        }
+    } else {
+        claude::disconnect();
+        codexconnect::disconnect();
+        gw.stop().await;
+    }
+    Ok(())
+}
+
 #[tauri::command]
 async fn claude_connect(
     app: tauri::AppHandle,
     gw: tauri::State<'_, std::sync::Arc<gateway::GatewayState>>,
 ) -> Result<Value, String> {
-    let cfg = store::read_config();
+    let mut cfg = store::read_config();
     let n = cfg.get("providers").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0);
     if n == 0 {
-        // reason code → renderer i18n (parity with desktop_connect), not a hardcoded English string.
         return Ok(json!({ "ok": false, "reason": "noProvider" }));
     }
-    let port = cfg.get("port").and_then(|v| v.as_u64()).unwrap_or(8788) as u16;
-    if let Err(e) = gw.start(port).await {
-        // reason for i18n + message keeps the diagnostic detail for this rare path.
-        return Ok(json!({ "ok": false, "reason": "portFailed", "message": format!("port {} failed: {}", port, e) }));
+    // Hero "一键接入" with nothing selected connects Claude Code by default (and persists it, so the
+    // toggle reflects it).
+    if connect_targets(&cfg).is_empty() {
+        cfg["connectTargets"] = json!(["claude"]);
+        cfg = store::write_config(cfg);
     }
-    claude::connect(port, &claude::current_token(&cfg));
+    if let Err(e) = apply_connections(&gw, &cfg).await {
+        return Ok(json!({ "ok": false, "reason": "portFailed", "message": e }));
+    }
     let status = full_status(&gw).await;
     gw.emit("gateway:status", status);
     refresh_tray_menu(&app);
@@ -295,8 +365,39 @@ async fn claude_disconnect(
     app: tauri::AppHandle,
     gw: tauri::State<'_, std::sync::Arc<gateway::GatewayState>>,
 ) -> Result<Value, String> {
+    // Master off: restore BOTH CLIs' configs (idempotent) and stop the gateway.
     claude::disconnect();
+    codexconnect::disconnect();
     gw.stop().await;
+    let status = full_status(&gw).await;
+    gw.emit("gateway:status", status);
+    refresh_tray_menu(&app);
+    Ok(json!({ "ok": true }))
+}
+
+/// Live per-CLI switch: flip one target on/off, persist the selection, and immediately connect or
+/// disconnect that CLI (starting/stopping the gateway as the overall selection requires).
+#[tauri::command]
+async fn set_connect_target(
+    app: tauri::AppHandle,
+    gw: tauri::State<'_, std::sync::Arc<gateway::GatewayState>>,
+    target: String,
+    on: bool,
+) -> Result<Value, String> {
+    let mut cfg = store::read_config();
+    if on && cfg.get("providers").and_then(|v| v.as_array()).map(|a| a.is_empty()).unwrap_or(true) {
+        return Ok(json!({ "ok": false, "reason": "noProvider" }));
+    }
+    let mut targets = connect_targets(&cfg);
+    targets.retain(|t| t != &target);
+    if on && (target == "claude" || target == "codex") {
+        targets.push(target.clone());
+    }
+    cfg["connectTargets"] = json!(targets);
+    let saved = store::write_config(cfg);
+    if let Err(e) = apply_connections(&gw, &saved).await {
+        return Ok(json!({ "ok": false, "reason": "portFailed", "message": e }));
+    }
     let status = full_status(&gw).await;
     gw.emit("gateway:status", status);
     refresh_tray_menu(&app);
@@ -377,7 +478,13 @@ async fn full_status(gw: &std::sync::Arc<gateway::GatewayState>) -> Value {
         .await
         .unwrap_or_else(|| store::read_config().get("port").and_then(|v| v.as_u64()).unwrap_or(8788) as u16);
     if let Some(o) = s.as_object_mut() {
-        o.insert("connected".into(), json!(claude::is_connected(port)));
+        let claude_on = claude::is_connected(port);
+        let codex_on = codexconnect::is_connected(port);
+        // `connected` = any CLI wired to the gateway (drives the tray "已接入" indicator).
+        o.insert("connected".into(), json!(claude_on || codex_on));
+        o.insert("connectedClaude".into(), json!(claude_on));
+        o.insert("connectedCodex".into(), json!(codex_on));
+        o.insert("codexAvailable".into(), json!(codexconnect::is_available()));
         o.insert(
             "lastStartError".into(),
             LAST_START_ERROR
@@ -1545,7 +1652,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             config_get, config_save, provider_upsert, provider_delete, provider_set_active, provider_test,
-            claude_connect, claude_disconnect, desktop_status, desktop_connect, desktop_disconnect, desktop_replay,
+            claude_connect, claude_disconnect, set_connect_target, desktop_status, desktop_connect, desktop_disconnect, desktop_replay,
             server_status, usage_get, monitor_get, monitor_clear, logs_get, logs_clear,
             app_open_main, app_quit, window_settings_mode, window_view_min_width,
             history_projects, history_list, history_get, history_dirs, history_pick_dir, history_set_active,

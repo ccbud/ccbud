@@ -48,6 +48,9 @@ flate2 = "1"
 # default-features off to avoid pulling a second reqwest/tls stack (we use our own client); keep
 # `streaming` for the SSE stream parsers.
 llm-connector = { version = "1.4", default-features = false, features = ["streaming"] }
+# Edit Codex's ~/.codex/config.toml in place while preserving the user's formatting + comments
+# (connect/disconnect injects a [model_providers.ccbud] block).
+toml_edit = "0.22"
 
 # macOS-only: set NSWindow collectionBehavior so the popover floats over fullscreen apps.
 [target.'cfg(target_os = "macos")'.dependencies]

@@ -324,6 +324,19 @@ fn mtime_ms(file: &Path) -> f64 {
         .unwrap_or(0.0)
 }
 
+/// File creation (birth) time in ms. Stable across in-place rewrites (a `__ccbud__` tag/title edit
+/// bumps mtime but not this), so the list order doesn't shuffle when you tag a conversation. Falls
+/// back to mtime on filesystems that don't record a birth time.
+pub(crate) fn created_ms(file: &Path) -> f64 {
+    fs::metadata(file)
+        .and_then(|m| m.created())
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as f64)
+        .filter(|v| *v > 0.0)
+        .unwrap_or_else(|| mtime_ms(file))
+}
+
 fn imports_root() -> PathBuf {
     crate::store::ccbud_home().join("imports")
 }
@@ -433,6 +446,7 @@ fn session_meta(file: &Path, dir_name: &str, dir_id: &str, dir_label: &str) -> O
         "isSubagent": subagent,
         "imported": dir_id == "__imported__",
         "deleted": cc_deleted,
+        "createdAt": created_ms(file),
         "lastActivity": mt,
         "sizeKB": (size as f64 / 1024.0).round() as i64,
     }))
@@ -447,8 +461,10 @@ pub fn list_sessions(config: &Value, active: &str, limit: usize) -> Vec<Value> {
         if !trash && active != "all" && id != active {
             return;
         }
-        let mt = mtime_ms(&file);
-        files.push((file, dir_name, id.to_string(), label.to_string(), mt));
+        // Sort by creation time (stable): tagging/renaming rewrites the file and bumps mtime, which
+        // would otherwise reshuffle the list on every edit.
+        let ct = created_ms(&file);
+        files.push((file, dir_name, id.to_string(), label.to_string(), ct));
     });
     files.sort_by(|a, b| b.4.partial_cmp(&a.4).unwrap_or(std::cmp::Ordering::Equal));
     // Walk newest-first, reading until `limit` rows land on the right side of the deleted/active
@@ -474,28 +490,28 @@ pub fn list_projects(config: &Value, active: &str) -> Vec<Value> {
     for s in sessions {
         let cwd = s.get("cwd").and_then(|v| v.as_str()).unwrap_or("(unknown)").to_string();
         let la = s.get("lastActivity").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        let ct = s.get("createdAt").and_then(|v| v.as_f64()).unwrap_or(la);
         let g = groups.entry(cwd.clone()).or_insert_with(|| {
             order.push(cwd.clone());
-            json!({ "cwd": s.get("cwd").cloned().unwrap_or(Value::Null), "name": s.get("project").cloned().unwrap_or(Value::Null), "sessions": [], "lastActivity": 0.0 })
+            json!({ "cwd": s.get("cwd").cloned().unwrap_or(Value::Null), "name": s.get("project").cloned().unwrap_or(Value::Null), "sessions": [], "lastActivity": 0.0, "createdAt": 0.0 })
         });
         g["sessions"].as_array_mut().unwrap().push(s.clone());
         if la > g["lastActivity"].as_f64().unwrap_or(0.0) {
             g["lastActivity"] = json!(la);
         }
+        if ct > g["createdAt"].as_f64().unwrap_or(0.0) {
+            g["createdAt"] = json!(ct);
+        }
     }
+    // Sort sessions + groups by creation time (stable across tag/title edits), newest first.
+    let sort_key = |v: &Value| v.get("createdAt").and_then(|x| x.as_f64()).unwrap_or(0.0);
     let mut arr: Vec<Value> = order.into_iter().filter_map(|k| groups.remove(&k)).collect();
     for g in &mut arr {
         g["sessions"].as_array_mut().unwrap().sort_by(|a, b| {
-            b.get("lastActivity").and_then(|v| v.as_f64()).unwrap_or(0.0)
-                .partial_cmp(&a.get("lastActivity").and_then(|v| v.as_f64()).unwrap_or(0.0))
-                .unwrap_or(std::cmp::Ordering::Equal)
+            sort_key(b).partial_cmp(&sort_key(a)).unwrap_or(std::cmp::Ordering::Equal)
         });
     }
-    arr.sort_by(|a, b| {
-        b.get("lastActivity").and_then(|v| v.as_f64()).unwrap_or(0.0)
-            .partial_cmp(&a.get("lastActivity").and_then(|v| v.as_f64()).unwrap_or(0.0))
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
+    arr.sort_by(|a, b| sort_key(b).partial_cmp(&sort_key(a)).unwrap_or(std::cmp::Ordering::Equal));
     arr
 }
 

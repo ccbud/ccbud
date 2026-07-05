@@ -34,6 +34,7 @@ pub fn default_config() -> Value {
         "language": null,
         "historyDirs": ["~/.claude"],
         "historyActive": "all",
+        "connectTargets": ["claude"],
         "retry429": { "enabled": true, "max": 3, "baseMs": 500 },
         "insecureSkipVerify": false,
         "autoUpdate": { "check": true, "autoDownload": true },
@@ -206,6 +207,22 @@ pub fn normalize(input: Value) -> Value {
         dirs.insert(0, "~/.claude".to_string());
     }
     obj.insert("historyDirs".into(), json!(dirs));
+
+    // connectTargets: which coding CLIs are wired to the gateway. Subset of {claude, codex}, deduped.
+    // Empty is a VALID state (everything disconnected) — don't snap it back to ["claude"], or the UI
+    // toggle for the last-remaining CLI could never turn off. default_config seeds ["claude"] for a
+    // fresh install; an explicit [] here is preserved.
+    let mut targets: Vec<String> = vec![];
+    if let Some(arr) = obj.get("connectTargets").and_then(|v| v.as_array()) {
+        for t in arr {
+            if let Some(s) = t.as_str() {
+                if (s == "claude" || s == "codex") && !targets.iter().any(|x| x == s) {
+                    targets.push(s.to_string());
+                }
+            }
+        }
+    }
+    obj.insert("connectTargets".into(), json!(targets));
 
     // historyActive: 'all' | '__imported__' | '__trash__' (recycle bin) | a configured dir, else 'all'.
     // '__codex__' is the retired synthetic Codex bucket — map it onto the real ~/.codex dir entry.

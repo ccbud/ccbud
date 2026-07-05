@@ -162,6 +162,19 @@
               <p class="caption warn text-[12px] text-caption [&.warn]:text-amber" data-i18n="settings.exportWarn">若曾在终端 export ANTHROPIC_BASE_URL，请删除以免覆盖。</p>
             </div>
             <div class="settings-card bg-bg-elev border border-border-custom rounded-xl shadow-card p-7 flex flex-col gap-6 transition-all duration-300">
+              <h3 class="settings-card-title text-[13px] font-semibold text-fg" data-i18n="settings.connectTargets">接入目标</h3>
+              <p class="caption text-[12px] text-caption" data-i18n="settings.connectTargetsDesc">选择「一键接入」要接管的编程 CLI；接入时自动写入各自的配置文件。</p>
+              <div class="flex items-center justify-between gap-3">
+                <div class="min-w-0 flex items-center gap-2"><div class="text-[12.5px] font-medium text-fg">Claude Code</div><span id="tgtClaudeChip" class="proto-badge proto-badge-direct"></span></div>
+                <label class="switch inline-flex items-center cursor-pointer no-drag shrink-0"><input id="fTargetClaude" type="checkbox" class="hidden peer" /><span class="track w-8 h-[17px] rounded-full bg-border-strong relative transition-colors duration-180 ease-[cubic-bezier(0.23,1,0.32,1)] shrink-0 peer-checked:bg-primary after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:w-[13px] after:h-[13px] after:rounded-full after:bg-white after:shadow-[0_1px_2px_rgba(0,0,0,0.18)] after:transition-transform after:duration-180 after:ease-[cubic-bezier(0.23,1,0.32,1)] peer-checked:after:translate-x-[15px]"></span></label>
+              </div>
+              <div class="flex items-center justify-between gap-3 pt-4 border-t border-border-custom" id="targetCodexRow">
+                <div class="min-w-0 flex items-center gap-2"><div class="text-[12.5px] font-medium text-fg">Codex</div><span id="tgtCodexChip" class="proto-badge proto-badge-direct"></span></div>
+                <label class="switch inline-flex items-center cursor-pointer no-drag shrink-0"><input id="fTargetCodex" type="checkbox" class="hidden peer" /><span class="track w-8 h-[17px] rounded-full bg-border-strong relative transition-colors duration-180 ease-[cubic-bezier(0.23,1,0.32,1)] shrink-0 peer-checked:bg-primary after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:w-[13px] after:h-[13px] after:rounded-full after:bg-white after:shadow-[0_1px_2px_rgba(0,0,0,0.18)] after:transition-transform after:duration-180 after:ease-[cubic-bezier(0.23,1,0.32,1)] peer-checked:after:translate-x-[15px]"></span></label>
+              </div>
+              <p class="caption text-[12px] text-caption" id="targetCodexNote" data-i18n="settings.codexUnavailable" style="display:none">未检测到 Codex（~/.codex）。安装 Codex CLI 后可在此接入。</p>
+            </div>
+            <div class="settings-card bg-bg-elev border border-border-custom rounded-xl shadow-card p-7 flex flex-col gap-6 transition-all duration-300">
               <h3 class="settings-card-title text-[13px] font-semibold text-fg" data-i18n="settings.advanced">高级</h3>
               <div class="flex items-center justify-between gap-3">
                 <div class="min-w-0"><div class="text-[12.5px] font-medium text-fg" data-i18n="settings.retry429">429 自动重试</div><div class="text-[11.5px] text-caption mt-0.5" data-i18n="settings.retry429Desc">供应商限流（429）时自动重试几次，再如实返回，减少偶发失败。</div></div>

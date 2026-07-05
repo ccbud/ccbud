@@ -41,6 +41,7 @@
 
     connect: () => inv('claude_connect'),
     disconnect: () => inv('claude_disconnect'),
+    setConnectTarget: (target, on) => inv('set_connect_target', { target, on }),
 
     desktopStatus: () => inv('desktop_status'),
     desktopConnect: () => inv('desktop_connect'),

@@ -764,6 +764,7 @@ pub fn session_meta_from(file: &Path, recs: &[Value], dir_id: &str, dir_label: &
         "isSubagent": false,
         "imported": dir_id == "__imported__",
         "deleted": cc_deleted,
+        "createdAt": crate::history::created_ms(file),
         "lastActivity": mt,
         "sizeKB": (meta.len() as f64 / 1024.0).round() as i64,
     }))

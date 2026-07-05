@@ -86,9 +86,10 @@ function renderProviderIcon(name, icon) {
     return emojiIcon(icon, name); // a chosen emoji
   }
   const n = (name || '').trim().toLowerCase();
-  const brand = { kimi: ['kimi', 'moonshot', '月之'], deepseek: ['deepseek'], zhipu: ['glm', '智谱', 'bigmodel'], xiaomi: ['mimo', '小米', 'xiaomi'], zenmux: ['zenmux'], minimax: ['minimax', 'mini max', '海螺'] };
+  const brand = { kimi: ['kimi', 'moonshot', '月之'], deepseek: ['deepseek'], zhipu: ['glm', '智谱', 'bigmodel'], xiaomi: ['mimo', '小米', 'xiaomi'], zenmux: ['zenmux'], minimax: ['minimax', 'mini max', '海螺'], nvidia: ['nvidia'] };
   for (const file in brand) {
-    if (brand[file].some((k) => n.includes(k))) return { style: 'background: transparent; box-shadow: none;', html: `<img src="assets/${file}.svg" class="prov-svg" alt="" style="width:100%;height:100%;display:block" />` };
+    // object-fit:contain keeps non-square logos from being stretched into the square icon slot.
+    if (brand[file].some((k) => n.includes(k))) return { style: 'background: transparent; box-shadow: none;', html: `<img src="assets/${file}.svg" class="prov-svg" alt="" style="width:100%;height:100%;display:block;object-fit:contain" />` };
   }
   if (n.includes('claude') || n.includes('anthropic')) {
     const h = hashHue(name || '?');
@@ -218,6 +219,41 @@ function renderStatus() {
   }
 }
 
+// Multi-select for which coding CLIs "一键接入" wires to the gateway. Each toggle reflects
+// config.connectTargets; each row's chip shows that CLI's live connected state. Codex is disabled
+// (with a note) until it's installed.
+function renderConnectTargets() {
+  // The switch reflects the ACTUAL connection (a live on/off), not just the saved selection.
+  const cc = $('fTargetClaude'), cx = $('fTargetCodex');
+  if (cc) cc.checked = !!status.connectedClaude;
+  if (cx) cx.checked = !!status.connectedCodex;
+  const codexOk = status.codexAvailable !== false;
+  const row = $('targetCodexRow'), note = $('targetCodexNote');
+  if (cx) cx.disabled = !codexOk;
+  if (row) row.style.opacity = codexOk ? '1' : '0.55';
+  if (note) note.style.display = codexOk ? 'none' : '';
+  const chip = (el, on) => { if (!el) return; el.className = 'proto-badge ' + (on ? 'proto-badge-xlate' : 'proto-badge-direct'); el.textContent = I18n.t(on ? 'settings.targetOn' : 'settings.targetOff'); };
+  chip($('tgtClaudeChip'), !!status.connectedClaude);
+  chip($('tgtCodexChip'), !!status.connectedCodex);
+}
+// Live per-CLI switch: flipping a target immediately connects/disconnects that CLI (and starts or
+// stops the gateway as needed), so unchecking Claude Code actually turns it off.
+async function toggleTarget(target, on) {
+  if (!api.setConnectTarget) return;
+  let res;
+  try { res = await api.setConnectTarget(target, on); } catch (_) { res = null; }
+  if (res && res.ok === false) {
+    // couldn't turn on (no provider / port) → revert the switch + surface the reason
+    const msg = res.reason === 'noProvider' ? I18n.t('settings.desktopNoProvider') : (res.message || I18n.t('err.opFailed'));
+    try { showHeroNote(msg, true); } catch (_) {}
+    const el = target === 'codex' ? $('fTargetCodex') : $('fTargetClaude');
+    if (el) el.checked = !on;
+    return;
+  }
+  config = await api.getConfig();
+  status = await api.serverStatus();
+  renderAll();
+}
 function renderConnect() {
   const port = (status.running && status.port) || config.port;
   $('endpoint').textContent = `http://localhost:${port}`;
@@ -236,6 +272,7 @@ function renderConnect() {
   $('tokenRow').classList.toggle('hidden', !config.requireToken);
   if ($('fRetry429')) $('fRetry429').checked = !(config.retry429 && config.retry429.enabled === false);
   if ($('fInsecureTls')) $('fInsecureTls').checked = !!config.insecureSkipVerify;
+  renderConnectTargets();
   const tu = config.trayUsage || { enabled: false, range: '7d' };
   $('fTrayUsage').checked = !!tu.enabled;
   $('fTrayRange').value = tu.range || '7d';
@@ -1133,6 +1170,8 @@ function bind() {
   });
   $('fGatewayToken').addEventListener('change', (e) => persist({ gatewayToken: e.target.value.trim() }));
   $('btnGenToken').addEventListener('click', () => persist({ gatewayToken: genToken(), requireToken: true }));
+  if ($('fTargetClaude')) $('fTargetClaude').addEventListener('change', (e) => toggleTarget('claude', e.target.checked));
+  if ($('fTargetCodex')) $('fTargetCodex').addEventListener('change', (e) => toggleTarget('codex', e.target.checked));
   if ($('fRetry429')) $('fRetry429').addEventListener('change', (e) => persist({ retry429: Object.assign({}, config.retry429, { enabled: e.target.checked }) }));
   if ($('fInsecureTls')) $('fInsecureTls').addEventListener('change', (e) => persist({ insecureSkipVerify: e.target.checked }));
   $('fTrayUsage').addEventListener('change', (e) => persist({ trayUsage: { enabled: e.target.checked, range: $('fTrayRange').value } }));
