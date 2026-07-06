@@ -50,7 +50,8 @@ async function renderHeatmap() {
   let u;
   try {
     u = await api.usageGet('all');
-  } catch (_) {
+  } catch (e) {
+    console.error('usageGet(all) failed', e);
     u = { heatmap: [] };
   }
   const hm = $('heatmap');
@@ -76,13 +77,14 @@ async function renderHeatmap() {
 }
 
 async function renderStats() {
-  let u;
-  try {
-    u = await api.usageGet(range);
-  } catch (_) {
-    u = { tokens: 0, requests: 0, activeDays: 0, favoriteProvider: '—', currentStreak: 0, longestStreak: 0, peakHour: null, favoriteModel: '—', byModel: [] };
+  let u = null;
+  try { u = await api.usageGet(range); } catch (e) { console.error('usageGet failed', e); }
+  if (!u) {
+    // a failed scan must LOOK failed — zeros would read as "no usage"
+    $('sTokens').textContent = '—';
+    $('sReq').textContent = '—';
+    return;
   }
-  if (!u) u = { tokens: 0, requests: 0, activeDays: 0, favoriteProvider: '—', currentStreak: 0, longestStreak: 0, peakHour: null, favoriteModel: '—', byModel: [] };
   $('sTokens').textContent = fmt(u.tokens);
   $('sReq').textContent = (u.requests || 0).toLocaleString();
   $('sDays').textContent = u.activeDays || 0;

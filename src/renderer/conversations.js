@@ -308,7 +308,7 @@
     const dirs = allDirs.filter((d) => d.id !== '__trash__' && !d.trash && !(d.imported && !d.sessions));
     const showDirs = dirs.length > 1;
     if (!showDirs && !showTrash) { host.classList.add('hidden'); host.innerHTML = ''; return; }
-    const opts = [{ id: 'all', label: L('conv.all') }].concat(showDirs ? dirs.map((d) => ({ id: d.id, label: d.label, imported: d.imported, sessions: d.sessions })) : []);
+    const opts = [{ id: 'all', label: L('conv.all') }].concat(showDirs ? dirs.map((d) => ({ id: d.id, label: d.id === '__imported__' ? L('conv.importedDir') : d.label, imported: d.imported, sessions: d.sessions })) : []);
     host.classList.remove('hidden');
     let html = opts.map((o) => `<button class="dir-chip inline-flex items-center gap-1.25 border border-border-custom bg-transparent text-muted font-medium text-[11.5px] px-2.5 py-1 rounded-full cursor-pointer transition-all duration-150 hover:text-fg hover:bg-chip-bg whitespace-nowrap ${o.id === active ? 'active' : ''}" data-dir="${esc(o.id)}" title="${esc(o.label)}">${o.imported ? '<span class="dir-chip-ico">' + (ICN.download || '') + '</span>' : ''}${esc(midEllip(o.label, 30))}${o.sessions != null ? ' <span class="dir-chip-n text-[10px] px-1.25 py-0 rounded-full bg-black/12">' + o.sessions + '</span>' : ''}</button>`).join('');
     if (showTrash) {
@@ -408,11 +408,21 @@
   }
 
   /* ---------- detail ---------- */
+  // The right rail (overview + navigation) only means something for an open conversation — hide
+  // it (and its resizer) entirely when nothing is selected.
+  function syncConvNav() {
+    const nav = document.querySelector('.conv-nav');
+    const rs = document.querySelector('.conv-resizer-right');
+    if (nav) nav.classList.toggle('hidden', !openFile);
+    if (rs) rs.classList.toggle('hidden', !openFile);
+  }
+
   async function openConversation(id, file) {
     const ds = $('convDetailSearch');
     if (ds) ds.value = '';
     clearDetailSearchHighlights();
     openId = id; openFile = file || null;
+    syncConvNav();
     activeAgent = 'main'; // new conversation always opens on its main thread
     detailTexts = null; vStart = 0; vEnd = 0; // reset the render window for the new conversation
     lastRender = { file: null, count: -1 };
@@ -1145,7 +1155,7 @@
     if (!file) return;
     const ok = await askConfirm({ title: L('conv.deleteTitle'), message: L('conv.deleteConfirm'), confirmText: L('conv.ctxDelete'), cancelText: L('modal.cancel'), danger: true });
     if (!ok) return;
-    if (file === openFile) { openId = null; openFile = null; }
+    if (file === openFile) { openId = null; openFile = null; syncConvNav(); }
     await applyMeta(file, { delete: true });
   }
   async function restoreSession(file) {
@@ -1158,7 +1168,7 @@
     if (!ok) return;
     let res; try { res = await api.historyDeleteForever(file); } catch (_) { res = null; }
     if (!res || !res.ok) return;
-    if (file === openFile) { openId = null; openFile = null; }
+    if (file === openFile) { openId = null; openFile = null; syncConvNav(); }
     await refresh();
   }
 
@@ -1227,7 +1237,7 @@
         if (!file || !api.historyRemoveImport) return;
         let res; try { res = await api.historyRemoveImport(file); } catch (_) { res = null; } // confirms in main
         if (!res || !res.ok) return; // cancelled or failed → leave the list as-is
-        if (file === openFile) { openId = null; openFile = null; }
+        if (file === openFile) { openId = null; openFile = null; syncConvNav(); }
         await refresh();
         return;
       }
@@ -1363,6 +1373,7 @@
       });
     }
 
+    syncConvNav(); // nothing selected at startup → no right rail
     const convNav = document.querySelector('.conv-nav');
     const collapseNavBtn = $('btnCollapseConvNav');
     if (collapseNavBtn && convNav) {

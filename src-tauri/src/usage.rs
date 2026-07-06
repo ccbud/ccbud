@@ -56,19 +56,27 @@ fn expand_tilde(p: &str) -> PathBuf {
     }
 }
 
-/// Active work dirs (honors the directory switcher; imported dirs excluded).
+/// Active work dirs (honors the directory switcher). A selector that matches no configured dir —
+/// the synthetic recycle-bin / imported-bundle views ("__trash__", "__imported__"), or a stale
+/// value from an older config — falls back to ALL dirs: a filter must never zero the stats.
 fn active_roots(config: &Value, active: &str) -> Vec<PathBuf> {
-    let mut out = vec![];
+    let mut all = vec![];
+    let mut selected = vec![];
     if let Some(arr) = config.get("historyDirs").and_then(|v| v.as_array()) {
         for d in arr {
             if let Some(s) = d.as_str() {
-                if active == "all" || active == s {
-                    out.push(expand_tilde(s));
+                all.push(expand_tilde(s));
+                if active == s {
+                    selected.push(expand_tilde(s));
                 }
             }
         }
     }
-    out
+    if active != "all" && !selected.is_empty() {
+        selected
+    } else {
+        all
+    }
 }
 
 fn parse_ts(s: &str) -> Option<i64> {
@@ -537,7 +545,9 @@ fn dirs_sig(config: &Value, active: &str) -> String {
 
 fn build_data_cached(config: &Value, active: &str) -> HashMap<String, Day> {
     let sig = dirs_sig(config, active);
-    if let Ok(cache) = USAGE_CACHE.lock() {
+    {
+        // recover a poisoned lock (a panicked scan thread must not disable caching forever)
+        let cache = USAGE_CACHE.lock().unwrap_or_else(|p| p.into_inner());
         if let Some(c) = cache.as_ref() {
             if c.sig == sig {
                 return c.days.clone();
@@ -545,17 +555,15 @@ fn build_data_cached(config: &Value, active: &str) -> HashMap<String, Day> {
         }
     }
     let days = build_data(config, active);
-    if let Ok(mut cache) = USAGE_CACHE.lock() {
-        *cache = Some(UsageCache { sig, days: days.clone() });
-    }
+    let mut cache = USAGE_CACHE.lock().unwrap_or_else(|p| p.into_inner());
+    *cache = Some(UsageCache { sig, days: days.clone() });
     days
 }
 
 /// Drop the cached scan — call when history files change so the next read rescans.
 pub fn invalidate_cache() {
-    if let Ok(mut cache) = USAGE_CACHE.lock() {
-        *cache = None;
-    }
+    let mut cache = USAGE_CACHE.lock().unwrap_or_else(|p| p.into_inner());
+    *cache = None;
 }
 
 /// Scan + cache now (off the click path). Call at startup and after history changes so the first
@@ -760,7 +768,8 @@ pub fn diag(config: &Value, active: &str) -> String {
         _ => "-".to_string(),
     };
     format!(
-        "usage scan: roots={:?} claude-files={} codex-files={} usage-lines={} parsed={} kept={} days={} span={} dropped(no-ts)={} dropped(zero/invalid)={} degenerate-ids={}",
+        "usage scan: active={} roots={:?} claude-files={} codex-files={} usage-lines={} parsed={} kept={} days={} span={} dropped(no-ts)={} dropped(zero/invalid)={} degenerate-ids={}",
+        active,
         roots.iter().map(|r| r.to_string_lossy().to_string()).collect::<Vec<_>>(),
         claude_files, codex_file_count, usage_lines, parsed, kept, keys.len(), span, no_ts, zero_rows, degen
     )
@@ -901,6 +910,28 @@ mod tests {
         assert_eq!(requests, 4);
         assert_eq!(input, 100 + 200 + 300 + 400);
         assert_eq!(days.len(), 4);
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    // The 对话 page's dir switcher persists synthetic views (recycle bin, imported bundles) into
+    // historyActive — those match no configured dir and previously zeroed every usage number.
+    #[test]
+    fn synthetic_or_stale_active_falls_back_to_all_dirs() {
+        let base = std::env::temp_dir().join(format!("ccbud-usage-active-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let proj = base.join("projects").join("-p");
+        fs::create_dir_all(&proj).unwrap();
+        fs::write(proj.join("s.jsonl"), asst("a1", "r1", "m", "2026-07-01T10:00:00Z", 10, 1)).unwrap();
+        let config = json!({ "historyDirs": [ base.to_string_lossy() ] });
+        for active in ["all", "__trash__", "__imported__", "/no/such/dir"] {
+            let days = build_data(&config, active);
+            let (tokens, ..) = sum(&days);
+            assert_eq!(tokens, 11, "active={} must not zero the stats", active);
+        }
+        // a VALID selector still filters
+        let days = build_data(&config, base.to_string_lossy().as_ref());
+        let (tokens, ..) = sum(&days);
+        assert_eq!(tokens, 11);
         let _ = fs::remove_dir_all(&base);
     }
 
