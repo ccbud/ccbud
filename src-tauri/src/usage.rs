@@ -168,8 +168,27 @@ fn collect_jsonl(dir: &Path, depth: u32, out: &mut Vec<PathBuf>) {
     }
 }
 
-fn read_lines(file: &Path) -> Option<std::io::Lines<std::io::BufReader<std::fs::File>>> {
-    std::fs::File::open(file).ok().map(|f| std::io::BufReader::new(f).lines())
+/// Byte-based lossy line reader. History files can embed invalid UTF-8 inside tool output —
+/// a strict `BufRead::lines` errors there and would silently discard the REST of the file
+/// (ccusage reads raw bytes for the same reason).
+struct LossyLines {
+    reader: std::io::BufReader<std::fs::File>,
+    buf: Vec<u8>,
+}
+
+impl LossyLines {
+    fn open(file: &Path) -> Option<Self> {
+        std::fs::File::open(file)
+            .ok()
+            .map(|f| Self { reader: std::io::BufReader::new(f), buf: Vec::with_capacity(64 * 1024) })
+    }
+    fn next_line(&mut self) -> Option<String> {
+        self.buf.clear();
+        match self.reader.read_until(b'\n', &mut self.buf) {
+            Ok(0) | Err(_) => None,
+            Ok(_) => Some(String::from_utf8_lossy(&self.buf).into_owned()),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -327,8 +346,8 @@ fn codex_is_subagent(file: &Path) -> bool {
 /// so the replay can be skipped while the cumulative baseline still advances.
 fn codex_replay_second(file: &Path) -> Option<String> {
     let mut first: Option<String> = None;
-    for line in read_lines(file)? {
-        let Ok(line) = line else { return None };
+    let mut lines = LossyLines::open(file)?;
+    while let Some(line) = lines.next_line() {
         let Some((ts, payload)) = codex_token_count_line(&line) else { continue };
         let info = payload.get("info");
         let has_usage = info
@@ -369,9 +388,8 @@ fn parse_codex_file(file: &Path, out: &mut Vec<(CodexUsage, i64, String)>) {
     let mut skip_replay = replay_second.is_some();
     let mut current_model: Option<String> = None;
     let mut prev_totals: Option<CodexUsage> = None;
-    let Some(lines) = read_lines(file) else { return };
-    for line in lines {
-        let Ok(line) = line else { break };
+    let Some(mut lines) = LossyLines::open(file) else { return };
+    while let Some(line) = lines.next_line() {
         let s = line.trim();
         if s.is_empty() {
             continue;
@@ -455,9 +473,8 @@ fn build_data(config: &Value, active: &str) -> HashMap<String, Day> {
         collect_jsonl(&root.join("projects"), 0, &mut files);
         files.sort();
         for file in files {
-            let Some(lines) = read_lines(&file) else { continue };
-            for line in lines {
-                let Ok(line) = line else { break };
+            let Some(mut lines) = LossyLines::open(&file) else { continue };
+            while let Some(line) = lines.next_line() {
                 if let Some(rec) = parse_claude_line(line.trim()) {
                     claude_recs.push(rec);
                 }
@@ -786,6 +803,26 @@ mod tests {
         let _ = fs::remove_dir_all(&base);
     }
 
+    #[test]
+    fn invalid_utf8_does_not_truncate_a_file() {
+        let base = std::env::temp_dir().join(format!("ccbud-usage-u8-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let proj = base.join("projects").join("-p");
+        fs::create_dir_all(&proj).unwrap();
+        let mut bytes = asst("u1", "r1", "m", "2026-07-01T10:00:00Z", 10, 1).into_bytes();
+        bytes.extend_from_slice(b"{\"garbage\": \"\xff\xfe binary tool output\"}\n");
+        bytes.extend_from_slice(asst("u2", "r2", "m", "2026-07-02T10:00:00Z", 20, 2).as_bytes());
+        fs::write(proj.join("s.jsonl"), bytes).unwrap();
+
+        let config = json!({ "historyDirs": [ base.to_string_lossy() ] });
+        let days = build_data(&config, "all");
+        let (_, input, _, _, requests, _) = sum(&days);
+        // the record AFTER the invalid-UTF-8 line still counts
+        assert_eq!(requests, 2);
+        assert_eq!(input, 30);
+        let _ = fs::remove_dir_all(&base);
+    }
+
     fn tc(ts: &str, last: Option<(i64, i64, i64)>, total: Option<(i64, i64, i64)>) -> String {
         let mut info = json!({});
         if let Some((i, c, o)) = last {
@@ -858,5 +895,35 @@ mod tests {
         assert_eq!(models.get("gpt-5").copied(), Some(230));
 
         let _ = fs::remove_dir_all(&base);
+    }
+}
+
+#[cfg(test)]
+mod real_data_probe {
+    use super::*;
+
+    // Diagnostic harness (not an assertion): aggregate a REAL history dir and print per-range
+    // totals, so the implementation can be diffed against `ccusage` on the same data.
+    // Run: CCBUD_PROBE_DIR=~/.claude cargo test --lib probe_real_dir -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn probe_real_dir() {
+        let Ok(dir) = std::env::var("CCBUD_PROBE_DIR") else {
+            eprintln!("set CCBUD_PROBE_DIR");
+            return;
+        };
+        let config = json!({ "historyDirs": [dir] });
+        let days = build_data(&config, "all");
+        let now = Local::now().timestamp_millis();
+        let mut keys: Vec<_> = days.keys().cloned().collect();
+        keys.sort();
+        for k in &keys {
+            let d = &days[k];
+            eprintln!("{}  tokens={} in={} out={} cr={} cc={} req={}", k, d.tokens, d.input, d.output, d.cache_read, d.cache_creation, d.requests);
+        }
+        for range in ["1d", "7d", "30d", "all"] {
+            let q = query(&days, range, now);
+            eprintln!("range {:>3}: tokens={} requests={}", range, q["tokens"], q["requests"]);
+        }
     }
 }
