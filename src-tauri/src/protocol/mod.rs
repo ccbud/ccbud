@@ -97,6 +97,19 @@ use llm_connector::protocols::adapters::openai::OpenAIProtocol;
 use llm_connector::types::{ChatRequest, ChatResponse};
 use serde_json::Value;
 
+/// Unique id for a synthesized response ("msg_ccbud_<ms>_<n>"). Clients persist these ids into
+/// their history, and usage analytics de-dupes assistant messages BY id — a constant fallback id
+/// would collapse every translated turn into a single counted request.
+pub fn uid(prefix: &str) -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static N: AtomicU64 = AtomicU64::new(0);
+    let ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    format!("{}_{}_{}", prefix, ms, N.fetch_add(1, Ordering::Relaxed))
+}
+
 /// Decode an inbound client request (in its wire format) into the unified IR.
 pub fn decode_client_request(client: Wire, body: &Value) -> Result<ChatRequest, String> {
     match client {

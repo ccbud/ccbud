@@ -454,7 +454,8 @@ pub fn encode_response(resp: &ChatResponse, client_model: &str) -> Value {
         let t = msg.map(|m| m.content_as_text()).unwrap_or_default();
         if t.is_empty() { resp.content.clone() } else { t }
     };
-    let rid = if resp.id.is_empty() { "ccbud".to_string() } else { resp.id.clone() };
+    // never a constant fallback — item ids derive from this and land in client history
+    let rid = if resp.id.is_empty() { super::uid("ccbud") } else { resp.id.clone() };
 
     let mut output: Vec<Value> = vec![];
     if let Some(reasoning) = msg.and_then(|m| m.reasoning_any()) {

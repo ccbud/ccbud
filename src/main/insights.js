@@ -1,17 +1,20 @@
 'use strict';
 
 /**
- * Usage analytics computed from Claude Code's on-disk history (.jsonl), across one or more
- * configured config directories. Each assistant record carries `message.usage` (input/output/
- * cache tokens) + `message.model` + timestamp; we aggregate those into the same per-day bucket
- * shape usage.js exposes, so the tray heatmap / stats / per-model panels are driven by the
- * authoritative on-disk data rather than only what passed through the gateway live.
+ * Usage analytics computed from on-disk history (.jsonl), across one or more configured config
+ * directories. Two session trees contribute per work dir: Claude Code `projects/` (assistant
+ * records' message.usage, incl. per-session subagent transcripts) and Codex `sessions/` rollouts
+ * (`token_count` events; model from the preceding `turn_context`). Aggregated into the same
+ * per-day bucket shape usage.js exposes, so the tray heatmap / stats / per-model panels are
+ * driven by the authoritative on-disk data rather than only what passed through the gateway live.
  *
  * - getDirs() supplies the ACTIVE set of `projects` directories to aggregate (honors the
- *   directory switcher: 'all' → every configured dir, or a single selected one).
+ *   directory switcher: 'all' → every configured dir, or a single selected one);
+ *   getSessionDirs() supplies the matching Codex `sessions` directories.
  * - Per-file results are cached by (mtime,size); only changed files are re-parsed.
- * - Records are de-duplicated by assistant message.id so a session copied across files
- *   (resume/fork) is never double-counted.
+ * - Claude records are de-duplicated by assistant message.id so a session copied across files
+ *   (resume/fork) is never double-counted. Codex rollouts append in place (a fork re-persists
+ *   only conversation items, not token_count events), so their lines are counted as-is.
  */
 
 const fs = require('fs');
@@ -49,10 +52,43 @@ function parseAssistantUsage(raw) {
   return recs;
 }
 
+/** Codex rollout .jsonl → per-turn usage recs. `token_count` events carry
+ *  `info.last_token_usage` (input includes the cached portion — split out, mirroring codex.js);
+ *  the active model rides the preceding `turn_context` record. */
+function parseCodexUsage(raw) {
+  const recs = [];
+  let model = 'codex';
+  for (const line of raw.split('\n')) {
+    const s = line.trim();
+    if (!s) continue;
+    let r;
+    try { r = JSON.parse(s); } catch (_) { continue; }
+    const p = r.payload || {};
+    if (r.type === 'turn_context') { if (p.model) model = p.model; continue; }
+    if (r.type !== 'event_msg' || p.type !== 'token_count') continue;
+    const u = p.info && p.info.last_token_usage; // info is null on rate-limit-only updates
+    if (!u) continue;
+    const input = u.input_tokens || 0, cached = u.cached_input_tokens || 0, output = u.output_tokens || 0;
+    if (input + cached + output === 0) continue;
+    const ts = r.timestamp ? Date.parse(r.timestamp) : NaN;
+    recs.push({
+      id: null, // rollouts append in place; no cross-file duplication to de-dup
+      ts: isNaN(ts) ? null : ts,
+      model,
+      inputTokens: Math.max(0, input - cached),
+      outputTokens: output,
+      cacheRead: cached,
+      cacheCreation: 0,
+    });
+  }
+  return recs;
+}
+
 const MAX_FILE = 64 * 1024 * 1024; // skip pathologically large files so buildData can't OOM
 
 function createInsights(opts) {
   const getDirs = (opts && opts.getDirs) || (() => []);
+  const getSessionDirs = (opts && opts.getSessionDirs) || (() => []);
   const fileCache = new Map(); // absolute file path -> { mtime, size, recs }
   let memo = null, memoAt = 0; // short-TTL cache so back-to-back query()/rangeTokens() share one scan
 
@@ -67,14 +103,33 @@ function createInsights(opts) {
         try { files = fs.readdirSync(pdir, { withFileTypes: true }); } catch (_) { continue; }
         for (const f of files) {
           if (f.isFile() && f.name.endsWith('.jsonl')) cb(path.join(pdir, f.name));
-          else if (f.isDirectory() && f.name === 'subagents') {
+          else if (f.isDirectory()) {
+            // Subagent transcripts live one level deeper, per session:
+            // <proj>/<session>/subagents/agent-*.jsonl. (A bare <proj>/subagents dir is
+            // tolerated too for older layouts.)
+            const sub = f.name === 'subagents' ? path.join(pdir, f.name) : path.join(pdir, f.name, 'subagents');
             let sfiles;
-            try { sfiles = fs.readdirSync(path.join(pdir, f.name)); } catch (_) { continue; }
-            for (const sf of sfiles) if (sf.endsWith('.jsonl')) cb(path.join(pdir, f.name, sf));
+            try { sfiles = fs.readdirSync(sub); } catch (_) { continue; }
+            for (const sf of sfiles) if (sf.endsWith('.jsonl')) cb(path.join(sub, sf));
           }
         }
       }
     }
+  }
+
+  /** Codex rollouts live under sessions/YYYY/MM/DD/rollout-*.jsonl — walk depth-capped. */
+  function eachCodexFile(cb) {
+    const walk = (dir, depth) => {
+      if (depth > 6) return;
+      let entries;
+      try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch (_) { return; }
+      for (const e of entries) {
+        const p = path.join(dir, e.name);
+        if (e.isDirectory()) walk(p, depth + 1);
+        else if (e.isFile() && e.name.endsWith('.jsonl')) cb(p);
+      }
+    };
+    for (const root of getSessionDirs() || []) walk(root, 0);
   }
 
   async function buildData() {
@@ -82,9 +137,10 @@ function createInsights(opts) {
     const seen = new Set();
     const live = new Set();
     const files = [];
-    eachFile((file) => files.push(file));
+    eachFile((file) => files.push([file, parseAssistantUsage]));
+    eachCodexFile((file) => files.push([file, parseCodexUsage]));
 
-    for (const file of files) {
+    for (const [file, parse] of files) {
       live.add(file);
       let st;
       try { st = await fs.promises.stat(file); } catch (_) { continue; }
@@ -95,7 +151,7 @@ function createInsights(opts) {
         } else {
           try {
             const raw = await fs.promises.readFile(file, 'utf8');
-            entry = { mtime: st.mtimeMs, size: st.size, recs: parseAssistantUsage(raw) };
+            entry = { mtime: st.mtimeMs, size: st.size, recs: parse(raw) };
           } catch (_) {
             continue;
           }
@@ -131,4 +187,4 @@ function createInsights(opts) {
   };
 }
 
-module.exports = { createInsights, parseAssistantUsage };
+module.exports = { createInsights, parseAssistantUsage, parseCodexUsage };

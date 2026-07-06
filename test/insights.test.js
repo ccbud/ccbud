@@ -80,6 +80,36 @@ const ins = createInsights({ getDirs: () => active });
     check('undated record still counted (all)', (await insC.query('all')).tokens === 10, `tokens=${(await insC.query('all')).tokens}`);
     insC.invalidate();
     check('undated record NOT misbucketed into today (1d excludes it)', (await insC.query('1d')).tokens === 0, `1d=${(await insC.query('1d')).tokens}`);
+
+    // ---- per-session subagent transcripts + Codex rollouts (dirD) ----
+    const rootD = path.join(root, 'dirD');
+    const projD = path.join(rootD, 'projects', '-proj-w');
+    fs.mkdirSync(projD, { recursive: true });
+    fs.writeFileSync(path.join(projD, 's4.jsonl'), asst('m4', 'glm-5.2', { input_tokens: 20, output_tokens: 10 }));
+    // subagent transcripts live one level deeper, per session: <proj>/<session>/subagents/
+    const subD = path.join(projD, 's4', 'subagents');
+    fs.mkdirSync(subD, { recursive: true });
+    fs.writeFileSync(path.join(subD, 'agent-a.jsonl'), asst('m5', 'glm-5.2', { input_tokens: 30, output_tokens: 3 }));
+    // codex rollout: model from turn_context; cached input split out; info-null line skipped
+    const cxDay = path.join(rootD, 'sessions', '2026', '07', '01');
+    fs.mkdirSync(cxDay, { recursive: true });
+    const L = (type, payload) => JSON.stringify({ timestamp: iso, type, payload }) + '\n';
+    fs.writeFileSync(path.join(cxDay, 'rollout-2026-07-01T12-00-00-x.jsonl'),
+      L('session_meta', { id: 's' }) +
+      L('turn_context', { cwd: '/tmp', model: 'gpt-5.5' }) +
+      L('event_msg', { type: 'token_count', info: { last_token_usage: { input_tokens: 900, cached_input_tokens: 600, output_tokens: 80, total_tokens: 980 } } }) +
+      L('event_msg', { type: 'token_count', info: null })
+    );
+    const insD = createInsights({
+      getDirs: () => [path.join(rootD, 'projects')],
+      getSessionDirs: () => [path.join(rootD, 'sessions')],
+    });
+    const d = await insD.query('all');
+    check('session + subagent + codex all counted (3 requests)', d.requests === 3, `req=${d.requests}`);
+    check('subagent at session depth counted', d.tokens === 30 + 33 + 980, `tokens=${d.tokens}`);
+    check('codex cached input split out', d.cacheRead === 600 && d.input === 20 + 30 + 300, `cr=${d.cacheRead} in=${d.input}`);
+    const byModelD = Object.fromEntries(d.byModel.map((m) => [m.model, m.tokens]));
+    check('codex model from turn_context', byModelD['gpt-5.5'] === 980, JSON.stringify(byModelD));
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

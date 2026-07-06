@@ -92,6 +92,10 @@ fn map_stop(finish: Option<&str>, had_tool: bool) -> &'static str {
 pub struct ChatToAnthropic {
     client_model: String,
     started: bool,
+    // message id sent in message_start — from the upstream chunk id when it has one, else a
+    // generated unique id. Clients persist this id; it must never repeat across turns (usage
+    // analytics de-dupes assistant messages by id).
+    msg_id: Option<String>,
     next_index: usize,
     // text block
     text_index: Option<usize>,
@@ -114,6 +118,7 @@ impl ChatToAnthropic {
         Self {
             client_model: client_model.to_string(),
             started: false,
+            msg_id: None,
             next_index: 0,
             text_index: None,
             tools: vec![],
@@ -129,10 +134,14 @@ impl ChatToAnthropic {
             return;
         }
         self.started = true;
+        let id = self
+            .msg_id
+            .get_or_insert_with(|| super::uid("msg_ccbud"))
+            .clone();
         out.push_str(&ev(
             "message_start",
             json!({ "type": "message_start", "message": {
-                "id": "msg_ccbud", "type": "message", "role": "assistant", "model": self.client_model,
+                "id": id, "type": "message", "role": "assistant", "model": self.client_model,
                 "content": [], "stop_reason": Value::Null, "stop_sequence": Value::Null,
                 "usage": { "input_tokens": self.input_tokens.max(0), "output_tokens": 0 },
             }}),
@@ -170,6 +179,11 @@ impl ChatToAnthropic {
             Ok(v) => v,
             Err(_) => return out,
         };
+        if self.msg_id.is_none() {
+            if let Some(id) = chunk.get("id").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) {
+                self.msg_id = Some(format!("msg_{}", id));
+            }
+        }
         // usage may ride the final chunk (stream_options.include_usage)
         if let Some(u) = chunk.get("usage").filter(|u| !u.is_null()) {
             self.input_tokens = u.get("prompt_tokens").and_then(|v| v.as_i64()).unwrap_or(self.input_tokens);

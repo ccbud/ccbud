@@ -301,7 +301,8 @@ pub fn encode_response(resp: &ChatResponse, client_model: &str) -> Value {
     let output_tokens = usage.map(|u| u.completion_tokens).unwrap_or(0);
 
     json!({
-        "id": if resp.id.is_empty() { "msg_ccbud".to_string() } else { resp.id.clone() },
+        // never a constant fallback — clients persist this id and usage de-dupes by it
+        "id": if resp.id.is_empty() { super::uid("msg_ccbud") } else { resp.id.clone() },
         "type": "message",
         "role": "assistant",
         "model": client_model,

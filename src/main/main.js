@@ -906,7 +906,7 @@ if (gotLock) {
     // A detected Codex install joins historyDirs as a regular work dir (one-time, before the
     // history watcher starts so its trees get watched).
     try { ensureCodexDir(); } catch (_) {}
-    monitor = createMonitorStore({ max: 30 });
+    monitor = createMonitorStore({ max: 100 });
     gateway = createGateway({ getConfig: () => store.get() });
     gateway.on('log', (l) => pushGatewayLog(l));
     gateway.on('request', (r) => {
@@ -916,8 +916,12 @@ if (gotLock) {
     // Full request/response capture (bounded, auth-redacted) for the monitor inspector.
     gateway.on('exchange', (ex) => monitor.record(ex));
 
-    // Usage analytics computed from on-disk history (.jsonl) across the active config dirs.
-    insights = createInsights({ getDirs: () => activeProjectsDirs() });
+    // Usage analytics computed from on-disk history (.jsonl) across the active config dirs —
+    // both the Claude projects/ tree and each dir's sibling Codex sessions/ tree.
+    insights = createInsights({
+      getDirs: () => activeProjectsDirs(),
+      getSessionDirs: () => activeProjectsDirs().map((d) => path.join(path.dirname(d), 'sessions')),
+    });
 
     // Watch Claude Code's on-disk session history across ALL configured dirs; the "对话"
     // view reads it directly and live-follows active sessions via the 'changed' broadcast.
