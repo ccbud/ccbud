@@ -517,10 +517,9 @@
           <button class="tool-btn w-[26px] h-[26px] border border-border-custom rounded-[7px] bg-bg-elev text-muted cursor-pointer flex items-center justify-center transition-all duration-140 hover:text-fg hover:bg-chip-bg hover:border-border-strong" id="reqDrawerClose" data-i18n-title="drawer.close" aria-label="关闭"><span>✕</span></button>
         </header>
         <div class="drawer-meta flex flex-wrap gap-1.5 p-[12px_16px] border-b border-border-custom" id="reqMeta"></div>
-        <div class="drawer-tabs flex gap-1 p-[10px_16px_0] border-b border-border-custom">
-          <button class="dr-tab active border-none bg-transparent text-muted font-semibold text-[13px] leading-none p-[8px_14px] rounded-t-md cursor-pointer border-b-2 border-transparent -mb-[1px] hover:text-fg [&.active]:text-brand [&.active]:border-b-brand" data-tab="req" data-i18n="drawer.req">请求</button>
-          <button class="dr-tab border-none bg-transparent text-muted font-semibold text-[13px] leading-none p-[8px_14px] rounded-t-md cursor-pointer border-b-2 border-transparent -mb-[1px] hover:text-fg [&.active]:text-brand [&.active]:border-b-brand" data-tab="res" data-i18n="drawer.res">响应</button>
-        </div>
+        <!-- Tabs are rendered by renderer.js per exchange: 2 tabs for passthrough, 4 for a
+             protocol-translated exchange (client req / upstream req / upstream res / client res). -->
+        <div class="drawer-tabs flex gap-1 p-[10px_16px_0] border-b border-border-custom" id="drTabs"></div>
         <div class="drawer-body flex-grow min-h-0 overflow-y-auto p-[4px_16px_24px]" id="reqDrawerBody"></div>
       </aside>
     </div>

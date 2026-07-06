@@ -264,10 +264,12 @@ impl GatewayState {
     fn next_id(&self) -> u64 {
         self.seq.fetch_add(1, Ordering::Relaxed) + 1
     }
+    /// Bounded live-debugging capture: keep only the most recent exchanges (matches the monitor
+    /// stream's 100-row window so every visible row can open its detail).
     pub async fn record_exchange(&self, ex: Value) {
         let mut buf = self.exchanges.lock().await;
         buf.push_back(ex);
-        while buf.len() > 50 {
+        while buf.len() > 100 {
             buf.pop_front();
         }
     }
@@ -315,6 +317,67 @@ struct UsageAcc {
     cache_read: i64,
     cache_creation: i64,
     saw: bool,
+}
+
+/// Makes a streaming request visible in the monitor even when the client aborts mid-stream.
+/// The row + exchange record are normally emitted at the END of the response generator; when the
+/// client disconnects, axum simply drops the generator and that code never runs — the request
+/// vanished from the request stream (Codex users interrupt turns constantly). The generator owns
+/// this guard: `complete()` hands back the prepared exchange skeleton for the normal path, and
+/// Drop-without-complete emits the row + a record marked `aborted`.
+struct StreamAbortGuard {
+    armed: bool,
+    st: Arc<GatewayState>,
+    id: u64,
+    started: std::time::Instant,
+    method: Method,
+    path: String,
+    provider: String,
+    routing: Routing,
+    status: u16,
+    ex: Value,
+}
+
+impl StreamAbortGuard {
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        st: Arc<GatewayState>,
+        id: u64,
+        started: std::time::Instant,
+        method: Method,
+        path: String,
+        provider: String,
+        routing: Routing,
+        status: u16,
+        ex: Value,
+    ) -> Self {
+        Self { armed: true, st, id, started, method, path, provider, routing, status, ex }
+    }
+
+    /// Normal completion: disarm and hand the exchange skeleton back to the caller (who fills in
+    /// ms / response bodies and records it).
+    fn complete(&mut self) -> Value {
+        self.armed = false;
+        std::mem::take(&mut self.ex)
+    }
+}
+
+impl Drop for StreamAbortGuard {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let mut ex = std::mem::take(&mut self.ex);
+        ex["ms"] = json!(self.started.elapsed().as_millis() as u64);
+        ex["aborted"] = json!(true);
+        self.st.emit_request(self.id, self.started, &self.method, &self.path, &self.provider, &self.routing, self.status, None);
+        let st = self.st.clone();
+        // record_exchange is async and Drop is sync — spawn it, tolerating an already-torn-down
+        // runtime at app quit.
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            tauri::async_runtime::spawn(async move { st.record_exchange(ex).await });
+        }));
+    }
 }
 
 fn retry_delay(retry_after: Option<&str>, attempt: i64, base: i64) -> u64 {
@@ -693,6 +756,21 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
     let ex_req_headers = redact_headers(&up_headers);
     let ex_req_body = cap_text(&out_body, 4 * 1024 * 1024);
     let ex_url = target.clone();
+    // Client-side view of the exchange — what the gateway RECEIVED, before any translation — so
+    // the monitor can show a protocol translation's exact before/after (inbound URL/headers/body
+    // vs. the upstream URL/headers/body above). The body is duplicated only when a translation
+    // applies; for passthrough, reqBody already IS the client body (modulo the model rewrite).
+    let ex_translated = translate.as_ref().map(|t| format!("{} → {}", t.0.label(), t.1.label()));
+    let ex_client_req = {
+        let mut o = json!({
+            "url": uri.path_and_query().map(|p| p.as_str().to_string()).unwrap_or_else(|| req_path.clone()),
+            "headers": redact_headers(&in_headers),
+        });
+        if ex_translated.is_some() {
+            o["body"] = cap_text(&body_bytes, 1024 * 1024);
+        }
+        o
+    };
 
     let insecure = config.get("insecureSkipVerify").and_then(|v| v.as_bool()).unwrap_or(false)
         && target.starts_with("https:");
@@ -759,6 +837,7 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
             "provider": provider_name, "requestedModel": routing.client_facing_model,
             "outgoingModel": routing.outgoing_model, "clientFacingModel": routing.client_facing_model,
             "status": 200, "reqHeaders": ex_req_headers, "reqBody": ex_req_body,
+            "clientReq": ex_client_req, "translated": ex_translated,
             "resHeaders": json!({ "x-ccbud-fallback": "head-root-404-to-200", "x-ccbud-upstream-status": "404" }),
             "resBody": json!({ "text": "", "bytes": 0, "truncated": 0 }),
         }))
@@ -795,25 +874,43 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
             })
         {
             let st2 = st.clone();
+            let status_code = status.as_u16();
+            let ex_id2 = ex_id;
+            let started2 = started;
+            let xlabel = format!("{:?}->{:?}", provider_wire, client_wire);
+            let up_res_headers = vec_headers(&out_headers);
+            let mut guard = StreamAbortGuard::new(
+                st.clone(), ex_id, started, method.clone(), req_path.clone(), provider_name.clone(),
+                routing.clone(), status_code,
+                json!({
+                    "id": ex_id, "ts": now_ms(), "method": method.as_str(), "path": req_path, "url": ex_url,
+                    "provider": provider_name, "requestedModel": routing.client_facing_model,
+                    "outgoingModel": routing.outgoing_model, "clientFacingModel": routing.client_facing_model,
+                    "status": status_code, "reqHeaders": ex_req_headers, "reqBody": ex_req_body,
+                    "clientReq": ex_client_req, "translated": ex_translated,
+                    "resHeaders": json!({ "content-type": "text/event-stream", "x-ccbud-translated": xlabel }),
+                    "resBody": json!({ "text": "", "bytes": 0, "truncated": 0 }),
+                }),
+            );
             let method2 = method.clone();
             let path2 = req_path.clone();
             let pname2 = provider_name.clone();
             let routing2 = routing.clone();
-            let status_code = status.as_u16();
-            let ex_id2 = ex_id;
-            let started2 = started;
-            let ex_url2 = ex_url.clone();
-            let ex_rh = ex_req_headers.clone();
-            let ex_rb = ex_req_body.clone();
-            let xlabel = format!("{:?}->{:?}", provider_wire, client_wire);
             let body_stream = async_stream::stream! {
                 let mut s = resp.bytes_stream();
                 let mut buf = String::new();
                 let mut res_cap = String::new();
+                // raw upstream capture (pre-translation), so the monitor can show the exact
+                // upstream stream next to the translated one the client received
+                let mut up_cap = String::new();
+                let mut up_total: usize = 0;
                 while let Some(chunk) = s.next().await {
                     match chunk {
                         Ok(bytes) => {
-                            buf.push_str(&String::from_utf8_lossy(&bytes));
+                            let raw = String::from_utf8_lossy(&bytes);
+                            up_total += raw.len();
+                            if up_cap.len() < 1024 * 1024 { up_cap.push_str(&raw); }
+                            buf.push_str(&raw);
                             let mut out = String::new();
                             while let Some(idx) = buf.find('\n') {
                                 let line: String = buf.drain(..=idx).collect();
@@ -839,16 +936,14 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
                 usage.output = tc.output_tokens();
                 usage.saw = true;
                 st2.emit_request(ex_id2, started2, &method2, &path2, &pname2, &routing2, status_code, Some(&usage));
-                st2.record_exchange(json!({
-                    "id": ex_id2, "ts": now_ms(), "ms": started2.elapsed().as_millis() as u64,
-                    "method": method2.as_str(), "path": path2, "url": ex_url2,
-                    "provider": pname2, "requestedModel": routing2.client_facing_model,
-                    "outgoingModel": routing2.outgoing_model, "clientFacingModel": routing2.client_facing_model,
-                    "status": status_code, "reqHeaders": ex_rh, "reqBody": ex_rb,
-                    "resHeaders": json!({ "content-type": "text/event-stream", "x-ccbud-translated": xlabel }),
-                    "resBody": json!({ "text": res_cap.clone(), "bytes": res_cap.len(), "truncated": 0 }),
-                }))
-                .await;
+                let mut ex = guard.complete();
+                let res_len = res_cap.len();
+                let up_trunc = up_total.saturating_sub(up_cap.len());
+                ex["ms"] = json!(started2.elapsed().as_millis() as u64);
+                ex["resBody"] = json!({ "text": res_cap, "bytes": res_len, "truncated": 0 });
+                ex["upstreamRes"] = json!({ "status": status_code, "headers": up_res_headers,
+                    "body": { "text": up_cap, "bytes": up_total, "truncated": up_trunc } });
+                st2.record_exchange(ex).await;
             };
             return Response::builder()
                 .status(status.as_u16())
@@ -859,17 +954,27 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
         }
         let rewrite_model = if need_rewrite { routing.client_facing_model.clone() } else { None };
         let st2 = st.clone();
+        let status_code = status.as_u16();
+        let ex_id2 = ex_id;
+        let started2 = started;
+        let res_headers = vec_headers(&out_headers);
+        let mut guard = StreamAbortGuard::new(
+            st.clone(), ex_id, started, method.clone(), req_path.clone(), provider_name.clone(),
+            routing.clone(), status_code,
+            json!({
+                "id": ex_id, "ts": now_ms(), "method": method.as_str(), "path": req_path, "url": ex_url,
+                "provider": provider_name, "requestedModel": routing.client_facing_model,
+                "outgoingModel": routing.outgoing_model, "clientFacingModel": routing.client_facing_model,
+                "status": status_code, "reqHeaders": ex_req_headers, "reqBody": ex_req_body,
+                "clientReq": ex_client_req, "translated": ex_translated,
+                "resHeaders": res_headers,
+                "resBody": json!({ "text": "", "bytes": 0, "truncated": 0 }),
+            }),
+        );
         let method2 = method.clone();
         let path2 = req_path.clone();
         let pname2 = provider_name.clone();
         let routing2 = routing.clone();
-        let status_code = status.as_u16();
-        let ex_id2 = ex_id;
-        let started2 = started;
-        let ex_url2 = ex_url.clone();
-        let ex_rh = ex_req_headers.clone();
-        let ex_rb = ex_req_body.clone();
-        let res_headers = vec_headers(&out_headers);
         let body_stream = async_stream::stream! {
             let mut s = resp.bytes_stream();
             let mut buf = String::new();
@@ -902,16 +1007,11 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
                 yield Ok(Bytes::from(line));
             }
             st2.emit_request(ex_id2, started2, &method2, &path2, &pname2, &routing2, status_code, Some(&usage));
-            st2.record_exchange(json!({
-                "id": ex_id2, "ts": now_ms(), "ms": started2.elapsed().as_millis() as u64,
-                "method": method2.as_str(), "path": path2, "url": ex_url2,
-                "provider": pname2, "requestedModel": routing2.client_facing_model,
-                "outgoingModel": routing2.outgoing_model, "clientFacingModel": routing2.client_facing_model,
-                "status": status_code, "reqHeaders": ex_rh, "reqBody": ex_rb,
-                "resHeaders": res_headers,
-                "resBody": json!({ "text": res_cap.clone(), "bytes": res_cap.len(), "truncated": 0 }),
-            }))
-            .await;
+            let mut ex = guard.complete();
+            let res_len = res_cap.len();
+            ex["ms"] = json!(started2.elapsed().as_millis() as u64);
+            ex["resBody"] = json!({ "text": res_cap, "bytes": res_len, "truncated": 0 });
+            st2.record_exchange(ex).await;
         };
         let mut builder = Response::builder().status(status.as_u16());
         for (k, v) in &out_headers {
@@ -948,6 +1048,7 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
             "provider": provider_name, "requestedModel": routing.client_facing_model,
             "outgoingModel": routing.outgoing_model, "clientFacingModel": routing.client_facing_model,
             "status": 200, "reqHeaders": ex_req_headers, "reqBody": ex_req_body,
+            "clientReq": ex_client_req, "translated": ex_translated,
             "resHeaders": json!({ "x-ccbud-tokens": "estimated", "x-ccbud-upstream-status": status.as_u16().to_string() }),
             "resBody": json!({ "text": String::from_utf8_lossy(&ebody), "bytes": ebody.len(), "truncated": 0 }),
         }))
@@ -988,6 +1089,7 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
             "provider": provider_name, "requestedModel": routing.client_facing_model,
             "outgoingModel": routing.outgoing_model, "clientFacingModel": routing.client_facing_model,
             "status": 200, "reqHeaders": ex_req_headers, "reqBody": ex_req_body,
+            "clientReq": ex_client_req, "translated": ex_translated,
             "resHeaders": json!({ "content-type": "application/json" }),
             "resBody": json!({ "text": String::from_utf8_lossy(&rbody), "bytes": rbody.len(), "truncated": 0 }),
         }))
@@ -1040,6 +1142,8 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
             "provider": provider_name, "requestedModel": routing.client_facing_model,
             "outgoingModel": routing.outgoing_model, "clientFacingModel": routing.client_facing_model,
             "status": status.as_u16(), "reqHeaders": ex_req_headers, "reqBody": ex_req_body,
+            "clientReq": ex_client_req, "translated": ex_translated,
+            "upstreamRes": json!({ "status": status.as_u16(), "headers": vec_headers(&out_headers), "body": cap_text(&buf, 1024 * 1024) }),
             "resHeaders": json!({ "content-type": ct_out, "x-ccbud-translated": format!("{:?}->{:?}", provider_wire, client_wire) }),
             "resBody": cap_text(&body_bytes, 2 * 1024 * 1024),
         }))
@@ -1082,6 +1186,7 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
         "provider": provider_name, "requestedModel": routing.client_facing_model,
         "outgoingModel": routing.outgoing_model, "clientFacingModel": routing.client_facing_model,
         "status": status.as_u16(), "reqHeaders": ex_req_headers, "reqBody": ex_req_body,
+        "clientReq": ex_client_req, "translated": ex_translated,
         "resHeaders": vec_headers(&out_headers), "resBody": cap_text(&out_buf, 2 * 1024 * 1024),
     }))
     .await;

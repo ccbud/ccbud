@@ -54,6 +54,15 @@ impl Wire {
         }
     }
 
+    /// Short human label for exchange records / monitor UI.
+    pub fn label(self) -> &'static str {
+        match self {
+            Wire::Anthropic => "anthropic",
+            Wire::OpenAiChat => "openai-chat",
+            Wire::OpenAiResponses => "openai-responses",
+        }
+    }
+
     /// The upstream path segment for this provider protocol, appended to the provider baseUrl.
     pub fn upstream_path(self) -> &'static str {
         match self {
