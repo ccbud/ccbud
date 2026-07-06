@@ -148,7 +148,11 @@
             <div data-pane="gateway" class="flex flex-col gap-7">
             <div class="settings-card bg-bg-elev border border-border-custom rounded-xl shadow-card p-7 flex flex-col gap-6 transition-all duration-300">
               <h3 class="settings-card-title text-[13px] font-semibold text-fg" data-i18n="settings.gateway">网关</h3>
-              <p class="caption text-[12px] text-caption" data-i18n="settings.gatewayDesc">本地代理地址与手动配置。接入后由本应用自动写入 Claude Code。</p>
+              <p class="caption text-[12px] text-caption" data-i18n="settings.gatewayDesc">本机网关服务：接入的 CLI 都通过它转发请求。</p>
+              <div class="flex items-center justify-between gap-3">
+                <div class="min-w-0"><div class="text-[12.5px] font-medium text-fg" data-i18n="settings.gatewaySvc">网关服务</div><div class="text-[11.5px] text-caption mt-0.5" data-i18n="settings.gatewaySvcDesc">独立于接入配置的本机服务开关；停止后所有转发暂停，接入配置保持不变。</div></div>
+                <label class="switch inline-flex items-center cursor-pointer no-drag shrink-0"><input id="fGatewayEnabled" type="checkbox" class="hidden peer" /><span class="track w-8 h-[17px] rounded-full bg-border-strong relative transition-colors duration-180 ease-[cubic-bezier(0.23,1,0.32,1)] shrink-0 peer-checked:bg-primary after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:w-[13px] after:h-[13px] after:rounded-full after:bg-white after:shadow-[0_1px_2px_rgba(0,0,0,0.18)] after:transition-transform after:duration-180 after:ease-[cubic-bezier(0.23,1,0.32,1)] peer-checked:after:translate-x-[15px]"></span></label>
+              </div>
               <div class="endpoint-row flex items-center gap-2 flex-wrap">
                 <code id="endpoint" class="endpoint flex-1 min-w-[180px] font-mono text-[12px] text-brand bg-bg-input border border-border-custom rounded-[7px] px-2.5 py-1.75">http://localhost:8788</code>
                 <button class="btn btn-sm bg-bg-elev text-fg border border-border-custom rounded-md px-2.25 py-1.25 font-medium text-[11px] leading-none cursor-pointer transition-all duration-140 hover:bg-chip-bg hover:border-border-strong active:scale-[0.985]" data-copy="endpoint" data-i18n="settings.copy">复制</button>

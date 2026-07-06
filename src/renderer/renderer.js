@@ -177,17 +177,19 @@ function scheduleHeroUsage() {
   _heroUsageT = setTimeout(() => { const w = $('heroUsage'); if (status.connected && w && !w.classList.contains('hidden')) renderHeroUsage(); }, 2500);
 }
 
+// Hero state = the gateway SERVICE (running/stopped). The button stays the config-file action
+// ("一键接入"/"断开" writes or restores the CLIs' configs) — independent of the service switch.
 function renderHero() {
   const hero = $('hero');
   const ap = activeProvider();
-  if (status.connected) {
+  $('btnConnect').textContent = I18n.t(status.connected ? 'hero.disconnect' : 'hero.connect');
+  if (status.running) {
     hero.classList.add('connected');
     const icon = $('heroIcon');
     if (ap) { const pi = renderProviderIcon(ap.name, ap.icon); icon.setAttribute('style', pi.style || ''); icon.innerHTML = pi.html; }
     else { icon.removeAttribute('style'); icon.innerHTML = I.connected || ''; }
-    $('heroTitle').textContent = ap ? ap.name : I18n.t('hero.connected');
+    $('heroTitle').textContent = ap ? ap.name : I18n.t('hero.running');
     $('heroSub').innerHTML = ap ? I18n.t('hero.connectedVia', { name: escapeHtml(ap.name) }) : I18n.t('hero.running');
-    $('btnConnect').textContent = I18n.t('hero.disconnect');
     hideHeroNote();
     $('heroUsage').classList.remove('hidden');
     renderHeroUsage();
@@ -198,7 +200,6 @@ function renderHero() {
     icon.innerHTML = I.connect || '';
     $('heroTitle').textContent = I18n.t('hero.titleIdle');
     $('heroSub').textContent = I18n.t('hero.subIdle');
-    $('btnConnect').textContent = I18n.t('hero.connect');
     hideHeroNote();
     $('heroUsage').classList.add('hidden');
   }
@@ -207,14 +208,14 @@ function renderHero() {
 function renderStatus() {
   const chip = $('statusPill');
   if (chip) {
-    chip.classList.toggle('on', !!status.connected);
+    chip.classList.toggle('on', !!status.running);
     const txt = chip.querySelector('.status-text');
     if (txt) {
-      txt.textContent = I18n.t(status.connected ? 'status.connected' : 'status.disconnected');
+      txt.textContent = I18n.t(status.running ? 'status.gwRunning' : 'status.gwStopped');
     }
     const bt = $('brandTitle');
     if (bt) {
-      bt.classList.toggle('running', !!status.connected);
+      bt.classList.toggle('running', !!status.running);
     }
   }
 }
@@ -270,6 +271,7 @@ function renderConnect() {
   $('fRequireToken').checked = !!config.requireToken;
   $('fGatewayToken').value = config.gatewayToken || '';
   $('tokenRow').classList.toggle('hidden', !config.requireToken);
+  if ($('fGatewayEnabled')) $('fGatewayEnabled').checked = status.gatewayEnabled !== false;
   if ($('fRetry429')) $('fRetry429').checked = !(config.retry429 && config.retry429.enabled === false);
   if ($('fInsecureTls')) $('fInsecureTls').checked = !!config.insecureSkipVerify;
   renderConnectTargets();
@@ -1210,6 +1212,18 @@ function bind() {
   $('btnGenToken').addEventListener('click', () => persist({ gatewayToken: genToken(), requireToken: true }));
   if ($('fTargetClaude')) $('fTargetClaude').addEventListener('change', (e) => toggleTarget('claude', e.target.checked));
   if ($('fTargetCodex')) $('fTargetCodex').addEventListener('change', (e) => toggleTarget('codex', e.target.checked));
+  if ($('fGatewayEnabled')) $('fGatewayEnabled').addEventListener('change', async (e) => {
+    const on = e.target.checked;
+    let res;
+    try { res = await api.gatewaySetEnabled(on); } catch (_) { res = null; }
+    if (res && res.ok === false) {
+      e.target.checked = !on; // couldn't bind the port → revert + surface
+      try { showHeroNote(res.message || I18n.t('err.opFailed'), true); } catch (_) {}
+    }
+    config = await api.getConfig();
+    status = await api.serverStatus();
+    renderAll();
+  });
   if ($('fRetry429')) $('fRetry429').addEventListener('change', (e) => persist({ retry429: Object.assign({}, config.retry429, { enabled: e.target.checked }) }));
   if ($('fInsecureTls')) $('fInsecureTls').addEventListener('change', (e) => persist({ insecureSkipVerify: e.target.checked }));
   $('fTrayUsage').addEventListener('change', (e) => persist({ trayUsage: { enabled: e.target.checked, range: $('fTrayRange').value } }));

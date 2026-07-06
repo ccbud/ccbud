@@ -292,48 +292,33 @@ fn connect_targets(cfg: &Value) -> Vec<String> {
     out
 }
 
-/// The model Codex should request through the gateway — the active provider's default model (the
-/// gateway then routes/maps it), falling back to a generic name.
-fn codex_model(cfg: &Value) -> String {
-    let active = cfg.get("activeProviderId").and_then(|v| v.as_str());
-    cfg.get("providers")
-        .and_then(|v| v.as_array())
-        .and_then(|arr| arr.iter().find(|p| p.get("id").and_then(|v| v.as_str()) == active).or_else(|| arr.first()))
-        .and_then(|p| p.get("defaultModel").and_then(|v| v.as_str()))
-        .filter(|s| !s.is_empty())
-        .unwrap_or("gpt-5")
-        .to_string()
+/// The model written into Codex's config: the fixed sentinel "gpt-5.5-ccbud". Codex derives its
+/// model family from the name — a foreign name (e.g. "z-ai/glm-5.2") makes it warn about an
+/// unknown/degraded model on every launch, while a gpt-5.5-prefixed one is accepted silently.
+/// The gateway routes any "*-ccbud" sentinel to the active provider's primary model.
+fn codex_model(_cfg: &Value) -> String {
+    "gpt-5.5-ccbud".to_string()
 }
 
-/// Make each CLI's actual connection match the selected `connectTargets`: connect the selected ones,
-/// disconnect the rest, and run the gateway iff at least one is selected. Idempotent.
-async fn apply_connections(
-    gw: &std::sync::Arc<gateway::GatewayState>,
-    cfg: &Value,
-) -> Result<(), String> {
+/// Make each CLI's config file match the selected `connectTargets`: write the selected ones to
+/// point at the gateway, restore the rest. PURELY a config-file operation — the gateway service
+/// itself is an independent switch (`gatewayEnabled`), never started or stopped from here.
+fn apply_connections(cfg: &Value) {
     let selected = connect_targets(cfg);
     let claude_on = selected.iter().any(|t| t == "claude");
     let codex_on = selected.iter().any(|t| t == "codex");
     let port = cfg.get("port").and_then(|v| v.as_u64()).unwrap_or(8788) as u16;
-    if claude_on || codex_on {
-        gw.start(port).await.map_err(|e| format!("port {} failed: {}", port, e))?;
-        let token = claude::current_token(cfg);
-        if claude_on {
-            claude::connect(port, &token);
-        } else {
-            claude::disconnect();
-        }
-        if codex_on {
-            codexconnect::connect(port, &token, &codex_model(cfg));
-        } else {
-            codexconnect::disconnect();
-        }
+    let token = claude::current_token(cfg);
+    if claude_on {
+        claude::connect(port, &token);
     } else {
         claude::disconnect();
-        codexconnect::disconnect();
-        gw.stop().await;
     }
-    Ok(())
+    if codex_on {
+        codexconnect::connect(port, &token, &codex_model(cfg));
+    } else {
+        codexconnect::disconnect();
+    }
 }
 
 #[tauri::command]
@@ -352,9 +337,7 @@ async fn claude_connect(
         cfg["connectTargets"] = json!(["claude"]);
         cfg = store::write_config(cfg);
     }
-    if let Err(e) = apply_connections(&gw, &cfg).await {
-        return Ok(json!({ "ok": false, "reason": "portFailed", "message": e }));
-    }
+    apply_connections(&cfg);
     let status = full_status(&gw).await;
     gw.emit("gateway:status", status);
     refresh_tray_menu(&app);
@@ -365,18 +348,48 @@ async fn claude_disconnect(
     app: tauri::AppHandle,
     gw: tauri::State<'_, std::sync::Arc<gateway::GatewayState>>,
 ) -> Result<Value, String> {
-    // Master off: restore BOTH CLIs' configs (idempotent) and stop the gateway.
+    // Master off: restore BOTH CLIs' config files (idempotent). The gateway service keeps its own
+    // switch — removing the CLI wiring doesn't stop it.
     claude::disconnect();
     codexconnect::disconnect();
-    gw.stop().await;
     let status = full_status(&gw).await;
     gw.emit("gateway:status", status);
     refresh_tray_menu(&app);
     Ok(json!({ "ok": true }))
 }
 
-/// Live per-CLI switch: flip one target on/off, persist the selection, and immediately connect or
-/// disconnect that CLI (starting/stopping the gateway as the overall selection requires).
+/// Independent gateway-service switch: persist `gatewayEnabled` and start/stop the localhost
+/// server. CLI config files are untouched — connect/disconnect is a separate, config-only action.
+#[tauri::command]
+async fn gateway_set_enabled(
+    app: tauri::AppHandle,
+    gw: tauri::State<'_, std::sync::Arc<gateway::GatewayState>>,
+    on: bool,
+) -> Result<Value, String> {
+    let mut cfg = store::read_config();
+    cfg["gatewayEnabled"] = json!(on);
+    let saved = store::write_config(cfg);
+    if on {
+        let port = saved.get("port").and_then(|v| v.as_u64()).unwrap_or(8788) as u16;
+        if let Err(e) = gw.start(port).await {
+            let msg = format!("port {} failed: {}", port, e);
+            *LAST_START_ERROR.lock().unwrap() = Some(msg.clone());
+            gw.emit("gateway:status", full_status(&gw).await);
+            refresh_tray_menu(&app);
+            return Ok(json!({ "ok": false, "reason": "portFailed", "message": msg }));
+        }
+        *LAST_START_ERROR.lock().unwrap() = None;
+    } else {
+        gw.stop().await;
+    }
+    let status = full_status(&gw).await;
+    gw.emit("gateway:status", status);
+    refresh_tray_menu(&app);
+    Ok(json!({ "ok": true }))
+}
+
+/// Live per-CLI switch: flip one target on/off, persist the selection, and immediately write or
+/// restore that CLI's config file. Config-only — the gateway service has its own switch.
 #[tauri::command]
 async fn set_connect_target(
     app: tauri::AppHandle,
@@ -395,9 +408,7 @@ async fn set_connect_target(
     }
     cfg["connectTargets"] = json!(targets);
     let saved = store::write_config(cfg);
-    if let Err(e) = apply_connections(&gw, &saved).await {
-        return Ok(json!({ "ok": false, "reason": "portFailed", "message": e }));
-    }
+    apply_connections(&saved);
     let status = full_status(&gw).await;
     gw.emit("gateway:status", status);
     refresh_tray_menu(&app);
@@ -485,6 +496,10 @@ async fn full_status(gw: &std::sync::Arc<gateway::GatewayState>) -> Value {
         o.insert("connectedClaude".into(), json!(claude_on));
         o.insert("connectedCodex".into(), json!(codex_on));
         o.insert("codexAvailable".into(), json!(codexconnect::is_available()));
+        o.insert(
+            "gatewayEnabled".into(),
+            json!(store::read_config().get("gatewayEnabled").and_then(|v| v.as_bool()).unwrap_or(true)),
+        );
         o.insert(
             "lastStartError".into(),
             LAST_START_ERROR
@@ -586,21 +601,21 @@ fn update_tray_title(app: &tauri::AppHandle) {
 
 // ---- system tray: dynamic, localized context menu (parity with main.js buildTrayMenu) ----
 struct TrayLabels {
-    connected_with: &'static str,
-    disconnected: &'static str,
+    running_with: &'static str,
+    stopped: &'static str,
     open_main: &'static str,
-    disconnect: &'static str,
-    connect: &'static str,
+    stop_gw: &'static str,
+    start_gw: &'static str,
     quit: &'static str,
     check_updates: &'static str,
 }
 fn tray_labels(lang: &str) -> TrayLabels {
     match lang {
-        "zh-CN" => TrayLabels { connected_with: "● 已接入：{name}", disconnected: "○ 未接入 Claude Code", open_main: "打开主界面", disconnect: "断开接入", connect: "一键接入", quit: "退出 ccbud", check_updates: "检查更新…" },
-        "zh-TW" => TrayLabels { connected_with: "● 已接入：{name}", disconnected: "○ 未接入 Claude Code", open_main: "開啟主視窗", disconnect: "中斷接入", connect: "一鍵接入", quit: "結束 ccbud", check_updates: "檢查更新…" },
-        "ja" => TrayLabels { connected_with: "● 接続済み：{name}", disconnected: "○ Claude Code 未接続", open_main: "メインウィンドウを開く", disconnect: "切断", connect: "接続", quit: "ccbud を終了", check_updates: "更新を確認…" },
-        "ko" => TrayLabels { connected_with: "● 연결됨: {name}", disconnected: "○ Claude Code 미연결", open_main: "메인 창 열기", disconnect: "연결 해제", connect: "연결", quit: "ccbud 종료", check_updates: "업데이트 확인…" },
-        _ => TrayLabels { connected_with: "● Connected: {name}", disconnected: "○ Not connected to Claude Code", open_main: "Open main window", disconnect: "Disconnect", connect: "Connect", quit: "Quit ccbud", check_updates: "Check for updates…" },
+        "zh-CN" => TrayLabels { running_with: "● 网关运行中 · {name}", stopped: "○ 网关已停止", open_main: "打开主界面", stop_gw: "停止网关服务", start_gw: "启动网关服务", quit: "退出 ccbud", check_updates: "检查更新…" },
+        "zh-TW" => TrayLabels { running_with: "● 閘道執行中 · {name}", stopped: "○ 閘道已停止", open_main: "開啟主視窗", stop_gw: "停止閘道服務", start_gw: "啟動閘道服務", quit: "結束 ccbud", check_updates: "檢查更新…" },
+        "ja" => TrayLabels { running_with: "● ゲートウェイ稼働中 · {name}", stopped: "○ ゲートウェイ停止中", open_main: "メインウィンドウを開く", stop_gw: "ゲートウェイを停止", start_gw: "ゲートウェイを起動", quit: "ccbud を終了", check_updates: "更新を確認…" },
+        "ko" => TrayLabels { running_with: "● 게이트웨이 실행 중 · {name}", stopped: "○ 게이트웨이 중지됨", open_main: "메인 창 열기", stop_gw: "게이트웨이 중지", start_gw: "게이트웨이 시작", quit: "ccbud 종료", check_updates: "업데이트 확인…" },
+        _ => TrayLabels { running_with: "● Gateway running · {name}", stopped: "○ Gateway stopped", open_main: "Open main window", stop_gw: "Stop gateway service", start_gw: "Start gateway service", quit: "Quit ccbud", check_updates: "Check for updates…" },
     }
 }
 fn config_lang(config: &Value) -> String {
@@ -624,25 +639,25 @@ fn active_provider_name(config: &Value) -> String {
 }
 fn build_tray_menu(
     app: &tauri::AppHandle,
-    connected: bool,
+    running: bool,
     provider: &str,
     lang: &str,
 ) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
     use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
     let l = tray_labels(lang);
-    let status_txt = if connected {
-        let name = if provider.is_empty() { "Claude Code" } else { provider };
-        l.connected_with.replace("{name}", name)
+    let status_txt = if running {
+        let name = if provider.is_empty() { "ccbud" } else { provider };
+        l.running_with.replace("{name}", name)
     } else {
-        l.disconnected.to_string()
+        l.stopped.to_string()
     };
     // Status row is disabled (it's an indicator, like main.js { enabled: false }).
     let status_i = MenuItem::with_id(app, "tray_status", status_txt, false, None::<&str>)?;
     let open_i = MenuItem::with_id(app, "tray_open", l.open_main, true, None::<&str>)?;
-    let conn_i = if connected {
-        MenuItem::with_id(app, "tray_disconnect", l.disconnect, true, None::<&str>)?
+    let conn_i = if running {
+        MenuItem::with_id(app, "tray_gw_stop", l.stop_gw, true, None::<&str>)?
     } else {
-        MenuItem::with_id(app, "tray_connect", l.connect, true, None::<&str>)?
+        MenuItem::with_id(app, "tray_gw_start", l.start_gw, true, None::<&str>)?
     };
     let check_i = MenuItem::with_id(app, "tray_check", l.check_updates, true, None::<&str>)?;
     let quit_i = MenuItem::with_id(app, "tray_quit", l.quit, true, None::<&str>)?;
@@ -650,16 +665,18 @@ fn build_tray_menu(
     let sep2 = PredefinedMenuItem::separator(app)?;
     Menu::with_items(app, &[&status_i, &sep1, &open_i, &conn_i, &check_i, &sep2, &quit_i])
 }
-/// Rebuild the tray menu to reflect current connection state + locale + active provider.
+/// Rebuild the tray menu to reflect the gateway service state + locale + active provider.
 fn refresh_tray_menu(app: &tauri::AppHandle) {
     let app2 = app.clone();
     let _ = app.run_on_main_thread(move || {
         let config = store::read_config();
-        let port = config.get("port").and_then(|v| v.as_u64()).unwrap_or(8788) as u16;
-        let connected = claude::is_connected(port);
+        let running = app2
+            .try_state::<std::sync::Arc<gateway::GatewayState>>()
+            .map(|s| s.port_sync().is_some())
+            .unwrap_or(false);
         let provider = active_provider_name(&config);
         let lang = config_lang(&config);
-        if let Ok(menu) = build_tray_menu(&app2, connected, &provider, &lang) {
+        if let Ok(menu) = build_tray_menu(&app2, running, &provider, &lang) {
             if let Some(tray) = app2.tray_by_id("main") {
                 let _ = tray.set_menu(Some(menu));
             }
@@ -1311,21 +1328,26 @@ pub fn run() {
                         .build(),
                 )?;
             }
-            // One-time migration: a detected Codex install (~/.codex/sessions) joins historyDirs
-            // as a regular work dir. Runs BEFORE the history watcher so its trees get watched.
+            // One-time migrations: a detected Codex install (~/.codex/sessions) and an XDG
+            // Claude tree (~/.config/claude/projects) join historyDirs as regular work dirs.
+            // Runs BEFORE the history watcher so their trees get watched.
             store::ensure_codex_dir();
+            store::ensure_xdg_claude_dir();
 
             // Start the localhost gateway on the configured port (proxy.js parity).
             let gw = gateway::GatewayState::new(app.handle().clone());
             app.manage(gw.clone());
-            let port = store::read_config()
-                .get("port")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(8788) as u16;
+            let startup_cfg = store::read_config();
+            let port = startup_cfg.get("port").and_then(|v| v.as_u64()).unwrap_or(8788) as u16;
+            let enabled = startup_cfg.get("gatewayEnabled").and_then(|v| v.as_bool()).unwrap_or(true);
+            let app_for_tray = app.handle().clone();
             tauri::async_runtime::spawn(async move {
-                if let Err(e) = gw.start(port).await {
-                    eprintln!("[ccbud] gateway start failed: {}", e);
+                if enabled {
+                    if let Err(e) = gw.start(port).await {
+                        eprintln!("[ccbud] gateway start failed: {}", e);
+                    }
                 }
+                refresh_tray_menu(&app_for_tray);
             });
 
             // System tray: icon + dynamic i18n menu (status / open / connect-or-disconnect /
@@ -1352,33 +1374,24 @@ pub fn run() {
                                 let _ = w.set_focus();
                             }
                         }
-                        "tray_connect" => {
+                        // Tray toggles the gateway SERVICE (start/stop), never the CLI configs.
+                        "tray_gw_start" | "tray_gw_stop" => {
+                            let on = event.id.as_ref() == "tray_gw_start";
                             let app = app.clone();
                             tauri::async_runtime::spawn(async move {
-                                let cfg = store::read_config();
-                                let port = cfg.get("port").and_then(|v| v.as_u64()).unwrap_or(8788) as u16;
+                                let mut cfg = store::read_config();
+                                cfg["gatewayEnabled"] = json!(on);
+                                let saved = store::write_config(cfg);
+                                let port = saved.get("port").and_then(|v| v.as_u64()).unwrap_or(8788) as u16;
                                 let gw = app
                                     .try_state::<std::sync::Arc<gateway::GatewayState>>()
                                     .map(|s| s.inner().clone());
                                 if let Some(gw) = gw {
-                                    if gw.start(port).await.is_ok() {
-                                        claude::connect(port, &claude::current_token(&cfg));
-                                        let status = full_status(&gw).await;
-                                        gw.emit("gateway:status", status);
+                                    if on {
+                                        let _ = gw.start(port).await;
+                                    } else {
+                                        gw.stop().await;
                                     }
-                                }
-                                refresh_tray_menu(&app);
-                            });
-                        }
-                        "tray_disconnect" => {
-                            let app = app.clone();
-                            tauri::async_runtime::spawn(async move {
-                                claude::disconnect();
-                                let gw = app
-                                    .try_state::<std::sync::Arc<gateway::GatewayState>>()
-                                    .map(|s| s.inner().clone());
-                                if let Some(gw) = gw {
-                                    gw.stop().await;
                                     let status = full_status(&gw).await;
                                     gw.emit("gateway:status", status);
                                 }
@@ -1653,7 +1666,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             config_get, config_save, provider_upsert, provider_delete, provider_set_active, provider_test,
             claude_connect, claude_disconnect, set_connect_target, desktop_status, desktop_connect, desktop_disconnect, desktop_replay,
-            server_status, usage_get, monitor_get, monitor_clear, logs_get, logs_clear,
+            server_status, gateway_set_enabled, usage_get, monitor_get, monitor_clear, logs_get, logs_clear,
             app_open_main, app_quit, window_settings_mode, window_view_min_width,
             history_projects, history_list, history_get, history_dirs, history_pick_dir, history_set_active,
             history_import, history_import_paths, history_remove_import, history_set_meta, history_delete_forever, history_export_raw, history_export_html,

@@ -117,6 +117,19 @@ pub fn resolve_routing(
             return pass(requested);
         }
     }
+    // Codex connects with the sentinel model "gpt-5.5-ccbud" — a name Codex's model-family
+    // detection accepts (gpt-5.5 prefix), so it doesn't warn about an unknown model. Route the
+    // sentinel to the active provider's PRIMARY model (never the lightweight fallback).
+    if requested.ends_with("-ccbud") {
+        let target = if !primary.is_empty() { primary } else { light };
+        if !target.is_empty() {
+            return Some(Routing {
+                provider_id: pid.clone(),
+                outgoing_model: Some(target.to_string()),
+                client_facing_model: Some(requested.to_string()),
+            });
+        }
+    }
     let map_default = active
         .get("mapDefaultModels")
         .map(|v| v.as_bool().unwrap_or(true))
@@ -148,6 +161,8 @@ pub struct GatewayState {
     known: Mutex<HashMap<String, HashSet<String>>>,
     seq: AtomicU64,
     running: Mutex<Option<RunningServer>>,
+    // Sync mirror of the bound port (0 = stopped) for callers that can't await (tray refresh).
+    running_port: std::sync::atomic::AtomicU32,
     exchanges: Mutex<VecDeque<Value>>,
     client: reqwest::Client,
     client_insecure: reqwest::Client,
@@ -175,6 +190,7 @@ impl GatewayState {
             known: Mutex::new(HashMap::new()),
             seq: AtomicU64::new(0),
             running: Mutex::new(None),
+            running_port: std::sync::atomic::AtomicU32::new(0),
             exchanges: Mutex::new(VecDeque::new()),
             client,
             client_insecure,
@@ -223,6 +239,14 @@ impl GatewayState {
         self.running.lock().await.as_ref().map(|r| r.port)
     }
 
+    /// Sync view of the running state (tray menu refresh runs on the main thread, no await).
+    pub fn port_sync(&self) -> Option<u16> {
+        match self.running_port.load(Ordering::Relaxed) {
+            0 => None,
+            p => Some(p as u16),
+        }
+    }
+
     pub fn emit(&self, event: &str, payload: Value) {
         let _ = self.app.emit(event, payload);
     }
@@ -245,6 +269,7 @@ impl GatewayState {
                 .await;
         });
         *self.running.lock().await = Some(RunningServer { port: actual, shutdown: tx });
+        self.running_port.store(actual as u32, Ordering::Relaxed);
         self.log("info", format!("gateway listening on http://127.0.0.1:{}", actual));
         let status = self.status().await;
         let _ = self.app.emit("gateway:status", status);
@@ -252,6 +277,7 @@ impl GatewayState {
     }
 
     pub async fn stop(self: &Arc<Self>) {
+        self.running_port.store(0, Ordering::Relaxed);
         let taken = self.running.lock().await.take();
         if let Some(rs) = taken {
             let _ = rs.shutdown.send(());
@@ -1574,6 +1600,11 @@ pub fn routing_selftest() -> Value {
     chk("7 stays on active", pidf(&r).as_deref() == Some("main") && out(&r).as_deref() == Some("small-model"));
     let r = resolve_routing(Some("whatever-x"), &off, None);
     chk("8 mapoff passthrough", out(&r).as_deref() == Some("whatever-x"));
+    let r = resolve_routing(Some("gpt-5.5-ccbud"), &cfg2, None);
+    chk(
+        "9 codex sentinel→primary",
+        out(&r).as_deref() == Some("big-model") && cf(&r).as_deref() == Some("gpt-5.5-ccbud"),
+    );
 
     json!({ "total": n, "passed": n - fails.len(), "failed": fails.len(), "fails": fails })
 }
@@ -1585,7 +1616,7 @@ mod tests {
     fn routing_parity_with_proxy_js() {
         let r = routing_selftest();
         assert_eq!(r.get("failed").and_then(|v| v.as_i64()), Some(0), "routing mismatch: {:?}", r);
-        assert_eq!(r.get("passed").and_then(|v| v.as_i64()), Some(8));
+        assert_eq!(r.get("passed").and_then(|v| v.as_i64()), Some(9));
     }
     #[test]
     fn synthesize_models_includes_claude_tiers() {

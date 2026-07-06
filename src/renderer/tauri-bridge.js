@@ -52,6 +52,7 @@
     usageGet: (range) => inv('usage_get', { range }),
 
     monitorGet: (id) => inv('monitor_get', { id }),
+    gatewaySetEnabled: (on) => inv('gateway_set_enabled', { on }),
     monitorClear: () => inv('monitor_clear'),
     logsGet: () => inv('logs_get'),
     logsClear: () => inv('logs_clear'),

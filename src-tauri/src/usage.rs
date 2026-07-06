@@ -1,26 +1,47 @@
-// Usage analytics — Rust port of insights.js + usage.js.
+// Usage analytics — aggregation semantics ported from ccusage (github.com/ccusage/ccusage),
+// scoped to the two agents ccbud fronts: Claude Code and Codex.
 //
-// Aggregates token usage from on-disk history across the active config dirs into per-day buckets,
-// then computes the stats payload the renderer's usage panel / tray render (tokens, requests,
-// byModel, heatmap, streaks). Two session trees contribute per work dir:
-//   - Claude Code `projects/` .jsonl — assistant records' message.usage, de-duped by message.id
-//     (a resumed/forked session repeats earlier messages in a new file), incl. per-session
-//     subagent transcripts (`<proj>/<session>/subagents/agent-*.jsonl`).
-//   - Codex `sessions/` rollout .jsonl — `token_count` events (one per model turn; the model comes
-//     from the preceding `turn_context`). Rollouts append in place and forks re-persist only the
-//     conversation items, so lines are counted as-is without a cross-file id.
-// Day bucketing is local-timezone (chrono::Local) to match usage.js exactly.
+// Per active work dir, two session trees contribute:
+//
+//   Claude Code `projects/**/*.jsonl` (recursive, any depth — sessions, nested session dirs,
+//   subagent transcripts all included by construction):
+//     - every line whose `message.usage` carries numeric input/output tokens counts — no
+//       `type=="assistant"` gate (ccusage parity);
+//     - a line without a parseable RFC3339 `timestamp` is DROPPED (never guessed);
+//     - cache-creation prefers the nested `cache_creation.ephemeral_{5m,1h}_input_tokens`
+//       breakdown over the flat `cache_creation_input_tokens`;
+//     - `<synthetic>` models keep their tokens but get no model attribution; `usage.speed=="fast"`
+//       appends a `-fast` suffix to the model;
+//     - global de-dup by (message.id, requestId) — entries without a message.id are never
+//       de-duped; a sidechain replay that reuses the parent's message.id under a NEW requestId
+//       collapses onto the parent (non-sidechain wins, then higher token total).
+//
+//   Codex `sessions/**/*.jsonl` + `archived_sessions/**/*.jsonl` (an archived copy of the same
+//   relative path is skipped — the active sessions/ copy wins):
+//     - `token_count` events: prefer `info.last_token_usage` (the turn delta); fall back to
+//       diffing consecutive `info.total_token_usage` snapshots; the cumulative baseline always
+//       advances so either form stays correct;
+//     - `thread_spawn` subagent files replay the parent's history as a leading burst of
+//       token_count lines sharing one timestamp-second — those are skipped (baseline still
+//       advances) so parent turns aren't counted twice;
+//     - identical (timestamp, model, tokens) events across files (resumed/forked sessions)
+//       de-dup globally;
+//     - model comes from the event payload/info, else the last `turn_context`, else "gpt-5";
+//       `input_tokens` is INCLUSIVE of `cached_input_tokens` — the cached part is split out into
+//       cacheRead and the remainder becomes input.
+//
+// Day bucketing is local-timezone (chrono::Local), matching ccusage's system-timezone default.
 
 #![allow(dead_code)]
 
 use chrono::{Datelike, Local, TimeZone, Timelike};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::io::BufRead;
+use std::path::{Path, PathBuf};
 
 const DAY_MS: i64 = 86_400_000;
 const HEATMAP_WEEKS: i64 = 26;
-const MAX_FILE: u64 = 64 * 1024 * 1024;
 
 fn home() -> PathBuf {
     std::env::var("HOME").map(PathBuf::from).unwrap_or_else(|_| PathBuf::from("."))
@@ -48,16 +69,6 @@ fn active_roots(config: &Value, active: &str) -> Vec<PathBuf> {
         }
     }
     out
-}
-
-/// Claude Code projects trees of the active dirs.
-fn active_dirs(config: &Value, active: &str) -> Vec<PathBuf> {
-    active_roots(config, active).into_iter().map(|r| r.join("projects")).collect()
-}
-
-/// Codex sessions trees of the active dirs (rollout-*.jsonl live under sessions/YYYY/MM/DD/).
-fn active_codex_dirs(config: &Value, active: &str) -> Vec<PathBuf> {
-    active_roots(config, active).into_iter().map(|r| r.join("sessions")).collect()
 }
 
 fn parse_ts(s: &str) -> Option<i64> {
@@ -106,214 +117,381 @@ struct Day {
     hours: HashMap<u32, i64>,
 }
 
+/// One counted usage event, whichever tree it came from.
 struct UsageRec {
-    id: Option<String>,
-    ts: Option<i64>,
-    model: String,
+    ts: i64,
+    model: Option<String>,
     input: i64,
     output: i64,
     cache_read: i64,
     cache_creation: i64,
 }
 
-fn parse_assistant_usage(raw: &str) -> Vec<UsageRec> {
-    let mut out = vec![];
-    for line in raw.split('\n') {
-        let s = line.trim();
-        if s.is_empty() {
-            continue;
-        }
-        let r: Value = match serde_json::from_str(s) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-        if r.get("type").and_then(|v| v.as_str()) != Some("assistant") {
-            continue;
-        }
-        let m = match r.get("message") {
-            Some(m) => m,
-            None => continue,
-        };
-        let u = match m.get("usage") {
-            Some(u) => u,
-            None => continue,
-        };
-        let inp = u.get("input_tokens").and_then(|v| v.as_i64()).unwrap_or(0);
-        let outp = u.get("output_tokens").and_then(|v| v.as_i64()).unwrap_or(0);
-        let cr = u.get("cache_read_input_tokens").and_then(|v| v.as_i64()).unwrap_or(0);
-        let cc = u.get("cache_creation_input_tokens").and_then(|v| v.as_i64()).unwrap_or(0);
-        if inp + outp + cr + cc == 0 {
-            continue;
-        }
-        out.push(UsageRec {
-            id: m.get("id").and_then(|v| v.as_str()).map(|s| s.to_string()),
-            ts: r.get("timestamp").and_then(|v| v.as_str()).and_then(parse_ts),
-            model: m.get("model").and_then(|v| v.as_str()).unwrap_or("unknown").to_string(),
-            input: inp,
-            output: outp,
-            cache_read: cr,
-            cache_creation: cc,
-        });
+impl UsageRec {
+    fn total(&self) -> i64 {
+        self.input + self.output + self.cache_read + self.cache_creation
     }
-    out
 }
 
-/// Codex rollout .jsonl → per-turn usage. `token_count` events carry `info.last_token_usage`
-/// (input includes the cached portion; split out like codex.rs does for the session viewer);
-/// the active model rides the preceding `turn_context` record.
-fn parse_codex_usage(raw: &str) -> Vec<UsageRec> {
-    let mut out = vec![];
-    let mut model = "codex".to_string();
-    for line in raw.split('\n') {
-        let s = line.trim();
-        if s.is_empty() {
-            continue;
-        }
-        let r: Value = match serde_json::from_str(s) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-        let p = r.get("payload").cloned().unwrap_or(Value::Null);
-        match r.get("type").and_then(|v| v.as_str()).unwrap_or("") {
-            "turn_context" => {
-                if let Some(m) = p.get("model").and_then(|v| v.as_str()) {
-                    if !m.is_empty() {
-                        model = m.to_string();
-                    }
-                }
-            }
-            "event_msg" => {
-                if p.get("type").and_then(|v| v.as_str()) != Some("token_count") {
-                    continue;
-                }
-                // info is null on rate-limit-only updates — skip those.
-                let u = match p.get("info").and_then(|i| i.get("last_token_usage")) {
-                    Some(u) => u,
-                    None => continue,
-                };
-                let input = u.get("input_tokens").and_then(|v| v.as_i64()).unwrap_or(0);
-                let cached = u.get("cached_input_tokens").and_then(|v| v.as_i64()).unwrap_or(0);
-                let output = u.get("output_tokens").and_then(|v| v.as_i64()).unwrap_or(0);
-                if input + cached + output == 0 {
-                    continue;
-                }
-                out.push(UsageRec {
-                    id: None, // rollouts append in place; no cross-file duplication to de-dup
-                    ts: r.get("timestamp").and_then(|v| v.as_str()).and_then(parse_ts),
-                    model: model.clone(),
-                    input: (input - cached).max(0),
-                    output,
-                    cache_read: cached,
-                    cache_creation: 0,
-                });
-            }
-            _ => {}
-        }
-    }
-    out
-}
-
-fn bump(days: &mut HashMap<String, Day>, rec: &UsageRec, fallback_ts: i64) {
-    let ts = rec.ts.unwrap_or(fallback_ts);
-    let total = rec.input + rec.output + rec.cache_read + rec.cache_creation;
-    let day = days.entry(key_of(ts)).or_default();
+fn bump(days: &mut HashMap<String, Day>, rec: &UsageRec) {
+    let day = days.entry(key_of(rec.ts)).or_default();
     day.requests += 1;
-    day.tokens += total;
+    day.tokens += rec.total();
     day.input += rec.input;
     day.output += rec.output;
     day.cache_read += rec.cache_read;
     day.cache_creation += rec.cache_creation;
-    *day.models.entry(rec.model.clone()).or_insert(0) += total;
-    *day.hours.entry(hour_of(ts)).or_insert(0) += total;
+    if let Some(m) = &rec.model {
+        *day.models.entry(m.clone()).or_insert(0) += rec.total();
+    }
+    *day.hours.entry(hour_of(rec.ts)).or_insert(0) += rec.total();
 }
 
-fn each_file(dirs: &[PathBuf], mut cb: impl FnMut(PathBuf)) {
-    for root in dirs {
-        let entries = match std::fs::read_dir(root) {
-            Ok(e) => e,
-            Err(_) => continue,
-        };
-        for ent in entries.flatten() {
-            let p = ent.path();
-            if !p.is_dir() {
-                continue;
-            }
-            let files = match std::fs::read_dir(&p) {
-                Ok(f) => f,
-                Err(_) => continue,
-            };
-            for f in files.flatten() {
-                let fp = f.path();
-                if fp.is_file() && fp.extension().and_then(|e| e.to_str()) == Some("jsonl") {
-                    cb(fp);
-                } else if fp.is_dir() {
-                    // Subagent transcripts live one level deeper, per session:
-                    // <proj>/<session>/subagents/agent-*.jsonl. (A bare <proj>/subagents dir is
-                    // tolerated too for older layouts.)
-                    let sub = if fp.file_name().and_then(|n| n.to_str()) == Some("subagents") {
-                        fp.clone()
-                    } else {
-                        fp.join("subagents")
-                    };
-                    if let Ok(sfiles) = std::fs::read_dir(&sub) {
-                        for sf in sfiles.flatten() {
-                            let sp = sf.path();
-                            if sp.is_file() && sp.extension().and_then(|e| e.to_str()) == Some("jsonl") {
-                                cb(sp);
-                            }
-                        }
-                    }
-                }
-            }
+/// Recursively collect `*.jsonl` under `dir`, any depth (ccusage walks the whole tree — nested
+/// session dirs and subagent transcripts are picked up by construction). Depth-capped as a
+/// symlink-loop guard.
+fn collect_jsonl(dir: &Path, depth: u32, out: &mut Vec<PathBuf>) {
+    if depth > 8 {
+        return;
+    }
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    for ent in entries.flatten() {
+        let p = ent.path();
+        if p.is_dir() {
+            collect_jsonl(&p, depth + 1, out);
+        } else if p.is_file() && p.extension().and_then(|e| e.to_str()) == Some("jsonl") {
+            out.push(p);
         }
     }
 }
 
-/// File metadata gate shared by both trees: (skip >MAX_FILE, mtime fallback ts, contents).
-fn read_history_file(file: &PathBuf) -> Option<(i64, String)> {
-    let meta = std::fs::metadata(file).ok()?;
-    if meta.len() > MAX_FILE {
-        return None;
-    }
-    let fallback_ts = meta
-        .modified()
-        .ok()
-        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0);
-    let raw = std::fs::read_to_string(file).ok()?;
-    Some((fallback_ts, raw))
+fn read_lines(file: &Path) -> Option<std::io::Lines<std::io::BufReader<std::fs::File>>> {
+    std::fs::File::open(file).ok().map(|f| std::io::BufReader::new(f).lines())
 }
 
-fn build_data(config: &Value, active: &str) -> HashMap<String, Day> {
-    let mut days: HashMap<String, Day> = HashMap::new();
+// ---------------------------------------------------------------------------
+// Claude Code (projects/ tree)
+// ---------------------------------------------------------------------------
 
-    // Claude Code projects/ tree (sessions + per-session subagents), de-duped by message.id.
-    let mut seen: HashSet<String> = HashSet::new();
-    let mut files: Vec<PathBuf> = vec![];
-    each_file(&active_dirs(config, active), |f| files.push(f));
-    for file in files {
-        let Some((fallback_ts, raw)) = read_history_file(&file) else { continue };
-        for rec in parse_assistant_usage(&raw) {
-            if let Some(id) = &rec.id {
-                if !seen.insert(id.clone()) {
+struct ClaudeRec {
+    id: Option<String>,
+    request_id: Option<String>,
+    sidechain: bool,
+    rec: UsageRec,
+}
+
+/// Parse one history line into a usage entry. Requires numeric `message.usage.input_tokens` /
+/// `output_tokens` and a parseable `timestamp`; everything else is optional.
+fn parse_claude_line(line: &str) -> Option<ClaudeRec> {
+    // cheap prefilter before JSON parse (ccusage scans for the same marker)
+    if !line.contains("\"usage\"") {
+        return None;
+    }
+    let r: Value = serde_json::from_str(line).ok()?;
+    let m = r.get("message")?;
+    let u = m.get("usage")?;
+    let input = u.get("input_tokens")?.as_i64()?;
+    let output = u.get("output_tokens")?.as_i64()?;
+    let cache_read = u.get("cache_read_input_tokens").and_then(|v| v.as_i64()).unwrap_or(0);
+    // nested ephemeral breakdown wins over the flat cache_creation_input_tokens
+    let cache_creation = match u.get("cache_creation").filter(|v| v.is_object()) {
+        Some(b) => {
+            b.get("ephemeral_5m_input_tokens").and_then(|v| v.as_i64()).unwrap_or(0)
+                + b.get("ephemeral_1h_input_tokens").and_then(|v| v.as_i64()).unwrap_or(0)
+        }
+        None => u.get("cache_creation_input_tokens").and_then(|v| v.as_i64()).unwrap_or(0),
+    };
+    if input + output + cache_read + cache_creation <= 0 {
+        return None; // zero rows (synthetic error turns) carry no token information
+    }
+    let ts = r.get("timestamp").and_then(|v| v.as_str()).and_then(parse_ts)?;
+    let speed_fast = u.get("speed").and_then(|v| v.as_str()) == Some("fast");
+    let model = m.get("model").and_then(|v| v.as_str()).and_then(|s| {
+        if s.is_empty() || s == "<synthetic>" {
+            None // tokens still count; no model attribution
+        } else if speed_fast {
+            Some(format!("{}-fast", s))
+        } else {
+            Some(s.to_string())
+        }
+    });
+    Some(ClaudeRec {
+        id: m.get("id").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(String::from),
+        request_id: r.get("requestId").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(String::from),
+        sidechain: r.get("isSidechain").and_then(|v| v.as_bool()).unwrap_or(false),
+        rec: UsageRec { ts, model, input, output, cache_read, cache_creation },
+    })
+}
+
+/// Global de-dup, ccusage semantics: key (message.id, requestId); entries without an id are always
+/// kept. A miss on the exact key falls back to the id-only bucket when either side is a sidechain
+/// (a `/btw` replay reuses the parent's message.id under a new requestId). On a duplicate the
+/// non-sidechain copy wins, then the higher token total.
+fn dedup_claude(recs: Vec<ClaudeRec>) -> Vec<ClaudeRec> {
+    let mut kept: Vec<ClaudeRec> = vec![];
+    let mut by_exact: HashMap<(String, Option<String>), usize> = HashMap::new();
+    let mut by_id: HashMap<String, usize> = HashMap::new();
+    for cand in recs {
+        let Some(id) = cand.id.clone() else {
+            kept.push(cand);
+            continue;
+        };
+        let exact = (id.clone(), cand.request_id.clone());
+        let slot = by_exact.get(&exact).copied().or_else(|| {
+            by_id.get(&id).copied().filter(|&i| cand.sidechain || kept[i].sidechain)
+        });
+        match slot {
+            Some(i) => {
+                let cur = &kept[i];
+                let replace = (cur.sidechain && !cand.sidechain)
+                    || (cur.sidechain == cand.sidechain && cand.rec.total() > cur.rec.total());
+                if replace {
+                    kept[i] = cand;
+                }
+                by_exact.insert(exact, i);
+            }
+            None => {
+                let i = kept.len();
+                by_exact.insert(exact, i);
+                by_id.entry(id).or_insert(i);
+                kept.push(cand);
+            }
+        }
+    }
+    kept
+}
+
+// ---------------------------------------------------------------------------
+// Codex (sessions/ + archived_sessions/ trees)
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Copy, Default, PartialEq, Eq, Hash)]
+struct CodexUsage {
+    input: i64,
+    cached: i64,
+    output: i64,
+    reasoning: i64,
+    total: i64,
+}
+
+/// Lenient token-usage decode (ccusage accepts several field aliases per component).
+fn codex_usage_of(v: &Value) -> Option<CodexUsage> {
+    let o = v.as_object()?;
+    let g = |keys: &[&str]| keys.iter().find_map(|k| o.get(*k).and_then(|v| v.as_i64())).unwrap_or(0);
+    let input = g(&["input_tokens", "prompt_tokens", "input"]);
+    let cached = g(&["cached_input_tokens", "cache_read_input_tokens", "cached_tokens"]);
+    let output = g(&["output_tokens", "completion_tokens", "output"]);
+    let reasoning = g(&["reasoning_output_tokens", "reasoning_tokens"]);
+    let total = match o.get("total_tokens").and_then(|v| v.as_i64()) {
+        Some(t) if t > 0 || input + output + reasoning == 0 => t,
+        _ => input + output + reasoning,
+    };
+    Some(CodexUsage { input, cached, output, reasoning, total })
+}
+
+fn codex_usage_sub(cur: CodexUsage, prev: Option<CodexUsage>) -> CodexUsage {
+    let p = prev.unwrap_or_default();
+    CodexUsage {
+        input: (cur.input - p.input).max(0),
+        cached: (cur.cached - p.cached).max(0),
+        output: (cur.output - p.output).max(0),
+        reasoning: (cur.reasoning - p.reasoning).max(0),
+        total: (cur.total - p.total).max(0),
+    }
+}
+
+fn codex_model_of(v: Option<&Value>) -> Option<String> {
+    let o = v?.as_object()?;
+    o.get("model")
+        .or_else(|| o.get("model_name"))
+        .or_else(|| o.get("metadata").and_then(|m| m.get("model")))
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(String::from)
+}
+
+/// Whether this rollout is a `thread_spawn` subagent session (marker in the file head).
+fn codex_is_subagent(file: &Path) -> bool {
+    use std::io::Read;
+    let Ok(mut f) = std::fs::File::open(file) else { return false };
+    let mut buf = [0u8; 16 * 1024];
+    let n = f.read(&mut buf).unwrap_or(0);
+    buf[..n].windows(b"thread_spawn".len()).any(|w| w == b"thread_spawn")
+}
+
+/// A subagent file replays the parent's token_count history as a leading burst that shares one
+/// timestamp-second — detect that second (the first two usage events landing on the same second),
+/// so the replay can be skipped while the cumulative baseline still advances.
+fn codex_replay_second(file: &Path) -> Option<String> {
+    let mut first: Option<String> = None;
+    for line in read_lines(file)? {
+        let Ok(line) = line else { return None };
+        let Some((ts, payload)) = codex_token_count_line(&line) else { continue };
+        let info = payload.get("info");
+        let has_usage = info
+            .map(|i| i.get("last_token_usage").is_some() || i.get("total_token_usage").is_some())
+            .unwrap_or(false);
+        if !has_usage {
+            continue;
+        }
+        let second: String = ts.chars().take(19).collect();
+        match &first {
+            None => first = Some(second),
+            Some(f) => return if *f == second { Some(second) } else { None },
+        }
+    }
+    None
+}
+
+/// Parse a line as a `token_count` event → (timestamp, payload). None for everything else.
+fn codex_token_count_line(line: &str) -> Option<(String, Value)> {
+    if !line.contains("token_count") {
+        return None;
+    }
+    let r: Value = serde_json::from_str(line).ok()?;
+    if r.get("type").and_then(|v| v.as_str()) != Some("event_msg") {
+        return None;
+    }
+    let p = r.get("payload")?;
+    if p.get("type").and_then(|v| v.as_str()) != Some("token_count") {
+        return None;
+    }
+    let ts = r.get("timestamp").and_then(|v| v.as_str())?.to_string();
+    Some((ts, p.clone()))
+}
+
+/// Parse one Codex rollout file into per-turn usage events (ccusage semantics — see module doc).
+fn parse_codex_file(file: &Path, out: &mut Vec<(CodexUsage, i64, String)>) {
+    let replay_second = if codex_is_subagent(file) { codex_replay_second(file) } else { None };
+    let mut skip_replay = replay_second.is_some();
+    let mut current_model: Option<String> = None;
+    let mut prev_totals: Option<CodexUsage> = None;
+    let Some(lines) = read_lines(file) else { return };
+    for line in lines {
+        let Ok(line) = line else { break };
+        let s = line.trim();
+        if s.is_empty() {
+            continue;
+        }
+        // turn_context carries the active model
+        if s.contains("turn_context") {
+            if let Ok(r) = serde_json::from_str::<Value>(s) {
+                if r.get("type").and_then(|v| v.as_str()) == Some("turn_context") {
+                    if let Some(m) = codex_model_of(r.get("payload")) {
+                        current_model = Some(m);
+                    }
                     continue;
                 }
             }
-            bump(&mut days, &rec, fallback_ts);
         }
+        let Some((ts_str, payload)) = codex_token_count_line(s) else { continue };
+        let info = payload.get("info").filter(|i| !i.is_null());
+        let total = info.and_then(|i| i.get("total_token_usage")).and_then(codex_usage_of);
+        let last = info.and_then(|i| i.get("last_token_usage")).and_then(codex_usage_of);
+        // leading parent-history replay in a subagent file: skip, but keep the baseline moving
+        if skip_replay {
+            let second: String = ts_str.chars().take(19).collect();
+            if Some(&second) == replay_second.as_ref() {
+                if let Some(t) = total {
+                    prev_totals = Some(t);
+                }
+                continue;
+            }
+            skip_replay = false;
+        }
+        let usage = last.or_else(|| total.map(|t| codex_usage_sub(t, prev_totals)));
+        if let Some(t) = total {
+            prev_totals = Some(t);
+        }
+        let Some(mut u) = usage else { continue };
+        if u.input + u.cached + u.output + u.reasoning == 0 {
+            continue;
+        }
+        let Some(ts) = parse_ts(&ts_str) else { continue };
+        u.cached = u.cached.min(u.input); // input is INCLUSIVE of cached
+        let model = codex_model_of(Some(&payload))
+            .or_else(|| codex_model_of(info))
+            .or_else(|| current_model.clone())
+            .unwrap_or_else(|| "gpt-5".to_string());
+        out.push((u, ts, model));
+    }
+}
+
+/// Collect a work dir's Codex rollout files: sessions/ plus archived_sessions/, where an archived
+/// copy of the same relative path loses to the active sessions/ copy.
+fn codex_files(root: &Path) -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = vec![];
+    let mut seen_rel: HashSet<PathBuf> = HashSet::new();
+    for sub in ["sessions", "archived_sessions"] {
+        let dir = root.join(sub);
+        let mut files = vec![];
+        collect_jsonl(&dir, 0, &mut files);
+        files.sort();
+        for f in files {
+            let rel = f.strip_prefix(&dir).map(|p| p.to_path_buf()).unwrap_or_else(|_| f.clone());
+            if seen_rel.insert(rel) {
+                out.push(f);
+            }
+        }
+    }
+    out
+}
+
+// ---------------------------------------------------------------------------
+// aggregation
+// ---------------------------------------------------------------------------
+
+fn build_data(config: &Value, active: &str) -> HashMap<String, Day> {
+    let mut days: HashMap<String, Day> = HashMap::new();
+    let roots = active_roots(config, active);
+
+    // Claude Code: parse everything, then de-dup globally, then bucket.
+    let mut claude_recs: Vec<ClaudeRec> = vec![];
+    for root in &roots {
+        let mut files = vec![];
+        collect_jsonl(&root.join("projects"), 0, &mut files);
+        files.sort();
+        for file in files {
+            let Some(lines) = read_lines(&file) else { continue };
+            for line in lines {
+                let Ok(line) = line else { break };
+                if let Some(rec) = parse_claude_line(line.trim()) {
+                    claude_recs.push(rec);
+                }
+            }
+        }
+    }
+    for kept in dedup_claude(claude_recs) {
+        bump(&mut days, &kept.rec);
     }
 
-    // Codex sessions/ tree (rollout token_count events).
-    let mut cx_files: Vec<PathBuf> = vec![];
-    for root in active_codex_dirs(config, active) {
-        crate::codex::walk_sessions(&root, |f| cx_files.push(f));
-    }
-    for file in cx_files {
-        let Some((fallback_ts, raw)) = read_history_file(&file) else { continue };
-        for rec in parse_codex_usage(&raw) {
-            bump(&mut days, &rec, fallback_ts);
+    // Codex: per-turn events, de-duped globally by (timestamp, model, tokens) so resumed/forked
+    // session copies collapse.
+    let mut events: Vec<(CodexUsage, i64, String)> = vec![];
+    for root in &roots {
+        for file in codex_files(root) {
+            parse_codex_file(&file, &mut events);
         }
+    }
+    let mut seen: HashSet<(i64, String, CodexUsage)> = HashSet::new();
+    for (u, ts, model) in events {
+        if !seen.insert((ts, model.clone(), u)) {
+            continue;
+        }
+        bump(
+            &mut days,
+            &UsageRec {
+                ts,
+                model: Some(model),
+                input: (u.input - u.cached).max(0),
+                output: u.output,
+                cache_read: u.cached,
+                cache_creation: 0,
+            },
+        );
     }
     days
 }
@@ -516,58 +694,16 @@ mod tests {
     use super::*;
     use std::fs;
 
-    fn asst(id: &str, model: &str, ts: &str, inp: i64, out: i64) -> String {
-        format!(
-            "{}\n",
-            json!({ "type": "assistant", "timestamp": ts,
-                "message": { "id": id, "model": model,
-                    "usage": { "input_tokens": inp, "output_tokens": out } } })
-        )
+    fn line(v: Value) -> String {
+        format!("{}\n", v)
+    }
+    fn asst(id: &str, req: &str, model: &str, ts: &str, inp: i64, out: i64) -> String {
+        line(json!({ "type": "assistant", "timestamp": ts, "requestId": req,
+            "message": { "id": id, "model": model,
+                "usage": { "input_tokens": inp, "output_tokens": out } } }))
     }
 
-    // One temp work dir exercising all three sources: main sessions (with a resumed-file
-    // duplicate + a zero-usage synthetic turn), a per-session subagent transcript at the REAL
-    // depth (<proj>/<session>/subagents/), and a Codex rollout (model from turn_context,
-    // cached split out, info-null token_count skipped).
-    #[test]
-    fn aggregates_sessions_subagents_and_codex() {
-        let base = std::env::temp_dir().join(format!("ccbud-usage-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&base);
-        let proj = base.join("projects").join("-p");
-        fs::create_dir_all(&proj).unwrap();
-        fs::write(
-            proj.join("s1.jsonl"),
-            asst("msg_1", "claude-x", "2026-07-01T10:00:00Z", 100, 10)
-                + &asst("msg_zero", "claude-x", "2026-07-01T10:01:00Z", 0, 0),
-        )
-        .unwrap();
-        fs::write(
-            proj.join("s2.jsonl"),
-            asst("msg_1", "claude-x", "2026-07-01T10:00:00Z", 100, 10)
-                + &asst("msg_2", "claude-x", "2026-07-01T11:00:00Z", 50, 5),
-        )
-        .unwrap();
-        let sub = proj.join("s1").join("subagents");
-        fs::create_dir_all(&sub).unwrap();
-        fs::write(sub.join("agent-a.jsonl"), asst("msg_sub", "claude-x", "2026-07-01T10:30:00Z", 30, 3)).unwrap();
-
-        let day = base.join("sessions").join("2026").join("07").join("01");
-        fs::create_dir_all(&day).unwrap();
-        let rollout = [
-            json!({ "timestamp": "2026-07-01T12:00:00Z", "type": "session_meta", "payload": { "id": "s" } }),
-            json!({ "timestamp": "2026-07-01T12:00:01Z", "type": "turn_context", "payload": { "model": "gpt-5.5" } }),
-            json!({ "timestamp": "2026-07-01T12:00:02Z", "type": "event_msg", "payload": { "type": "token_count",
-                "info": { "last_token_usage": { "input_tokens": 900, "cached_input_tokens": 600, "output_tokens": 80, "total_tokens": 980 } } } }),
-            json!({ "timestamp": "2026-07-01T12:00:03Z", "type": "event_msg", "payload": { "type": "token_count", "info": null } }),
-        ]
-        .iter()
-        .map(|v| v.to_string())
-        .collect::<Vec<_>>()
-        .join("\n");
-        fs::write(day.join("rollout-2026-07-01T12-00-00-abc.jsonl"), rollout).unwrap();
-
-        let config = json!({ "historyDirs": [ base.to_string_lossy() ] });
-        let days = build_data(&config, "all");
+    fn sum(days: &HashMap<String, Day>) -> (i64, i64, i64, i64, i64, HashMap<String, i64>) {
         let (mut tokens, mut input, mut output, mut cache_read, mut requests) = (0i64, 0i64, 0i64, 0i64, 0i64);
         let mut models: HashMap<String, i64> = HashMap::new();
         for d in days.values() {
@@ -580,15 +716,146 @@ mod tests {
                 *models.entry(m.clone()).or_insert(0) += v;
             }
         }
-        // claude: msg_1(110) + msg_2(55) + subagent msg_sub(33); duplicate + zero-usage skipped.
-        // codex: input 900-600=300, cacheRead 600, output 80 → 980; info-null line skipped.
+        (tokens, input, output, cache_read, requests, models)
+    }
+
+    #[test]
+    fn claude_ccusage_semantics() {
+        let base = std::env::temp_dir().join(format!("ccbud-usage-cl-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let proj = base.join("projects").join("-p");
+        // nested session dir + subagent transcript at arbitrary depth — recursive walk finds both
+        let deep = proj.join("s1").join("subagents");
+        fs::create_dir_all(&deep).unwrap();
+
+        fs::write(
+            proj.join("s1.jsonl"),
+            // counted (110)
+            asst("m1", "r1", "claude-x", "2026-07-01T10:00:00Z", 100, 10)
+                // same (id, requestId) duplicate → collapsed
+                + &asst("m1", "r1", "claude-x", "2026-07-01T10:00:00Z", 100, 10)
+                // same id, DIFFERENT requestId, no sidechain → distinct entry (counted, 55)
+                + &asst("m1", "r2", "claude-x", "2026-07-01T10:05:00Z", 50, 5)
+                // undated → dropped
+                + &line(json!({ "type": "assistant",
+                    "message": { "id": "m2", "model": "claude-x", "usage": { "input_tokens": 9, "output_tokens": 9 } } }))
+                // zero usage → dropped
+                + &asst("m3", "r3", "<synthetic>", "2026-07-01T10:06:00Z", 0, 0)
+                // synthetic model with tokens → counted (7), no model attribution
+                + &asst("m4", "r4", "<synthetic>", "2026-07-01T10:07:00Z", 5, 2)
+                // no type field at all (ccusage has no type gate) → counted (13)
+                + &line(json!({ "timestamp": "2026-07-01T10:08:00Z", "requestId": "r5",
+                    "message": { "id": "m5", "model": "claude-x",
+                        "usage": { "input_tokens": 10, "output_tokens": 3 } } })),
+        )
+        .unwrap();
+        // subagent transcript, nested cache_creation breakdown + fast speed suffix (counted, 3+4+6+7=20)
+        fs::write(
+            deep.join("agent-a.jsonl"),
+            line(json!({ "timestamp": "2026-07-01T11:00:00Z", "requestId": "r6",
+                "message": { "id": "m6", "model": "claude-x",
+                    "usage": { "input_tokens": 3, "output_tokens": 4, "speed": "fast",
+                        "cache_read_input_tokens": 6,
+                        "cache_creation_input_tokens": 999,
+                        "cache_creation": { "ephemeral_5m_input_tokens": 5, "ephemeral_1h_input_tokens": 2 } } } })),
+        )
+        .unwrap();
+        // sidechain replay: reuses m1 under a NEW requestId with isSidechain → collapses onto parent
+        fs::write(
+            proj.join("s2.jsonl"),
+            line(json!({ "type": "assistant", "timestamp": "2026-07-01T10:00:01Z", "requestId": "r9",
+                "isSidechain": true,
+                "message": { "id": "m1", "model": "claude-x", "usage": { "input_tokens": 100, "output_tokens": 10 } } })),
+        )
+        .unwrap();
+
+        let config = json!({ "historyDirs": [ base.to_string_lossy() ] });
+        let days = build_data(&config, "all");
+        let (tokens, input, output, cache_read, requests, models) = sum(&days);
+        // m1(110) + m1/r2(55) + m4(7) + m5(13) + m6(20)
+        assert_eq!(requests, 5);
+        assert_eq!(input, 100 + 50 + 5 + 10 + 3);
+        assert_eq!(output, 10 + 5 + 2 + 3 + 4);
+        assert_eq!(cache_read, 6);
+        assert_eq!(tokens, 110 + 55 + 7 + 13 + 20);
+        // synthetic tokens counted but unattributed; fast suffix applied
+        assert_eq!(models.get("claude-x").copied(), Some(110 + 55 + 13));
+        assert_eq!(models.get("claude-x-fast").copied(), Some(20));
+        assert!(models.get("<synthetic>").is_none());
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    fn tc(ts: &str, last: Option<(i64, i64, i64)>, total: Option<(i64, i64, i64)>) -> String {
+        let mut info = json!({});
+        if let Some((i, c, o)) = last {
+            info["last_token_usage"] = json!({ "input_tokens": i, "cached_input_tokens": c, "output_tokens": o,
+                "total_tokens": i + o });
+        }
+        if let Some((i, c, o)) = total {
+            info["total_token_usage"] = json!({ "input_tokens": i, "cached_input_tokens": c, "output_tokens": o,
+                "total_tokens": i + o });
+        }
+        line(json!({ "timestamp": ts, "type": "event_msg", "payload": { "type": "token_count", "info": info } }))
+    }
+
+    #[test]
+    fn codex_ccusage_semantics() {
+        let base = std::env::temp_dir().join(format!("ccbud-usage-cx-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let day = base.join("sessions").join("2026").join("07").join("01");
+        fs::create_dir_all(&day).unwrap();
+
+        // main session: model from turn_context; one last_token_usage turn; one turn WITHOUT
+        // last (only cumulative total) → counted as the diff from the baseline.
+        fs::write(
+            day.join("rollout-a.jsonl"),
+            line(json!({ "timestamp": "2026-07-01T12:00:00Z", "type": "session_meta", "payload": { "id": "a" } }))
+                + &line(json!({ "timestamp": "2026-07-01T12:00:01Z", "type": "turn_context", "payload": { "model": "gpt-5.5" } }))
+                + &tc("2026-07-01T12:00:02Z", Some((900, 600, 80)), Some((900, 600, 80)))
+                + &tc("2026-07-01T12:00:03Z", None, Some((1400, 900, 130))) // diff: 500/300/50
+                + &tc("2026-07-01T12:00:04Z", None, None), // info without usage → skipped
+        )
+        .unwrap();
+        // resumed copy of the same session: identical events must de-dup, a new turn counts.
+        fs::write(
+            day.join("rollout-b.jsonl"),
+            line(json!({ "timestamp": "2026-07-01T12:10:00Z", "type": "turn_context", "payload": { "model": "gpt-5.5" } }))
+                + &tc("2026-07-01T12:00:02Z", Some((900, 600, 80)), None) // duplicate of a's turn 1
+                + &tc("2026-07-01T12:10:01Z", Some((10, 0, 5)), None), // new turn (15)
+        )
+        .unwrap();
+        // archived copy of rollout-a (same relative path) → file-level de-dup, never read twice.
+        let arch = base.join("archived_sessions").join("2026").join("07").join("01");
+        fs::create_dir_all(&arch).unwrap();
+        fs::write(arch.join("rollout-a.jsonl"), tc("2026-07-01T12:00:02Z", Some((900, 600, 80)), None)).unwrap();
+        // thread_spawn subagent: leading replay burst (same second) skipped, own turn counted,
+        // and the baseline carried from the replayed cumulative total.
+        fs::write(
+            day.join("rollout-sub.jsonl"),
+            line(json!({ "timestamp": "2026-07-01T13:00:00Z", "type": "session_meta",
+                "payload": { "id": "sub", "source": { "type": "thread_spawn" } } }))
+                + &tc("2026-07-01T13:00:01Z", Some((900, 600, 80)), Some((900, 600, 80)))
+                + &tc("2026-07-01T13:00:01Z", Some((500, 300, 50)), Some((1400, 900, 130)))
+                + &tc("2026-07-01T13:00:05Z", None, Some((1600, 900, 160))), // own turn: diff 200/0/30
+        )
+        .unwrap();
+
+        let config = json!({ "historyDirs": [ base.to_string_lossy() ] });
+        let days = build_data(&config, "all");
+        let (tokens, input, output, cache_read, requests, models) = sum(&days);
+        // a#1: in 900 (cached 600) out 80 → input 300, cacheRead 600, out 80  (980)
+        // a#2 (diff): in 500 (cached 300) out 50 → input 200, cacheRead 300, out 50 (550)
+        // b#2: 10/0/5 (15)
+        // sub own turn: 200/0/30 (230)
         assert_eq!(requests, 4);
-        assert_eq!(input, 100 + 50 + 30 + 300);
-        assert_eq!(output, 10 + 5 + 3 + 80);
-        assert_eq!(cache_read, 600);
-        assert_eq!(tokens, 110 + 55 + 33 + 980);
-        assert_eq!(models.get("claude-x").copied(), Some(198));
-        assert_eq!(models.get("gpt-5.5").copied(), Some(980));
+        assert_eq!(input, 300 + 200 + 10 + 200);
+        assert_eq!(cache_read, 600 + 300);
+        assert_eq!(output, 80 + 50 + 5 + 30);
+        assert_eq!(tokens, 980 + 550 + 15 + 230);
+        assert_eq!(models.get("gpt-5.5").copied(), Some(980 + 550 + 15));
+        // subagent file had no turn_context → fallback model
+        assert_eq!(models.get("gpt-5").copied(), Some(230));
 
         let _ = fs::remove_dir_all(&base);
     }
