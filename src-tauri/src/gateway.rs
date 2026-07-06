@@ -622,9 +622,10 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
     // When the client's wire protocol (inferred from the request path) differs from the provider's
     // declared protocol, translate the request into the provider's format and remember to translate
     // the response back. Same-protocol requests skip this entirely and keep the verbatim passthrough
-    // fast path below (so Anthropic→Anthropic behavior is byte-for-byte unchanged). First cut: we
-    // force the upstream to buffered (stream=false) and synthesize the client SSE from the full
-    // response — true incremental transcoding is a follow-up.
+    // fast path below (so Anthropic→Anthropic behavior is byte-for-byte unchanged). Streaming pairs
+    // with an incremental transcoder (see protocol::stream::Transcoder) stream token-by-token; the
+    // rest force the upstream buffered (stream=false) and synthesize the client SSE from the full
+    // response.
     let client_wire = crate::protocol::Wire::from_request_path(&uri);
     let provider_wire =
         crate::protocol::Wire::from_provider(provider.get("protocol").and_then(|v| v.as_str()));
@@ -672,6 +673,13 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
         up_headers.insert(k.clone(), v.clone());
     }
     up_headers.insert(axum::http::header::ACCEPT_ENCODING, HeaderValue::from_static("identity"));
+    // A translated Anthropic upstream needs the anthropic-version header; OpenAI-family clients
+    // (Codex) never send one.
+    if translate.as_ref().map(|t| t.1) == Some(crate::protocol::Wire::Anthropic)
+        && !up_headers.contains_key("anthropic-version")
+    {
+        up_headers.insert("anthropic-version", HeaderValue::from_static("2023-06-01"));
+    }
     if !auth_token.is_empty() {
         // Auth via Authorization: Bearer only. Sending both authorization and x-api-key trips
         // providers that reject having the two auth headers present at once (matches provider_test).
@@ -778,8 +786,13 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
     if ct.contains("text/event-stream") {
         // Incremental cross-protocol transcode: feed each upstream SSE line through a stateful
         // transcoder that emits the client protocol's events as they arrive (true token-by-token).
-        if let Some((client_wire, provider_wire, client_model)) =
-            translate.as_ref().filter(|t| t.4).map(|t| (t.0, t.1, t.2.clone()))
+        if let Some((client_wire, provider_wire, mut tc)) = translate
+            .as_ref()
+            .filter(|t| t.4)
+            .and_then(|t| {
+                // can_transcode_stream guarded `incremental`, so new() matches a wired pair.
+                crate::protocol::stream::Transcoder::new(t.1, t.0, &t.2).map(|tc| (t.0, t.1, tc))
+            })
         {
             let st2 = st.clone();
             let method2 = method.clone();
@@ -794,8 +807,6 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
             let ex_rb = ex_req_body.clone();
             let xlabel = format!("{:?}->{:?}", provider_wire, client_wire);
             let body_stream = async_stream::stream! {
-                // Only OpenAI-Chat→Anthropic is wired today (can_transcode_stream guards it).
-                let mut tc = crate::protocol::stream::ChatToAnthropic::new(&client_model);
                 let mut s = resp.bytes_stream();
                 let mut buf = String::new();
                 let mut res_cap = String::new();
@@ -1158,8 +1169,10 @@ async fn mock_handler(req: axum::extract::Request) -> Response {
         );
     }
     if stream {
+        // Anthropic streaming with a real text block, so the Anthropic→Responses incremental
+        // transcoder (Codex client) has content to carry, not just usage bookkeeping.
         let sse = format!(
-            "event: message_start\ndata: {{\"type\":\"message_start\",\"message\":{{\"model\":\"{m}\",\"usage\":{{\"input_tokens\":10,\"cache_read_input_tokens\":0,\"cache_creation_input_tokens\":0}}}}}}\n\nevent: message_delta\ndata: {{\"type\":\"message_delta\",\"usage\":{{\"output_tokens\":7}}}}\n\nevent: message_stop\ndata: {{\"type\":\"message_stop\"}}\n\n",
+            "event: message_start\ndata: {{\"type\":\"message_start\",\"message\":{{\"id\":\"msg_mock\",\"model\":\"{m}\",\"usage\":{{\"input_tokens\":10,\"cache_read_input_tokens\":0,\"cache_creation_input_tokens\":0}}}}}}\n\nevent: content_block_start\ndata: {{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{{\"type\":\"text\",\"text\":\"\"}}}}\n\nevent: content_block_delta\ndata: {{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{{\"type\":\"text_delta\",\"text\":\"hi from anthropic\"}}}}\n\nevent: content_block_stop\ndata: {{\"type\":\"content_block_stop\",\"index\":0}}\n\nevent: message_delta\ndata: {{\"type\":\"message_delta\",\"usage\":{{\"output_tokens\":7}}}}\n\nevent: message_stop\ndata: {{\"type\":\"message_stop\"}}\n\n",
             m = model
         );
         Response::builder()
@@ -1240,7 +1253,7 @@ pub async fn gateway_selftest(gport: u16) -> Value {
     let cfg2 = json!({ "port": gport, "activeProviderId":"mockoa", "providers":[
         { "id":"mockoa","name":"MockOpenAI","baseUrl":format!("http://127.0.0.1:{}", mock),"authToken":"k","protocol":"openai-chat","defaultModel":"gpt-mock","smallFastModel":"gpt-mock","mapDefaultModels":true,"models":[{"alias":"test-alias","upstream":"gpt-mock"}] }
     ]});
-    store::write_config(cfg2);
+    store::write_config(cfg2.clone());
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
     let tx_ns = client
@@ -1317,6 +1330,54 @@ pub async fn gateway_selftest(gport: u16) -> Value {
         Err(e) => (0, false, format!("ERR:{}", e)),
     };
 
+    // ---- Codex (OpenAI-Responses client, /v1/responses) → an Anthropic provider ----
+    // The shape Codex sends with wire_api="responses": instructions + item-based input + flattened
+    // function tools. Non-stream proves the buffered translate; stream proves the incremental
+    // Anthropic→Responses transcoder (item done events + terminal response.completed).
+    let codex_body = json!({ "model":"test-alias", "instructions":"be nice",
+        "input":[{ "type":"message","role":"user","content":[{ "type":"input_text","text":"hi" }] }],
+        "tools":[{ "type":"function","name":"shell","description":"run","parameters":{ "type":"object" } }],
+        "tool_choice":"auto", "store": false });
+    let cdx = client
+        .post(format!("http://127.0.0.1:{}/v1/responses", gport))
+        .json(&codex_body)
+        .send()
+        .await;
+    let (cdx_status, cdx_is_response, cdx_text) = match cdx {
+        Ok(r) => {
+            let s = r.status().as_u16();
+            let j: Value = r.json().await.unwrap_or_else(|_| json!({}));
+            let is_resp = j.get("object").and_then(|v| v.as_str()) == Some("response");
+            let text = j.get("output_text").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            (s, is_resp, text)
+        }
+        Err(e) => (0, false, format!("ERR:{}", e)),
+    };
+    let mut codex_stream_body = codex_body.clone();
+    codex_stream_body["stream"] = json!(true);
+    let cdx_st = client
+        .post(format!("http://127.0.0.1:{}/v1/responses", gport))
+        .json(&codex_stream_body)
+        .send()
+        .await;
+    let (cdx_st_status, cdx_st_text) = match cdx_st {
+        Ok(r) => (r.status().as_u16(), r.text().await.unwrap_or_default()),
+        Err(e) => (0, format!("ERR:{}", e)),
+    };
+
+    // ---- Codex → an OpenAI-Chat provider (incremental chat→Responses transcoding) ----
+    store::write_config(cfg2.clone());
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let cdx_chat = client
+        .post(format!("http://127.0.0.1:{}/v1/responses", gport))
+        .json(&codex_stream_body)
+        .send()
+        .await;
+    let (cdx_chat_status, cdx_chat_text) = match cdx_chat {
+        Ok(r) => (r.status().as_u16(), r.text().await.unwrap_or_default()),
+        Err(e) => (0, format!("ERR:{}", e)),
+    };
+
     json!({
         "nonStreamStatus": ns_status,
         "nonStreamModel": ns_model,
@@ -1346,6 +1407,21 @@ pub async fn gateway_selftest(gport: u16) -> Value {
         "xlateStreamIncremental": tx_st_text.contains("content_block_delta") && tx_st_text.contains("text_delta"),
         "xlateStreamText": tx_st_text.contains("from chat"),
         "xlateStreamStop": tx_st_text.contains("\"stop_reason\":\"end_turn\""),
+        // Codex (Responses client): buffered translate + incremental stream transcoders. Codex
+        // materializes items from response.output_item.done and requires response.completed.
+        "codexNonStreamStatus": cdx_status,
+        "codexNonStreamIsResponse": cdx_is_response,
+        "codexNonStreamText": cdx_text,
+        "codexAnthropicStreamStatus": cdx_st_status,
+        "codexAnthropicStreamDelta": cdx_st_text.contains("response.output_text.delta"),
+        "codexAnthropicStreamItemDone": cdx_st_text.contains("response.output_item.done"),
+        "codexAnthropicStreamCompleted": cdx_st_text.contains("response.completed"),
+        "codexAnthropicStreamText": cdx_st_text.contains("hi from anthropic"),
+        "codexChatStreamStatus": cdx_chat_status,
+        "codexChatStreamDelta": cdx_chat_text.contains("response.output_text.delta"),
+        "codexChatStreamItemDone": cdx_chat_text.contains("response.output_item.done"),
+        "codexChatStreamCompleted": cdx_chat_text.contains("response.completed"),
+        "codexChatStreamText": cdx_chat_text.contains("from chat"),
     })
 }
 
