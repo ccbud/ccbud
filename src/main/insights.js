@@ -68,12 +68,16 @@ const recTotal = (r) => r.inputTokens + r.outputTokens + r.cacheRead + r.cacheCr
 /** Global de-dup, ccusage semantics: key (message.id, requestId); no id → always kept; an exact
  *  miss falls back to the id-only bucket when either side is a sidechain (a replay reuses the
  *  parent's message.id under a new requestId). Non-sidechain wins, then higher token total. */
+// Message ids older ccbud gateway builds stamped on EVERY translated response — known
+// non-unique, never usable as a de-dup key.
+const DEGENERATE_IDS = new Set(['msg_ccbud', 'chatcmpl-ccbud', 'resp_ccbud']);
+
 function dedupClaude(recs) {
   const kept = [];
   const byExact = new Map();
   const byId = new Map();
   for (const cand of recs) {
-    if (!cand.id) { kept.push(cand); continue; }
+    if (!cand.id || DEGENERATE_IDS.has(cand.id)) { kept.push(cand); continue; }
     const exact = `${cand.id}\u0000${cand.requestId || ''}`;
     let i = byExact.get(exact);
     if (i === undefined) {

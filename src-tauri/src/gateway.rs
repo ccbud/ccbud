@@ -971,12 +971,18 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
                     "body": { "text": up_cap, "bytes": up_total, "truncated": up_trunc } });
                 st2.record_exchange(ex).await;
             };
-            return Response::builder()
+            let mut builder = Response::builder()
                 .status(status.as_u16())
                 .header("content-type", "text/event-stream")
-                .header("x-ccbud-translated", format!("{:?}->{:?}", provider_wire, client_wire))
-                .body(Body::from_stream(body_stream))
-                .unwrap();
+                .header("x-ccbud-translated", format!("{:?}->{:?}", provider_wire, client_wire));
+            // Forward the upstream request id — clients (Claude Code) persist it as `requestId`,
+            // which usage analytics use as half of the de-dup key.
+            for (k, v) in &out_headers {
+                if k == "request-id" || k == "x-request-id" {
+                    builder = builder.header(k, v);
+                }
+            }
+            return builder.body(Body::from_stream(body_stream)).unwrap();
         }
         let rewrite_model = if need_rewrite { routing.client_facing_model.clone() } else { None };
         let st2 = st.clone();
@@ -1174,12 +1180,16 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
             "resBody": cap_text(&body_bytes, 2 * 1024 * 1024),
         }))
         .await;
-        return Response::builder()
+        let mut builder = Response::builder()
             .status(status.as_u16())
             .header("content-type", ct_out)
-            .header("x-ccbud-translated", format!("{:?}->{:?}", provider_wire, client_wire))
-            .body(Body::from(body_bytes))
-            .unwrap();
+            .header("x-ccbud-translated", format!("{:?}->{:?}", provider_wire, client_wire));
+        for (k, v) in &out_headers {
+            if k == "request-id" || k == "x-request-id" {
+                builder = builder.header(k, v);
+            }
+        }
+        return builder.body(Body::from(body_bytes)).unwrap();
     }
 
     let mut out_buf = buf.clone();

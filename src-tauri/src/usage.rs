@@ -245,6 +245,13 @@ fn parse_claude_line(line: &str) -> Option<ClaudeRec> {
     })
 }
 
+/// Message ids that older ccbud gateway builds stamped on EVERY translated response — known
+/// non-unique, so they must never act as a de-dup key (an id-keyed de-dup would collapse whole
+/// weeks of history written through the gateway into a single counted turn).
+fn degenerate_id(id: &str) -> bool {
+    id == "msg_ccbud" || id == "chatcmpl-ccbud" || id == "resp_ccbud"
+}
+
 /// Global de-dup, ccusage semantics: key (message.id, requestId); entries without an id are always
 /// kept. A miss on the exact key falls back to the id-only bucket when either side is a sidechain
 /// (a `/btw` replay reuses the parent's message.id under a new requestId). On a duplicate the
@@ -254,7 +261,7 @@ fn dedup_claude(recs: Vec<ClaudeRec>) -> Vec<ClaudeRec> {
     let mut by_exact: HashMap<(String, Option<String>), usize> = HashMap::new();
     let mut by_id: HashMap<String, usize> = HashMap::new();
     for cand in recs {
-        let Some(id) = cand.id.clone() else {
+        let Some(id) = cand.id.clone().filter(|i| !degenerate_id(i)) else {
             kept.push(cand);
             continue;
         };
@@ -803,6 +810,40 @@ mod tests {
         let _ = fs::remove_dir_all(&base);
     }
 
+    // History written through OLD ccbud gateway builds: every streamed response carries the
+    // constant id "msg_ccbud" (and often no requestId — the gateway didn't forward the header).
+    // Those ids must never act as de-dup keys, or weeks of history collapse into one turn.
+    #[test]
+    fn degenerate_gateway_ids_never_dedup() {
+        let base = std::env::temp_dir().join(format!("ccbud-usage-degen-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let proj = base.join("projects").join("-p");
+        fs::create_dir_all(&proj).unwrap();
+        let no_req = |ts: &str, inp: i64| {
+            line(json!({ "type": "assistant", "timestamp": ts,
+                "message": { "id": "msg_ccbud", "model": "glm-4.7",
+                    "usage": { "input_tokens": inp, "output_tokens": 1 } } }))
+        };
+        fs::write(
+            proj.join("old-era.jsonl"),
+            no_req("2026-06-20T10:00:00Z", 100)
+                + &no_req("2026-06-21T10:00:00Z", 200)
+                + &no_req("2026-06-22T10:00:00Z", 300)
+                + &line(json!({ "type": "assistant", "timestamp": "2026-06-23T10:00:00Z", "requestId": "r1",
+                    "message": { "id": "chatcmpl-ccbud", "model": "glm-4.7",
+                        "usage": { "input_tokens": 400, "output_tokens": 1 } } })),
+        )
+        .unwrap();
+        let config = json!({ "historyDirs": [ base.to_string_lossy() ] });
+        let days = build_data(&config, "all");
+        let (_, input, _, _, requests, _) = sum(&days);
+        // all four turns count — four distinct days survive
+        assert_eq!(requests, 4);
+        assert_eq!(input, 100 + 200 + 300 + 400);
+        assert_eq!(days.len(), 4);
+        let _ = fs::remove_dir_all(&base);
+    }
+
     #[test]
     fn invalid_utf8_does_not_truncate_a_file() {
         let base = std::env::temp_dir().join(format!("ccbud-usage-u8-{}", std::process::id()));
@@ -912,6 +953,44 @@ mod real_data_probe {
             eprintln!("set CCBUD_PROBE_DIR");
             return;
         };
+        // parse-level diagnostics: where do lines fall out of the pipeline?
+        let root = expand_tilde(&dir);
+        let mut files = vec![];
+        collect_jsonl(&root.join("projects"), 0, &mut files);
+        let (mut n_files, mut n_usage_lines, mut n_parsed, mut n_no_ts, mut n_degen) = (0u64, 0u64, 0u64, 0u64, 0u64);
+        for file in &files {
+            n_files += 1;
+            let Some(mut lines) = LossyLines::open(file) else { continue };
+            while let Some(l) = lines.next_line() {
+                let l = l.trim();
+                if !l.contains("\"usage\"") {
+                    continue;
+                }
+                n_usage_lines += 1;
+                match parse_claude_line(l) {
+                    Some(rec) => {
+                        n_parsed += 1;
+                        if rec.id.as_deref().map(degenerate_id).unwrap_or(false) {
+                            n_degen += 1;
+                        }
+                    }
+                    None => {
+                        // distinguish the "usage present but timestamp bad/missing" case
+                        if let Ok(v) = serde_json::from_str::<Value>(l) {
+                            if v.get("message").and_then(|m| m.get("usage")).is_some()
+                                && v.get("timestamp").and_then(|t| t.as_str()).and_then(parse_ts).is_none()
+                            {
+                                n_no_ts += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        eprintln!(
+            "claude files={} usage-lines={} parsed={} dropped-no-ts={} degenerate-id={}",
+            n_files, n_usage_lines, n_parsed, n_no_ts, n_degen
+        );
         let config = json!({ "historyDirs": [dir] });
         let days = build_data(&config, "all");
         let now = Local::now().timestamp_millis();

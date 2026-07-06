@@ -136,6 +136,20 @@ const ins = createInsights({ getDirs: () => active });
     check('codex cached input split out', d.cacheRead === 600 && d.input === 20 + 30 + 300 + 100, `cr=${d.cacheRead} in=${d.input}`);
     const byModelD = Object.fromEntries(d.byModel.map((m) => [m.model, m.tokens]));
     check('codex model from turn_context', byModelD['gpt-5.5'] === 980 + 120, JSON.stringify(byModelD));
+
+    // ---- old-gateway history: constant msg_ccbud ids must never de-dup ----
+    const projF = path.join(root, 'dirF', 'projects', '-proj-u');
+    fs.mkdirSync(projF, { recursive: true });
+    const dayIso = (d) => new Date(Date.now() - d * 86400000).toISOString();
+    const degen = (d, inp) => JSON.stringify({ type: 'assistant', timestamp: dayIso(d),
+      message: { id: 'msg_ccbud', role: 'assistant', model: 'glm-4.7', usage: { input_tokens: inp, output_tokens: 1 } } }) + '\n';
+    fs.writeFileSync(path.join(projF, 'old.jsonl'), degen(0, 10) + degen(2, 20) + degen(5, 30));
+    const insF = createInsights({ getDirs: () => [path.join(root, 'dirF', 'projects')] });
+    const fAll = await insF.query('all');
+    check('degenerate gateway ids never dedup (3 turns kept)', fAll.requests === 3 && fAll.tokens === 63, `req=${fAll.requests} tok=${fAll.tokens}`);
+    insF.invalidate();
+    const f1 = await insF.query('1d');
+    check('ranges differentiate on multi-day degen data', f1.tokens === 11, `1d=${f1.tokens}`);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
