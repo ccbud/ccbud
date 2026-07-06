@@ -28,6 +28,7 @@ contextBridge.exposeInMainWorld('ccbud', {
 
   // monitor inspector — full captured request/response for a forwarded request
   monitorGet: (id) => ipcRenderer.invoke('monitor:get', id),
+  gatewaySetEnabled: (on) => ipcRenderer.invoke('gateway:setEnabled', on),
   monitorClear: () => ipcRenderer.invoke('monitor:clear'),
 
   // gateway log buffer — backfill the "网关日志" panel on open (events aren't replayed otherwise)

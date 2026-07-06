@@ -148,7 +148,8 @@ pub fn encode_response(resp: &ChatResponse, client_model: &str) -> Value {
     }
     let usage = resp.usage.as_ref();
     json!({
-        "id": if resp.id.is_empty() { "chatcmpl-ccbud".to_string() } else { resp.id.clone() },
+        // never a constant fallback — clients persist this id and usage de-dupes by it
+        "id": if resp.id.is_empty() { super::uid("chatcmpl-ccbud") } else { resp.id.clone() },
         "object": "chat.completion",
         "created": 0,
         "model": client_model,

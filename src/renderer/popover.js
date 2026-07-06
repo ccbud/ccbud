@@ -50,7 +50,8 @@ async function renderHeatmap() {
   let u;
   try {
     u = await api.usageGet('all');
-  } catch (_) {
+  } catch (e) {
+    console.error('usageGet(all) failed', e);
     u = { heatmap: [] };
   }
   const hm = $('heatmap');
@@ -76,13 +77,14 @@ async function renderHeatmap() {
 }
 
 async function renderStats() {
-  let u;
-  try {
-    u = await api.usageGet(range);
-  } catch (_) {
-    u = { tokens: 0, requests: 0, activeDays: 0, favoriteProvider: '—', currentStreak: 0, longestStreak: 0, peakHour: null, favoriteModel: '—', byModel: [] };
+  let u = null;
+  try { u = await api.usageGet(range); } catch (e) { console.error('usageGet failed', e); }
+  if (!u) {
+    // a failed scan must LOOK failed — zeros would read as "no usage"
+    $('sTokens').textContent = '—';
+    $('sReq').textContent = '—';
+    return;
   }
-  if (!u) u = { tokens: 0, requests: 0, activeDays: 0, favoriteProvider: '—', currentStreak: 0, longestStreak: 0, peakHour: null, favoriteModel: '—', byModel: [] };
   $('sTokens').textContent = fmt(u.tokens);
   $('sReq').textContent = (u.requests || 0).toLocaleString();
   $('sDays').textContent = u.activeDays || 0;
@@ -129,10 +131,10 @@ async function render() {
 async function renderStatus() {
   const s = await api.serverStatus();
   const dot = $('popStatus').querySelector('.pulse-dot, .live-dot');
-  dot.className = 'pulse-dot w-1.75 h-1.75 rounded-full shrink-0 ' + (s.connected ? 'on bg-green animate-[pulse_2s_infinite]' : 'off bg-muted');
-  $('popStatusText').textContent = s.connected ? L('status.connected') : L('status.disconnected');
-  $('popConnect').textContent = s.connected ? L('pop.disconnect') : L('pop.connectFull');
-  $('popConnect').dataset.connected = s.connected ? '1' : '';
+  dot.className = 'pulse-dot w-1.75 h-1.75 rounded-full shrink-0 ' + (s.running ? 'on bg-green animate-[pulse_2s_infinite]' : 'off bg-muted');
+  $('popStatusText').textContent = s.running ? L('status.gwRunning') : L('status.gwStopped');
+  $('popConnect').textContent = s.running ? L('pop.svcStop') : L('pop.svcStart');
+  $('popConnect').dataset.running = s.running ? '1' : '';
 }
 
 function setTab(t) {
@@ -152,7 +154,7 @@ function bind() {
   $('popRanges').addEventListener('click', (e) => { if (e.target.dataset.range) setRange(e.target.dataset.range); });
   $('popConnect').addEventListener('click', async (e) => {
     e.target.disabled = true;
-    if (e.target.dataset.connected) await api.disconnect(); else await api.connect();
+    try { await api.gatewaySetEnabled(!e.target.dataset.running); } catch (_) {}
     e.target.disabled = false;
     renderStatus();
   });

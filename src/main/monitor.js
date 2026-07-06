@@ -10,7 +10,7 @@
  */
 
 function createMonitorStore(opts) {
-  const max = (opts && opts.max) || 50;
+  const max = (opts && opts.max) || 100;
   const order = []; // ids, oldest first
   const byId = new Map();
 

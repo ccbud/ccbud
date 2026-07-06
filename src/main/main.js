@@ -186,7 +186,7 @@ function statusPayload() {
   return Object.assign(
     {},
     gateway ? gateway.status() : { running: false, port: null },
-    { lastStartError, connected: store ? claude.isConnected(port) : false, claudePath: claude.settingsPath() }
+    { lastStartError, connected: store ? claude.isConnected(port) : false, claudePath: claude.settingsPath(), gatewayEnabled: store ? store.get().gatewayEnabled !== false : true }
   );
 }
 
@@ -195,17 +195,10 @@ function genId() {
 }
 
 /* ---------- one-click connect / disconnect ---------- */
+// Config-file action only — the gateway service has its own switch (gateway:setEnabled).
 async function doConnect() {
   const cfg = store.get();
   if (!cfg.providers.length) return { ok: false, message: mt('err.noProvider') };
-  try {
-    await gateway.start(cfg.port);
-    lastStartError = null;
-  } catch (e) {
-    lastStartError = mt('err.portFailed', { port: cfg.port, msg: e.message });
-    broadcast('gateway:status', statusPayload());
-    return { ok: false, message: lastStartError };
-  }
   try {
     claude.connect(cfg.port, currentToken(), store);
   } catch (e) {
@@ -222,7 +215,24 @@ async function doDisconnect() {
   } catch (e) {
     return { ok: false, message: mt('err.restoreConfig', { msg: e.message }) };
   }
-  await gateway.stop();
+  updateTray();
+  broadcast('gateway:status', statusPayload());
+  return { ok: true };
+}
+
+// Independent gateway-service switch (parity with lib.rs gateway_set_enabled).
+async function setGatewayEnabled(on) {
+  store.set({ gatewayEnabled: !!on });
+  if (on) {
+    try { await gateway.start(store.get().port); lastStartError = null; }
+    catch (e) {
+      lastStartError = mt('err.portFailed', { port: store.get().port, msg: e.message });
+      broadcast('gateway:status', statusPayload());
+      return { ok: false, reason: 'portFailed', message: lastStartError };
+    }
+  } else {
+    await gateway.stop();
+  }
   updateTray();
   broadcast('gateway:status', statusPayload());
   return { ok: true };
@@ -387,6 +397,7 @@ function registerIpc() {
 
   ipcMain.handle('claude:connect', async () => doConnect());
   ipcMain.handle('claude:disconnect', async () => doDisconnect());
+  ipcMain.handle('gateway:setEnabled', async (_e, on) => setGatewayEnabled(on));
 
   // One-click Claude Desktop ("Third-Party Inference") integration — delivered as a macOS
   // Configuration Profile the user approves once (install) / removes via admin prompt (restore).
@@ -906,7 +917,7 @@ if (gotLock) {
     // A detected Codex install joins historyDirs as a regular work dir (one-time, before the
     // history watcher starts so its trees get watched).
     try { ensureCodexDir(); } catch (_) {}
-    monitor = createMonitorStore({ max: 30 });
+    monitor = createMonitorStore({ max: 100 });
     gateway = createGateway({ getConfig: () => store.get() });
     gateway.on('log', (l) => pushGatewayLog(l));
     gateway.on('request', (r) => {
@@ -916,8 +927,12 @@ if (gotLock) {
     // Full request/response capture (bounded, auth-redacted) for the monitor inspector.
     gateway.on('exchange', (ex) => monitor.record(ex));
 
-    // Usage analytics computed from on-disk history (.jsonl) across the active config dirs.
-    insights = createInsights({ getDirs: () => activeProjectsDirs() });
+    // Usage analytics computed from on-disk history (.jsonl) across the active config dirs —
+    // both the Claude projects/ tree and each dir's sibling Codex sessions/ tree.
+    insights = createInsights({
+      getDirs: () => activeProjectsDirs(),
+      getSessionDirs: () => activeProjectsDirs().map((d) => path.join(path.dirname(d), 'sessions')),
+    });
 
     // Watch Claude Code's on-disk session history across ALL configured dirs; the "对话"
     // view reads it directly and live-follows active sessions via the 'changed' broadcast.
@@ -945,9 +960,8 @@ if (gotLock) {
 
     if (store.get().openAtLogin) applyOpenAtLogin(store.get());
 
-    // If Claude Code is still pointed at us (from a previous session), bring the
-    // gateway back up so it keeps working. Otherwise stay idle until the user connects.
-    if (claude.isConnected(store.get().port)) {
+    // The gateway is an independent service with its own switch (default on).
+    if (store.get().gatewayEnabled !== false) {
       try { await gateway.start(store.get().port); lastStartError = null; }
       catch (e) { lastStartError = mt('err.portFailed', { port: store.get().port, msg: e.message }); }
     }

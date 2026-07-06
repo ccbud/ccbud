@@ -54,6 +54,15 @@ impl Wire {
         }
     }
 
+    /// Short human label for exchange records / monitor UI.
+    pub fn label(self) -> &'static str {
+        match self {
+            Wire::Anthropic => "anthropic",
+            Wire::OpenAiChat => "openai-chat",
+            Wire::OpenAiResponses => "openai-responses",
+        }
+    }
+
     /// The upstream path segment for this provider protocol, appended to the provider baseUrl.
     pub fn upstream_path(self) -> &'static str {
         match self {
@@ -85,19 +94,31 @@ impl Wire {
 use llm_connector::core::Protocol;
 use llm_connector::protocols::adapters::anthropic::AnthropicProtocol;
 use llm_connector::protocols::adapters::openai::OpenAIProtocol;
-use llm_connector::types::{responses_request_to_chat_request, ChatRequest, ChatResponse, ResponsesRequest};
+use llm_connector::types::{ChatRequest, ChatResponse};
 use serde_json::Value;
+
+/// Unique id for a synthesized response ("msg_ccbud_<ms>_<n>"). Clients persist these ids into
+/// their history, and usage analytics de-dupes assistant messages BY id — a constant fallback id
+/// would collapse every translated turn into a single counted request.
+pub fn uid(prefix: &str) -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static N: AtomicU64 = AtomicU64::new(0);
+    let ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    format!("{}_{}_{}", prefix, ms, N.fetch_add(1, Ordering::Relaxed))
+}
 
 /// Decode an inbound client request (in its wire format) into the unified IR.
 pub fn decode_client_request(client: Wire, body: &Value) -> Result<ChatRequest, String> {
     match client {
         Wire::Anthropic => anthropic::decode_request(body),
         Wire::OpenAiChat => openai_chat_client::decode_request(body),
-        Wire::OpenAiResponses => {
-            let rr: ResponsesRequest =
-                serde_json::from_value(body.clone()).map_err(|e| format!("responses request parse: {}", e))?;
-            responses_request_to_chat_request(&rr).map_err(|e| e.to_string())
-        }
+        // Hand-rolled (not the crate's responses_request_to_chat_request, which drops
+        // function_call / function_call_output / assistant items and rejects flattened tools —
+        // fatal for Codex).
+        Wire::OpenAiResponses => openai_responses::decode_request(body),
     }
 }
 
@@ -120,10 +141,17 @@ pub fn encode_upstream_request(
             .map_err(|e| e.to_string()),
         Wire::OpenAiResponses => Ok(openai_responses::encode_request(&ir, outgoing_model, stream)),
         // Reverse direction: an OpenAI/Codex client → an Anthropic upstream. The crate encodes the
-        // IR into an Anthropic Messages request (tool_calls→tool_use blocks, etc.).
-        Wire::Anthropic => AnthropicProtocol::new("")
-            .build_chat_request_body(&ir)
-            .map_err(|e| e.to_string()),
+        // IR into an Anthropic Messages request (tool_calls→tool_use blocks, etc.). Anthropic
+        // requires max_tokens; OpenAI-family clients (Codex) usually omit it and the crate's
+        // fallback (1024) truncates agent turns — default to a workable ceiling instead.
+        Wire::Anthropic => {
+            if ir.max_tokens.is_none() {
+                ir.max_tokens = Some(8192);
+            }
+            AnthropicProtocol::new("")
+                .build_chat_request_body(&ir)
+                .map_err(|e| e.to_string())
+        }
     }
 }
 
@@ -141,18 +169,16 @@ pub fn encode_client_response(client: Wire, ir: &ChatResponse, client_model: &st
     match client {
         Wire::Anthropic => Ok(anthropic::encode_response(ir, client_model)),
         Wire::OpenAiChat => Ok(openai_chat_client::encode_response(ir, client_model)),
-        Wire::OpenAiResponses => {
-            let mut rr = llm_connector::types::chat_response_to_responses_response(ir);
-            rr.model = Some(client_model.to_string());
-            serde_json::to_value(&rr).map_err(|e| e.to_string())
-        }
+        // Hand-rolled (not the crate's chat_response_to_responses_response, which drops
+        // tool_calls from the output — Codex would never see a function call).
+        Wire::OpenAiResponses => Ok(openai_responses::encode_response(ir, client_model)),
     }
 }
 
 /// Whether we have an incremental (event-by-event) stream transcoder from `provider` to `client`.
 /// When false, cross-protocol streaming falls back to buffer-upstream + synthesize-client-SSE.
 pub fn can_transcode_stream(provider: Wire, client: Wire) -> bool {
-    matches!((provider, client), (Wire::OpenAiChat, Wire::Anthropic))
+    stream::Transcoder::supports(provider, client)
 }
 
 /// Encode the IR response to the client's wire format as a full SSE stream body (used when the
@@ -161,24 +187,6 @@ pub fn encode_client_response_sse(client: Wire, ir: &ChatResponse, client_model:
     match client {
         Wire::Anthropic => Ok(anthropic::encode_response_sse(ir, client_model)),
         Wire::OpenAiChat => Ok(openai_chat_client::encode_response_sse(ir, client_model)),
-        Wire::OpenAiResponses => {
-            // Minimal synthesized Responses stream: created → output_text.delta → completed.
-            let full = encode_client_response(Wire::OpenAiResponses, ir, client_model)?;
-            let text = ir
-                .choices
-                .first()
-                .map(|c| c.message.content_as_text())
-                .filter(|t| !t.is_empty())
-                .unwrap_or_else(|| ir.content.clone());
-            let id = full.get("id").and_then(|v| v.as_str()).unwrap_or("resp_ccbud");
-            let ev = |t: &str, d: Value| format!("event: {}\ndata: {}\n\n", t, serde_json::to_string(&d).unwrap_or_default());
-            let mut out = String::new();
-            out.push_str(&ev("response.created", serde_json::json!({ "type": "response.created", "response": { "id": id } })));
-            if !text.is_empty() {
-                out.push_str(&ev("response.output_text.delta", serde_json::json!({ "type": "response.output_text.delta", "delta": text })));
-            }
-            out.push_str(&ev("response.completed", serde_json::json!({ "type": "response.completed", "response": full })));
-            Ok(out)
-        }
+        Wire::OpenAiResponses => Ok(openai_responses::encode_response_sse(ir, client_model)),
     }
 }

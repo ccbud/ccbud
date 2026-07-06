@@ -177,17 +177,19 @@ function scheduleHeroUsage() {
   _heroUsageT = setTimeout(() => { const w = $('heroUsage'); if (status.connected && w && !w.classList.contains('hidden')) renderHeroUsage(); }, 2500);
 }
 
+// Hero state = the gateway SERVICE (running/stopped). The button stays the config-file action
+// ("一键接入"/"断开" writes or restores the CLIs' configs) — independent of the service switch.
 function renderHero() {
   const hero = $('hero');
   const ap = activeProvider();
-  if (status.connected) {
+  $('btnConnect').textContent = I18n.t(status.running ? 'hero.stopSvc' : 'hero.startSvc');
+  if (status.running) {
     hero.classList.add('connected');
     const icon = $('heroIcon');
     if (ap) { const pi = renderProviderIcon(ap.name, ap.icon); icon.setAttribute('style', pi.style || ''); icon.innerHTML = pi.html; }
     else { icon.removeAttribute('style'); icon.innerHTML = I.connected || ''; }
-    $('heroTitle').textContent = ap ? ap.name : I18n.t('hero.connected');
+    $('heroTitle').textContent = ap ? ap.name : I18n.t('hero.running');
     $('heroSub').innerHTML = ap ? I18n.t('hero.connectedVia', { name: escapeHtml(ap.name) }) : I18n.t('hero.running');
-    $('btnConnect').textContent = I18n.t('hero.disconnect');
     hideHeroNote();
     $('heroUsage').classList.remove('hidden');
     renderHeroUsage();
@@ -198,7 +200,6 @@ function renderHero() {
     icon.innerHTML = I.connect || '';
     $('heroTitle').textContent = I18n.t('hero.titleIdle');
     $('heroSub').textContent = I18n.t('hero.subIdle');
-    $('btnConnect').textContent = I18n.t('hero.connect');
     hideHeroNote();
     $('heroUsage').classList.add('hidden');
   }
@@ -207,14 +208,14 @@ function renderHero() {
 function renderStatus() {
   const chip = $('statusPill');
   if (chip) {
-    chip.classList.toggle('on', !!status.connected);
+    chip.classList.toggle('on', !!status.running);
     const txt = chip.querySelector('.status-text');
     if (txt) {
-      txt.textContent = I18n.t(status.connected ? 'status.connected' : 'status.disconnected');
+      txt.textContent = I18n.t(status.running ? 'status.gwRunning' : 'status.gwStopped');
     }
     const bt = $('brandTitle');
     if (bt) {
-      bt.classList.toggle('running', !!status.connected);
+      bt.classList.toggle('running', !!status.running);
     }
   }
 }
@@ -270,6 +271,7 @@ function renderConnect() {
   $('fRequireToken').checked = !!config.requireToken;
   $('fGatewayToken').value = config.gatewayToken || '';
   $('tokenRow').classList.toggle('hidden', !config.requireToken);
+  if ($('fGatewayEnabled')) $('fGatewayEnabled').checked = status.gatewayEnabled !== false;
   if ($('fRetry429')) $('fRetry429').checked = !(config.retry429 && config.retry429.enabled === false);
   if ($('fInsecureTls')) $('fInsecureTls').checked = !!config.insecureSkipVerify;
   renderConnectTargets();
@@ -530,7 +532,8 @@ function pushStreamRow(r) {
     <span class="ms font-mono text-caption w-12 text-right">${r.ms}ms</span>
     <span class="ts font-mono text-caption text-[10px] w-14 text-right">${fmtTime()}</span>`;
   list.insertBefore(row, list.firstChild);
-  while (list.children.length > 120) list.removeChild(list.lastChild);
+  // Live window only — keep the last 100 rows (matches the backend's exchange-detail buffer).
+  while (list.children.length > 100) list.removeChild(list.lastChild);
   scheduleHeroUsage();
 }
 /* ---------- gateway log (lifecycle + error events; backfilled from main's ring buffer) ---------- */
@@ -653,18 +656,51 @@ function kvTable(h) {
   if (!keys.length) return `<div class="dr-empty p-2.5 text-caption text-[12.5px]">${escapeHtml(I18n.t('drawer.none'))}</div>`;
   return '<div class="dr-kv border border-border-custom rounded-sm overflow-hidden">' + keys.map((k) => `<div class="dr-kv-row flex gap-2.5 py-1.5 px-2.5 font-mono text-xs odd:bg-transparent even:bg-chip-bg"><span class="dr-k text-brand shrink-0 min-w-[150px] break-all">${escapeHtml(k)}</span><span class="dr-v text-fg break-all">${escapeHtml(Array.isArray(h[k]) ? h[k].join(', ') : h[k])}</span></div>`).join('') + '</div>';
 }
+// A translated exchange (client wire ≠ provider wire) exposes all four sides; passthrough keeps
+// the classic two. Each tab resolves to { headers, cap, isReq, sub } for the shared body renderer:
+//   creq — what the gateway RECEIVED from the client (inbound URL/headers/original body)
+//   req  — what the gateway SENT upstream (real upstream URL/headers/translated body)
+//   ures — what the upstream RETURNED (raw, pre-translation)
+//   res  — what the gateway RETURNED to the client (translated)
+function drawerTabView(d, tab) {
+  const creq = d.clientReq || {};
+  const ures = d.upstreamRes || {};
+  switch (tab) {
+    case 'creq':
+      return { headers: creq.headers, cap: creq.body || d.reqBody, isReq: true, sub: `${d.method || 'POST'} ${creq.url || d.path || ''}` };
+    case 'ures':
+      return { headers: ures.headers, cap: ures.body, isReq: false, sub: `HTTP ${ures.status != null ? ures.status : d.status || ''}` };
+    case 'res':
+      return { headers: d.resHeaders, cap: d.resBody, isReq: false, sub: `HTTP ${d.status || ''}` };
+    default: // 'req'
+      return { headers: d.reqHeaders, cap: d.reqBody, isReq: true, sub: `${d.method || 'POST'} ${d.url || d.path || ''}` };
+  }
+}
+function drawerTabs(d) {
+  return d && d.translated
+    ? [['creq', I18n.t('drawer.tabClientReq')], ['req', I18n.t('drawer.tabUpstreamReq')],
+       ['ures', I18n.t('drawer.tabUpstreamRes')], ['res', I18n.t('drawer.tabClientRes')]]
+    : [['req', I18n.t('drawer.req')], ['res', I18n.t('drawer.res')]];
+}
+const DR_TAB_CLS = 'dr-tab border-none bg-transparent text-muted font-semibold text-[13px] leading-none p-[8px_14px] rounded-t-md cursor-pointer border-b-2 border-transparent -mb-[1px] hover:text-fg [&.active]:text-brand [&.active]:border-b-brand';
+function renderDrawerTabs() {
+  const wrap = $('drTabs');
+  if (!wrap) return;
+  wrap.innerHTML = drawerTabs(reqDrawerData)
+    .map(([k, label]) => `<button class="${DR_TAB_CLS}${k === reqDrawerTab ? ' active' : ''}" data-tab="${k}">${escapeHtml(label)}</button>`)
+    .join('');
+}
 function renderReqDrawerBody() {
   const d = reqDrawerData;
   if (!d) return;
   const body = $('reqDrawerBody');
-  const isReq = reqDrawerTab === 'req';
-  const headers = isReq ? d.reqHeaders : d.resHeaders;
-  const cap = isReq ? d.reqBody : d.resBody;
-  const which = isReq ? 'req' : 'res';
+  const view = drawerTabView(d, reqDrawerTab);
+  const isReq = view.isReq;
+  const headers = view.headers;
+  const cap = view.cap;
+  const which = reqDrawerTab;
   const copyLabel = cap && cap.truncated ? I18n.t('drawer.copyPartial') : I18n.t('drawer.copy');
-  const headTitle = isReq
-    ? `${escapeHtml(I18n.t('drawer.reqHeaders'))} <span class="dr-sub font-medium font-mono text-caption normal-case tracking-normal truncate">${escapeHtml(d.method || 'POST')} ${escapeHtml(d.url || d.path || '')}</span>`
-    : `${escapeHtml(I18n.t('drawer.resHeaders'))} <span class="dr-sub font-medium font-mono text-caption normal-case tracking-normal truncate">HTTP ${escapeHtml(d.status || '')}</span>`;
+  const headTitle = `${escapeHtml(I18n.t(isReq ? 'drawer.reqHeaders' : 'drawer.resHeaders'))} <span class="dr-sub font-medium font-mono text-caption normal-case tracking-normal truncate">${escapeHtml(view.sub)}</span>`;
   drBodyText = prettyText(cap).text;
   drMatches = []; drMatchIdx = -1;
   const searchBar = drBodyText ? `<span class="flex-1"></span><div class="dr-search-wrap flex items-center gap-1 normal-case tracking-normal">
@@ -698,7 +734,9 @@ async function openReqDetail(id) {
     $('reqDrawer').classList.remove('hidden');
     return;
   }
-  reqDrawerData = d; reqDrawerTab = 'req';
+  // Translated exchanges open on the client request (what the gateway received) so the
+  // before/after of the translation reads left-to-right across the tabs.
+  reqDrawerData = d; reqDrawerTab = d.translated ? 'creq' : 'req';
   const ok = d.status >= 200 && d.status < 400;
   $('drMethod').textContent = d.method || 'POST';
   const drStatus = $('drStatus');
@@ -710,6 +748,8 @@ async function openReqDetail(id) {
   $('drModel').innerHTML = `${escapeHtml(d.requestedModel || '-')} <span class="arrow">→</span> ${escapeHtml(d.outgoingModel || '-')}${d.rewritten ? ` <span class="rewrite" title="${escapeHtml(I18n.t('drawer.rewritten'))}">✎</span>` : ''}`;
   const meta = [
     [I18n.t('drawer.service'), d.provider],
+    d.translated ? [I18n.t('drawer.translated'), d.translated] : null,
+    d.aborted ? [I18n.t('drawer.aborted'), I18n.t('drawer.abortedVal')] : null,
     [I18n.t('drawer.latency'), d.ms != null ? d.ms + ' ms' : ''],
     [I18n.t('drawer.session'), d.sessionId ? String(d.sessionId).slice(0, 8) : ''],
     d.agentId ? [I18n.t('drawer.agent'), I18n.t('drawer.subagent')] : null,
@@ -717,7 +757,7 @@ async function openReqDetail(id) {
     d.error ? [I18n.t('drawer.error'), d.error] : null,
   ].filter((r) => r && r[1]);
   $('reqMeta').innerHTML = meta.map((r) => `<span class="dr-chip text-[11.5px] px-2.25 py-[2.5px] rounded-full bg-chip-bg text-fg"><span class="muted text-muted">${escapeHtml(r[0])}</span> ${escapeHtml(r[1])}</span>`).join('');
-  document.querySelectorAll('.dr-tab').forEach((t) => t.classList.toggle('active', t.dataset.tab === reqDrawerTab));
+  renderDrawerTabs();
   renderReqDrawerBody();
   $('reqDrawer').classList.remove('hidden');
 }
@@ -907,20 +947,21 @@ async function persist(patch) {
   status = await api.serverStatus();
   renderAll();
 }
+// The hero button is the gateway SERVICE switch (start/stop). CLI config wiring lives in
+// Settings → connect targets.
 async function toggleConnect() {
   const btn = $('btnConnect');
-  const wasConnected = status.connected;
+  const on = !status.running;
   btn.disabled = true;
-  btn.textContent = wasConnected ? I18n.t('hero.disconnecting') : I18n.t('hero.connecting');
-  const res = wasConnected ? await api.disconnect() : await api.connect();
+  let res;
+  try { res = await api.gatewaySetEnabled(on); } catch (_) { res = null; }
   btn.disabled = false;
+  config = await api.getConfig();
   status = await api.serverStatus();
   renderAll();
-    if (!res.ok) {
-      const m = res.reason === 'noProvider' ? I18n.t('settings.desktopNoProvider')
-        : (res.message || I18n.t('err.opFailed'));
-      showHeroNote(m, true);
-    }
+  if (res && res.ok === false) {
+    showHeroNote(res.message || I18n.t('err.opFailed'), true);
+  }
 }
 function copyFeedback(btn, text) {
   const orig = btn.dataset.copyOrig || (btn.dataset.copyOrig = btn.textContent);
@@ -1172,6 +1213,18 @@ function bind() {
   $('btnGenToken').addEventListener('click', () => persist({ gatewayToken: genToken(), requireToken: true }));
   if ($('fTargetClaude')) $('fTargetClaude').addEventListener('change', (e) => toggleTarget('claude', e.target.checked));
   if ($('fTargetCodex')) $('fTargetCodex').addEventListener('change', (e) => toggleTarget('codex', e.target.checked));
+  if ($('fGatewayEnabled')) $('fGatewayEnabled').addEventListener('change', async (e) => {
+    const on = e.target.checked;
+    let res;
+    try { res = await api.gatewaySetEnabled(on); } catch (_) { res = null; }
+    if (res && res.ok === false) {
+      e.target.checked = !on; // couldn't bind the port → revert + surface
+      try { showHeroNote(res.message || I18n.t('err.opFailed'), true); } catch (_) {}
+    }
+    config = await api.getConfig();
+    status = await api.serverStatus();
+    renderAll();
+  });
   if ($('fRetry429')) $('fRetry429').addEventListener('change', (e) => persist({ retry429: Object.assign({}, config.retry429, { enabled: e.target.checked }) }));
   if ($('fInsecureTls')) $('fInsecureTls').addEventListener('change', (e) => persist({ insecureSkipVerify: e.target.checked }));
   $('fTrayUsage').addEventListener('change', (e) => persist({ trayUsage: { enabled: e.target.checked, range: $('fTrayRange').value } }));
@@ -1334,11 +1387,15 @@ function bind() {
   if (rdClose) rdClose.addEventListener('click', closeReqDrawer);
   const reqDrawer = $('reqDrawer');
   if (reqDrawer) reqDrawer.addEventListener('click', (e) => { if (e.target === reqDrawer) closeReqDrawer(); });
-  document.querySelectorAll('.dr-tab').forEach((t) => t.addEventListener('click', () => {
+  // Tabs are re-rendered per exchange (2 or 4 of them) — delegate on the container.
+  const drTabsWrap = $('drTabs');
+  if (drTabsWrap) drTabsWrap.addEventListener('click', (e) => {
+    const t = e.target.closest('.dr-tab');
+    if (!t) return;
     reqDrawerTab = t.dataset.tab;
-    document.querySelectorAll('.dr-tab').forEach((x) => x.classList.toggle('active', x === t));
+    drTabsWrap.querySelectorAll('.dr-tab').forEach((x) => x.classList.toggle('active', x === t));
     renderReqDrawerBody();
-  }));
+  });
   const reqDrawerBody = $('reqDrawerBody');
   if (reqDrawerBody) {
     reqDrawerBody.addEventListener('click', (e) => {
@@ -1346,7 +1403,7 @@ function bind() {
       if (e.target.closest('.dr-search-next')) { drNavSearch(1); return; }
       const cb = e.target.closest('[data-copy-body]');
       if (cb && reqDrawerData) {
-        const cap = cb.dataset.copyBody === 'req' ? reqDrawerData.reqBody : reqDrawerData.resBody;
+        const cap = drawerTabView(reqDrawerData, cb.dataset.copyBody).cap;
         api.copy((cap && cap.text) || '');
         cb.textContent = I18n.t('copy.copied'); setTimeout(() => { cb.textContent = I18n.t('drawer.copy'); }, 1200);
       }

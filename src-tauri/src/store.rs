@@ -28,6 +28,7 @@ pub fn default_config() -> Value {
         "activeProviderId": null,
         "requireToken": false,
         "gatewayToken": "",
+        "gatewayEnabled": true,
         "openAtLogin": false,
         "claudeBackup": null,
         "trayUsage": { "enabled": false, "range": "7d" },
@@ -151,6 +152,7 @@ pub fn normalize(input: Value) -> Value {
         .unwrap_or(8788);
     obj.insert("port".into(), json!(port));
     obj.insert("requireToken".into(), json!(bool_of(obj.get("requireToken"), false)));
+    obj.insert("gatewayEnabled".into(), json!(bool_of(obj.get("gatewayEnabled"), true)));
     obj.insert("gatewayToken".into(), json!(str_of(obj.get("gatewayToken"))));
     obj.insert("openAtLogin".into(), json!(bool_of(obj.get("openAtLogin"), false)));
     if obj.get("claudeBackup").map(|v| v.is_null()).unwrap_or(true) {
@@ -285,6 +287,45 @@ pub fn ensure_codex_dir() -> bool {
     }
     obj.insert("historyDirs".into(), json!(dirs));
     obj.insert("codexDirAutoAdded".into(), json!(true));
+    write_config(cfg);
+    true
+}
+
+/// One-time startup migration (ccusage parity): Claude Code also writes history under the XDG
+/// config dir (`$XDG_CONFIG_HOME/claude`, default `~/.config/claude`) — when that tree exists,
+/// add it to historyDirs so its sessions count toward conversations and usage. Same run-once
+/// contract as ensure_codex_dir.
+pub fn ensure_xdg_claude_dir() -> bool {
+    let mut cfg = read_config();
+    if cfg.get("xdgClaudeDirAutoAdded").and_then(|v| v.as_bool()).unwrap_or(false) {
+        return false;
+    }
+    let base = std::env::var("XDG_CONFIG_HOME")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            std::env::var("HOME")
+                .map(PathBuf::from)
+                .unwrap_or_else(|_| PathBuf::from("."))
+                .join(".config")
+        });
+    let dir = base.join("claude");
+    if !dir.join("projects").is_dir() {
+        return false; // nothing there yet — keep probing on future launches
+    }
+    let label = dir.to_string_lossy().to_string();
+    let obj = cfg.as_object_mut().unwrap();
+    let mut dirs: Vec<String> = obj
+        .get("historyDirs")
+        .and_then(|v| v.as_array())
+        .map(|a| a.iter().filter_map(|d| d.as_str().map(|s| s.to_string())).collect())
+        .unwrap_or_default();
+    if !dirs.iter().any(|d| *d == label) {
+        dirs.push(label);
+    }
+    obj.insert("historyDirs".into(), json!(dirs));
+    obj.insert("xdgClaudeDirAutoAdded".into(), json!(true));
     write_config(cfg);
     true
 }

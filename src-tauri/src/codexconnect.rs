@@ -6,9 +6,11 @@
 // config.codexBackup once; Disconnect restores them and removes our block. Editing is done with
 // toml_edit so the user's other settings, comments, and formatting survive untouched.
 //
-// wire_api = "chat": Codex speaks OpenAI Chat Completions to the gateway, which then translates to
-// whatever protocol the ACTIVE provider uses (chat passthrough, or chat→messages for an Anthropic
-// provider). Config-path override for tests: CCBUD_CODEX_CONFIG.
+// wire_api = "responses": Codex speaks the OpenAI Responses API to the gateway (Codex has
+// deprecated wire_api = "chat" and only supports "responses"), and the gateway translates to
+// whatever protocol the ACTIVE provider uses (responses passthrough, responses→chat, or
+// responses→messages for an Anthropic provider). Config-path override for tests:
+// CCBUD_CODEX_CONFIG.
 
 #![allow(dead_code)]
 
@@ -109,7 +111,7 @@ pub fn connect(port: u16, token: &str, model: &str) {
     let mut block = Table::new();
     block.insert("name", value("ccbud"));
     block.insert("base_url", value(gateway_base(port)));
-    block.insert("wire_api", value("chat"));
+    block.insert("wire_api", value("responses"));
     block.insert("requires_openai_auth", value(false));
     block.insert("experimental_bearer_token", value(token));
     if let Some(mp) = doc["model_providers"].as_table_mut() {
@@ -183,6 +185,7 @@ mod tests {
         assert!(raw.contains("approval_policy"), "unrelated setting preserved");
         assert!(raw.contains("[model_providers.ccbud]"));
         assert!(raw.contains("base_url = \"http://localhost:4321/v1\""));
+        assert!(raw.contains("wire_api = \"responses\""), "codex only supports the responses wire API");
         assert!(raw.contains("requires_openai_auth = false"));
         assert!(raw.contains("experimental_bearer_token = \"ccbud-local\""));
         assert!(raw.contains("model_provider = \"ccbud\""));
