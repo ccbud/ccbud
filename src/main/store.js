@@ -9,6 +9,7 @@ function defaultConfig() {
     activeProviderId: null,
     requireToken: false,
     gatewayToken: '',
+    gatewayEnabled: true,
     openAtLogin: false,
     claudeBackup: null, // snapshot of the user's Claude settings before we connected
     trayUsage: { enabled: false, range: '7d' }, // show token usage in the menu bar
@@ -59,6 +60,7 @@ function normalize(cfg) {
   }
   c.port = Number(c.port) || 8788;
   c.requireToken = !!c.requireToken;
+  c.gatewayEnabled = c.gatewayEnabled !== false;
   c.gatewayToken = c.gatewayToken || '';
   c.openAtLogin = !!c.openAtLogin;
   c.claudeBackup = c.claudeBackup || null;

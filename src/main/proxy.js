@@ -109,6 +109,14 @@ function resolveRouting(requestedModel, config, knownModels) {
     return pass(requestedModel);
   }
 
+  // Codex connects with the sentinel model "gpt-5.5-ccbud" — a name Codex's model-family
+  // detection accepts (gpt-5.5 prefix), so it doesn't warn about an unknown model. Route the
+  // sentinel to the active provider's PRIMARY model (never the lightweight fallback).
+  if (requestedModel.endsWith('-ccbud')) {
+    const target = primary || light;
+    if (target) return { provider: active, outgoingModel: target, clientFacingModel: requestedModel };
+  }
+
   // 4) Unconfigured id. With default mapping off, forward untouched (escape hatch).
   if (active.mapDefaultModels === false) return pass(requestedModel);
 

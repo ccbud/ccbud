@@ -156,6 +156,13 @@ function firstModelInSse(sse) {
       return r && r.outgoingModel === 'whatever-x' && r.clientFacingModel === 'whatever-x';
     })()
   );
+  check(
+    'codex sentinel gpt-5.5-ccbud routes to the PRIMARY model',
+    (() => {
+      const r = gateway._resolveRouting('gpt-5.5-ccbud', cfg2);
+      return r && r.outgoingModel === 'big-model' && r.clientFacingModel === 'gpt-5.5-ccbud';
+    })()
+  );
 
   if (!GLM.authToken) {
     console.log('\n(skipping live upstream checks — set CCBUD_TEST_TOKEN to run them)');

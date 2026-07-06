@@ -117,6 +117,19 @@ pub fn resolve_routing(
             return pass(requested);
         }
     }
+    // Codex connects with the sentinel model "gpt-5.5-ccbud" — a name Codex's model-family
+    // detection accepts (gpt-5.5 prefix), so it doesn't warn about an unknown model. Route the
+    // sentinel to the active provider's PRIMARY model (never the lightweight fallback).
+    if requested.ends_with("-ccbud") {
+        let target = if !primary.is_empty() { primary } else { light };
+        if !target.is_empty() {
+            return Some(Routing {
+                provider_id: pid.clone(),
+                outgoing_model: Some(target.to_string()),
+                client_facing_model: Some(requested.to_string()),
+            });
+        }
+    }
     let map_default = active
         .get("mapDefaultModels")
         .map(|v| v.as_bool().unwrap_or(true))
@@ -148,6 +161,8 @@ pub struct GatewayState {
     known: Mutex<HashMap<String, HashSet<String>>>,
     seq: AtomicU64,
     running: Mutex<Option<RunningServer>>,
+    // Sync mirror of the bound port (0 = stopped) for callers that can't await (tray refresh).
+    running_port: std::sync::atomic::AtomicU32,
     exchanges: Mutex<VecDeque<Value>>,
     client: reqwest::Client,
     client_insecure: reqwest::Client,
@@ -175,6 +190,7 @@ impl GatewayState {
             known: Mutex::new(HashMap::new()),
             seq: AtomicU64::new(0),
             running: Mutex::new(None),
+            running_port: std::sync::atomic::AtomicU32::new(0),
             exchanges: Mutex::new(VecDeque::new()),
             client,
             client_insecure,
@@ -183,7 +199,7 @@ impl GatewayState {
         })
     }
 
-    fn log(&self, level: &str, msg: impl AsRef<str>) {
+    pub fn log(&self, level: &str, msg: impl AsRef<str>) {
         let seq = self.log_seq.fetch_add(1, Ordering::Relaxed) + 1;
         let ts = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -223,6 +239,14 @@ impl GatewayState {
         self.running.lock().await.as_ref().map(|r| r.port)
     }
 
+    /// Sync view of the running state (tray menu refresh runs on the main thread, no await).
+    pub fn port_sync(&self) -> Option<u16> {
+        match self.running_port.load(Ordering::Relaxed) {
+            0 => None,
+            p => Some(p as u16),
+        }
+    }
+
     pub fn emit(&self, event: &str, payload: Value) {
         let _ = self.app.emit(event, payload);
     }
@@ -245,6 +269,7 @@ impl GatewayState {
                 .await;
         });
         *self.running.lock().await = Some(RunningServer { port: actual, shutdown: tx });
+        self.running_port.store(actual as u32, Ordering::Relaxed);
         self.log("info", format!("gateway listening on http://127.0.0.1:{}", actual));
         let status = self.status().await;
         let _ = self.app.emit("gateway:status", status);
@@ -252,6 +277,7 @@ impl GatewayState {
     }
 
     pub async fn stop(self: &Arc<Self>) {
+        self.running_port.store(0, Ordering::Relaxed);
         let taken = self.running.lock().await.take();
         if let Some(rs) = taken {
             let _ = rs.shutdown.send(());
@@ -264,10 +290,12 @@ impl GatewayState {
     fn next_id(&self) -> u64 {
         self.seq.fetch_add(1, Ordering::Relaxed) + 1
     }
+    /// Bounded live-debugging capture: keep only the most recent exchanges (matches the monitor
+    /// stream's 100-row window so every visible row can open its detail).
     pub async fn record_exchange(&self, ex: Value) {
         let mut buf = self.exchanges.lock().await;
         buf.push_back(ex);
-        while buf.len() > 50 {
+        while buf.len() > 100 {
             buf.pop_front();
         }
     }
@@ -315,6 +343,67 @@ struct UsageAcc {
     cache_read: i64,
     cache_creation: i64,
     saw: bool,
+}
+
+/// Makes a streaming request visible in the monitor even when the client aborts mid-stream.
+/// The row + exchange record are normally emitted at the END of the response generator; when the
+/// client disconnects, axum simply drops the generator and that code never runs — the request
+/// vanished from the request stream (Codex users interrupt turns constantly). The generator owns
+/// this guard: `complete()` hands back the prepared exchange skeleton for the normal path, and
+/// Drop-without-complete emits the row + a record marked `aborted`.
+struct StreamAbortGuard {
+    armed: bool,
+    st: Arc<GatewayState>,
+    id: u64,
+    started: std::time::Instant,
+    method: Method,
+    path: String,
+    provider: String,
+    routing: Routing,
+    status: u16,
+    ex: Value,
+}
+
+impl StreamAbortGuard {
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        st: Arc<GatewayState>,
+        id: u64,
+        started: std::time::Instant,
+        method: Method,
+        path: String,
+        provider: String,
+        routing: Routing,
+        status: u16,
+        ex: Value,
+    ) -> Self {
+        Self { armed: true, st, id, started, method, path, provider, routing, status, ex }
+    }
+
+    /// Normal completion: disarm and hand the exchange skeleton back to the caller (who fills in
+    /// ms / response bodies and records it).
+    fn complete(&mut self) -> Value {
+        self.armed = false;
+        std::mem::take(&mut self.ex)
+    }
+}
+
+impl Drop for StreamAbortGuard {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let mut ex = std::mem::take(&mut self.ex);
+        ex["ms"] = json!(self.started.elapsed().as_millis() as u64);
+        ex["aborted"] = json!(true);
+        self.st.emit_request(self.id, self.started, &self.method, &self.path, &self.provider, &self.routing, self.status, None);
+        let st = self.st.clone();
+        // record_exchange is async and Drop is sync — spawn it, tolerating an already-torn-down
+        // runtime at app quit.
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+            tauri::async_runtime::spawn(async move { st.record_exchange(ex).await });
+        }));
+    }
 }
 
 fn retry_delay(retry_after: Option<&str>, attempt: i64, base: i64) -> u64 {
@@ -622,9 +711,10 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
     // When the client's wire protocol (inferred from the request path) differs from the provider's
     // declared protocol, translate the request into the provider's format and remember to translate
     // the response back. Same-protocol requests skip this entirely and keep the verbatim passthrough
-    // fast path below (so Anthropic→Anthropic behavior is byte-for-byte unchanged). First cut: we
-    // force the upstream to buffered (stream=false) and synthesize the client SSE from the full
-    // response — true incremental transcoding is a follow-up.
+    // fast path below (so Anthropic→Anthropic behavior is byte-for-byte unchanged). Streaming pairs
+    // with an incremental transcoder (see protocol::stream::Transcoder) stream token-by-token; the
+    // rest force the upstream buffered (stream=false) and synthesize the client SSE from the full
+    // response.
     let client_wire = crate::protocol::Wire::from_request_path(&uri);
     let provider_wire =
         crate::protocol::Wire::from_provider(provider.get("protocol").and_then(|v| v.as_str()));
@@ -672,6 +762,13 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
         up_headers.insert(k.clone(), v.clone());
     }
     up_headers.insert(axum::http::header::ACCEPT_ENCODING, HeaderValue::from_static("identity"));
+    // A translated Anthropic upstream needs the anthropic-version header; OpenAI-family clients
+    // (Codex) never send one.
+    if translate.as_ref().map(|t| t.1) == Some(crate::protocol::Wire::Anthropic)
+        && !up_headers.contains_key("anthropic-version")
+    {
+        up_headers.insert("anthropic-version", HeaderValue::from_static("2023-06-01"));
+    }
     if !auth_token.is_empty() {
         // Auth via Authorization: Bearer only. Sending both authorization and x-api-key trips
         // providers that reject having the two auth headers present at once (matches provider_test).
@@ -685,6 +782,21 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
     let ex_req_headers = redact_headers(&up_headers);
     let ex_req_body = cap_text(&out_body, 4 * 1024 * 1024);
     let ex_url = target.clone();
+    // Client-side view of the exchange — what the gateway RECEIVED, before any translation — so
+    // the monitor can show a protocol translation's exact before/after (inbound URL/headers/body
+    // vs. the upstream URL/headers/body above). The body is duplicated only when a translation
+    // applies; for passthrough, reqBody already IS the client body (modulo the model rewrite).
+    let ex_translated = translate.as_ref().map(|t| format!("{} → {}", t.0.label(), t.1.label()));
+    let ex_client_req = {
+        let mut o = json!({
+            "url": uri.path_and_query().map(|p| p.as_str().to_string()).unwrap_or_else(|| req_path.clone()),
+            "headers": redact_headers(&in_headers),
+        });
+        if ex_translated.is_some() {
+            o["body"] = cap_text(&body_bytes, 1024 * 1024);
+        }
+        o
+    };
 
     let insecure = config.get("insecureSkipVerify").and_then(|v| v.as_bool()).unwrap_or(false)
         && target.starts_with("https:");
@@ -751,6 +863,7 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
             "provider": provider_name, "requestedModel": routing.client_facing_model,
             "outgoingModel": routing.outgoing_model, "clientFacingModel": routing.client_facing_model,
             "status": 200, "reqHeaders": ex_req_headers, "reqBody": ex_req_body,
+            "clientReq": ex_client_req, "translated": ex_translated,
             "resHeaders": json!({ "x-ccbud-fallback": "head-root-404-to-200", "x-ccbud-upstream-status": "404" }),
             "resBody": json!({ "text": "", "bytes": 0, "truncated": 0 }),
         }))
@@ -778,31 +891,52 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
     if ct.contains("text/event-stream") {
         // Incremental cross-protocol transcode: feed each upstream SSE line through a stateful
         // transcoder that emits the client protocol's events as they arrive (true token-by-token).
-        if let Some((client_wire, provider_wire, client_model)) =
-            translate.as_ref().filter(|t| t.4).map(|t| (t.0, t.1, t.2.clone()))
+        if let Some((client_wire, provider_wire, mut tc)) = translate
+            .as_ref()
+            .filter(|t| t.4)
+            .and_then(|t| {
+                // can_transcode_stream guarded `incremental`, so new() matches a wired pair.
+                crate::protocol::stream::Transcoder::new(t.1, t.0, &t.2).map(|tc| (t.0, t.1, tc))
+            })
         {
             let st2 = st.clone();
+            let status_code = status.as_u16();
+            let ex_id2 = ex_id;
+            let started2 = started;
+            let xlabel = format!("{:?}->{:?}", provider_wire, client_wire);
+            let up_res_headers = vec_headers(&out_headers);
+            let mut guard = StreamAbortGuard::new(
+                st.clone(), ex_id, started, method.clone(), req_path.clone(), provider_name.clone(),
+                routing.clone(), status_code,
+                json!({
+                    "id": ex_id, "ts": now_ms(), "method": method.as_str(), "path": req_path, "url": ex_url,
+                    "provider": provider_name, "requestedModel": routing.client_facing_model,
+                    "outgoingModel": routing.outgoing_model, "clientFacingModel": routing.client_facing_model,
+                    "status": status_code, "reqHeaders": ex_req_headers, "reqBody": ex_req_body,
+                    "clientReq": ex_client_req, "translated": ex_translated,
+                    "resHeaders": json!({ "content-type": "text/event-stream", "x-ccbud-translated": xlabel }),
+                    "resBody": json!({ "text": "", "bytes": 0, "truncated": 0 }),
+                }),
+            );
             let method2 = method.clone();
             let path2 = req_path.clone();
             let pname2 = provider_name.clone();
             let routing2 = routing.clone();
-            let status_code = status.as_u16();
-            let ex_id2 = ex_id;
-            let started2 = started;
-            let ex_url2 = ex_url.clone();
-            let ex_rh = ex_req_headers.clone();
-            let ex_rb = ex_req_body.clone();
-            let xlabel = format!("{:?}->{:?}", provider_wire, client_wire);
             let body_stream = async_stream::stream! {
-                // Only OpenAI-Chat→Anthropic is wired today (can_transcode_stream guards it).
-                let mut tc = crate::protocol::stream::ChatToAnthropic::new(&client_model);
                 let mut s = resp.bytes_stream();
                 let mut buf = String::new();
                 let mut res_cap = String::new();
+                // raw upstream capture (pre-translation), so the monitor can show the exact
+                // upstream stream next to the translated one the client received
+                let mut up_cap = String::new();
+                let mut up_total: usize = 0;
                 while let Some(chunk) = s.next().await {
                     match chunk {
                         Ok(bytes) => {
-                            buf.push_str(&String::from_utf8_lossy(&bytes));
+                            let raw = String::from_utf8_lossy(&bytes);
+                            up_total += raw.len();
+                            if up_cap.len() < 1024 * 1024 { up_cap.push_str(&raw); }
+                            buf.push_str(&raw);
                             let mut out = String::new();
                             while let Some(idx) = buf.find('\n') {
                                 let line: String = buf.drain(..=idx).collect();
@@ -828,37 +962,51 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
                 usage.output = tc.output_tokens();
                 usage.saw = true;
                 st2.emit_request(ex_id2, started2, &method2, &path2, &pname2, &routing2, status_code, Some(&usage));
-                st2.record_exchange(json!({
-                    "id": ex_id2, "ts": now_ms(), "ms": started2.elapsed().as_millis() as u64,
-                    "method": method2.as_str(), "path": path2, "url": ex_url2,
-                    "provider": pname2, "requestedModel": routing2.client_facing_model,
-                    "outgoingModel": routing2.outgoing_model, "clientFacingModel": routing2.client_facing_model,
-                    "status": status_code, "reqHeaders": ex_rh, "reqBody": ex_rb,
-                    "resHeaders": json!({ "content-type": "text/event-stream", "x-ccbud-translated": xlabel }),
-                    "resBody": json!({ "text": res_cap.clone(), "bytes": res_cap.len(), "truncated": 0 }),
-                }))
-                .await;
+                let mut ex = guard.complete();
+                let res_len = res_cap.len();
+                let up_trunc = up_total.saturating_sub(up_cap.len());
+                ex["ms"] = json!(started2.elapsed().as_millis() as u64);
+                ex["resBody"] = json!({ "text": res_cap, "bytes": res_len, "truncated": 0 });
+                ex["upstreamRes"] = json!({ "status": status_code, "headers": up_res_headers,
+                    "body": { "text": up_cap, "bytes": up_total, "truncated": up_trunc } });
+                st2.record_exchange(ex).await;
             };
-            return Response::builder()
+            let mut builder = Response::builder()
                 .status(status.as_u16())
                 .header("content-type", "text/event-stream")
-                .header("x-ccbud-translated", format!("{:?}->{:?}", provider_wire, client_wire))
-                .body(Body::from_stream(body_stream))
-                .unwrap();
+                .header("x-ccbud-translated", format!("{:?}->{:?}", provider_wire, client_wire));
+            // Forward the upstream request id — clients (Claude Code) persist it as `requestId`,
+            // which usage analytics use as half of the de-dup key.
+            for (k, v) in &out_headers {
+                if k == "request-id" || k == "x-request-id" {
+                    builder = builder.header(k, v);
+                }
+            }
+            return builder.body(Body::from_stream(body_stream)).unwrap();
         }
         let rewrite_model = if need_rewrite { routing.client_facing_model.clone() } else { None };
         let st2 = st.clone();
+        let status_code = status.as_u16();
+        let ex_id2 = ex_id;
+        let started2 = started;
+        let res_headers = vec_headers(&out_headers);
+        let mut guard = StreamAbortGuard::new(
+            st.clone(), ex_id, started, method.clone(), req_path.clone(), provider_name.clone(),
+            routing.clone(), status_code,
+            json!({
+                "id": ex_id, "ts": now_ms(), "method": method.as_str(), "path": req_path, "url": ex_url,
+                "provider": provider_name, "requestedModel": routing.client_facing_model,
+                "outgoingModel": routing.outgoing_model, "clientFacingModel": routing.client_facing_model,
+                "status": status_code, "reqHeaders": ex_req_headers, "reqBody": ex_req_body,
+                "clientReq": ex_client_req, "translated": ex_translated,
+                "resHeaders": res_headers,
+                "resBody": json!({ "text": "", "bytes": 0, "truncated": 0 }),
+            }),
+        );
         let method2 = method.clone();
         let path2 = req_path.clone();
         let pname2 = provider_name.clone();
         let routing2 = routing.clone();
-        let status_code = status.as_u16();
-        let ex_id2 = ex_id;
-        let started2 = started;
-        let ex_url2 = ex_url.clone();
-        let ex_rh = ex_req_headers.clone();
-        let ex_rb = ex_req_body.clone();
-        let res_headers = vec_headers(&out_headers);
         let body_stream = async_stream::stream! {
             let mut s = resp.bytes_stream();
             let mut buf = String::new();
@@ -891,16 +1039,11 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
                 yield Ok(Bytes::from(line));
             }
             st2.emit_request(ex_id2, started2, &method2, &path2, &pname2, &routing2, status_code, Some(&usage));
-            st2.record_exchange(json!({
-                "id": ex_id2, "ts": now_ms(), "ms": started2.elapsed().as_millis() as u64,
-                "method": method2.as_str(), "path": path2, "url": ex_url2,
-                "provider": pname2, "requestedModel": routing2.client_facing_model,
-                "outgoingModel": routing2.outgoing_model, "clientFacingModel": routing2.client_facing_model,
-                "status": status_code, "reqHeaders": ex_rh, "reqBody": ex_rb,
-                "resHeaders": res_headers,
-                "resBody": json!({ "text": res_cap.clone(), "bytes": res_cap.len(), "truncated": 0 }),
-            }))
-            .await;
+            let mut ex = guard.complete();
+            let res_len = res_cap.len();
+            ex["ms"] = json!(started2.elapsed().as_millis() as u64);
+            ex["resBody"] = json!({ "text": res_cap, "bytes": res_len, "truncated": 0 });
+            st2.record_exchange(ex).await;
         };
         let mut builder = Response::builder().status(status.as_u16());
         for (k, v) in &out_headers {
@@ -937,6 +1080,7 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
             "provider": provider_name, "requestedModel": routing.client_facing_model,
             "outgoingModel": routing.outgoing_model, "clientFacingModel": routing.client_facing_model,
             "status": 200, "reqHeaders": ex_req_headers, "reqBody": ex_req_body,
+            "clientReq": ex_client_req, "translated": ex_translated,
             "resHeaders": json!({ "x-ccbud-tokens": "estimated", "x-ccbud-upstream-status": status.as_u16().to_string() }),
             "resBody": json!({ "text": String::from_utf8_lossy(&ebody), "bytes": ebody.len(), "truncated": 0 }),
         }))
@@ -977,6 +1121,7 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
             "provider": provider_name, "requestedModel": routing.client_facing_model,
             "outgoingModel": routing.outgoing_model, "clientFacingModel": routing.client_facing_model,
             "status": 200, "reqHeaders": ex_req_headers, "reqBody": ex_req_body,
+            "clientReq": ex_client_req, "translated": ex_translated,
             "resHeaders": json!({ "content-type": "application/json" }),
             "resBody": json!({ "text": String::from_utf8_lossy(&rbody), "bytes": rbody.len(), "truncated": 0 }),
         }))
@@ -1029,16 +1174,22 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
             "provider": provider_name, "requestedModel": routing.client_facing_model,
             "outgoingModel": routing.outgoing_model, "clientFacingModel": routing.client_facing_model,
             "status": status.as_u16(), "reqHeaders": ex_req_headers, "reqBody": ex_req_body,
+            "clientReq": ex_client_req, "translated": ex_translated,
+            "upstreamRes": json!({ "status": status.as_u16(), "headers": vec_headers(&out_headers), "body": cap_text(&buf, 1024 * 1024) }),
             "resHeaders": json!({ "content-type": ct_out, "x-ccbud-translated": format!("{:?}->{:?}", provider_wire, client_wire) }),
             "resBody": cap_text(&body_bytes, 2 * 1024 * 1024),
         }))
         .await;
-        return Response::builder()
+        let mut builder = Response::builder()
             .status(status.as_u16())
             .header("content-type", ct_out)
-            .header("x-ccbud-translated", format!("{:?}->{:?}", provider_wire, client_wire))
-            .body(Body::from(body_bytes))
-            .unwrap();
+            .header("x-ccbud-translated", format!("{:?}->{:?}", provider_wire, client_wire));
+        for (k, v) in &out_headers {
+            if k == "request-id" || k == "x-request-id" {
+                builder = builder.header(k, v);
+            }
+        }
+        return builder.body(Body::from(body_bytes)).unwrap();
     }
 
     let mut out_buf = buf.clone();
@@ -1071,6 +1222,7 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
         "provider": provider_name, "requestedModel": routing.client_facing_model,
         "outgoingModel": routing.outgoing_model, "clientFacingModel": routing.client_facing_model,
         "status": status.as_u16(), "reqHeaders": ex_req_headers, "reqBody": ex_req_body,
+        "clientReq": ex_client_req, "translated": ex_translated,
         "resHeaders": vec_headers(&out_headers), "resBody": cap_text(&out_buf, 2 * 1024 * 1024),
     }))
     .await;
@@ -1158,8 +1310,10 @@ async fn mock_handler(req: axum::extract::Request) -> Response {
         );
     }
     if stream {
+        // Anthropic streaming with a real text block, so the Anthropic→Responses incremental
+        // transcoder (Codex client) has content to carry, not just usage bookkeeping.
         let sse = format!(
-            "event: message_start\ndata: {{\"type\":\"message_start\",\"message\":{{\"model\":\"{m}\",\"usage\":{{\"input_tokens\":10,\"cache_read_input_tokens\":0,\"cache_creation_input_tokens\":0}}}}}}\n\nevent: message_delta\ndata: {{\"type\":\"message_delta\",\"usage\":{{\"output_tokens\":7}}}}\n\nevent: message_stop\ndata: {{\"type\":\"message_stop\"}}\n\n",
+            "event: message_start\ndata: {{\"type\":\"message_start\",\"message\":{{\"id\":\"msg_mock\",\"model\":\"{m}\",\"usage\":{{\"input_tokens\":10,\"cache_read_input_tokens\":0,\"cache_creation_input_tokens\":0}}}}}}\n\nevent: content_block_start\ndata: {{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{{\"type\":\"text\",\"text\":\"\"}}}}\n\nevent: content_block_delta\ndata: {{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{{\"type\":\"text_delta\",\"text\":\"hi from anthropic\"}}}}\n\nevent: content_block_stop\ndata: {{\"type\":\"content_block_stop\",\"index\":0}}\n\nevent: message_delta\ndata: {{\"type\":\"message_delta\",\"usage\":{{\"output_tokens\":7}}}}\n\nevent: message_stop\ndata: {{\"type\":\"message_stop\"}}\n\n",
             m = model
         );
         Response::builder()
@@ -1240,7 +1394,7 @@ pub async fn gateway_selftest(gport: u16) -> Value {
     let cfg2 = json!({ "port": gport, "activeProviderId":"mockoa", "providers":[
         { "id":"mockoa","name":"MockOpenAI","baseUrl":format!("http://127.0.0.1:{}", mock),"authToken":"k","protocol":"openai-chat","defaultModel":"gpt-mock","smallFastModel":"gpt-mock","mapDefaultModels":true,"models":[{"alias":"test-alias","upstream":"gpt-mock"}] }
     ]});
-    store::write_config(cfg2);
+    store::write_config(cfg2.clone());
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
     let tx_ns = client
@@ -1317,6 +1471,54 @@ pub async fn gateway_selftest(gport: u16) -> Value {
         Err(e) => (0, false, format!("ERR:{}", e)),
     };
 
+    // ---- Codex (OpenAI-Responses client, /v1/responses) → an Anthropic provider ----
+    // The shape Codex sends with wire_api="responses": instructions + item-based input + flattened
+    // function tools. Non-stream proves the buffered translate; stream proves the incremental
+    // Anthropic→Responses transcoder (item done events + terminal response.completed).
+    let codex_body = json!({ "model":"test-alias", "instructions":"be nice",
+        "input":[{ "type":"message","role":"user","content":[{ "type":"input_text","text":"hi" }] }],
+        "tools":[{ "type":"function","name":"shell","description":"run","parameters":{ "type":"object" } }],
+        "tool_choice":"auto", "store": false });
+    let cdx = client
+        .post(format!("http://127.0.0.1:{}/v1/responses", gport))
+        .json(&codex_body)
+        .send()
+        .await;
+    let (cdx_status, cdx_is_response, cdx_text) = match cdx {
+        Ok(r) => {
+            let s = r.status().as_u16();
+            let j: Value = r.json().await.unwrap_or_else(|_| json!({}));
+            let is_resp = j.get("object").and_then(|v| v.as_str()) == Some("response");
+            let text = j.get("output_text").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            (s, is_resp, text)
+        }
+        Err(e) => (0, false, format!("ERR:{}", e)),
+    };
+    let mut codex_stream_body = codex_body.clone();
+    codex_stream_body["stream"] = json!(true);
+    let cdx_st = client
+        .post(format!("http://127.0.0.1:{}/v1/responses", gport))
+        .json(&codex_stream_body)
+        .send()
+        .await;
+    let (cdx_st_status, cdx_st_text) = match cdx_st {
+        Ok(r) => (r.status().as_u16(), r.text().await.unwrap_or_default()),
+        Err(e) => (0, format!("ERR:{}", e)),
+    };
+
+    // ---- Codex → an OpenAI-Chat provider (incremental chat→Responses transcoding) ----
+    store::write_config(cfg2.clone());
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let cdx_chat = client
+        .post(format!("http://127.0.0.1:{}/v1/responses", gport))
+        .json(&codex_stream_body)
+        .send()
+        .await;
+    let (cdx_chat_status, cdx_chat_text) = match cdx_chat {
+        Ok(r) => (r.status().as_u16(), r.text().await.unwrap_or_default()),
+        Err(e) => (0, format!("ERR:{}", e)),
+    };
+
     json!({
         "nonStreamStatus": ns_status,
         "nonStreamModel": ns_model,
@@ -1346,6 +1548,21 @@ pub async fn gateway_selftest(gport: u16) -> Value {
         "xlateStreamIncremental": tx_st_text.contains("content_block_delta") && tx_st_text.contains("text_delta"),
         "xlateStreamText": tx_st_text.contains("from chat"),
         "xlateStreamStop": tx_st_text.contains("\"stop_reason\":\"end_turn\""),
+        // Codex (Responses client): buffered translate + incremental stream transcoders. Codex
+        // materializes items from response.output_item.done and requires response.completed.
+        "codexNonStreamStatus": cdx_status,
+        "codexNonStreamIsResponse": cdx_is_response,
+        "codexNonStreamText": cdx_text,
+        "codexAnthropicStreamStatus": cdx_st_status,
+        "codexAnthropicStreamDelta": cdx_st_text.contains("response.output_text.delta"),
+        "codexAnthropicStreamItemDone": cdx_st_text.contains("response.output_item.done"),
+        "codexAnthropicStreamCompleted": cdx_st_text.contains("response.completed"),
+        "codexAnthropicStreamText": cdx_st_text.contains("hi from anthropic"),
+        "codexChatStreamStatus": cdx_chat_status,
+        "codexChatStreamDelta": cdx_chat_text.contains("response.output_text.delta"),
+        "codexChatStreamItemDone": cdx_chat_text.contains("response.output_item.done"),
+        "codexChatStreamCompleted": cdx_chat_text.contains("response.completed"),
+        "codexChatStreamText": cdx_chat_text.contains("from chat"),
     })
 }
 
@@ -1393,6 +1610,11 @@ pub fn routing_selftest() -> Value {
     chk("7 stays on active", pidf(&r).as_deref() == Some("main") && out(&r).as_deref() == Some("small-model"));
     let r = resolve_routing(Some("whatever-x"), &off, None);
     chk("8 mapoff passthrough", out(&r).as_deref() == Some("whatever-x"));
+    let r = resolve_routing(Some("gpt-5.5-ccbud"), &cfg2, None);
+    chk(
+        "9 codex sentinel→primary",
+        out(&r).as_deref() == Some("big-model") && cf(&r).as_deref() == Some("gpt-5.5-ccbud"),
+    );
 
     json!({ "total": n, "passed": n - fails.len(), "failed": fails.len(), "fails": fails })
 }
@@ -1404,7 +1626,7 @@ mod tests {
     fn routing_parity_with_proxy_js() {
         let r = routing_selftest();
         assert_eq!(r.get("failed").and_then(|v| v.as_i64()), Some(0), "routing mismatch: {:?}", r);
-        assert_eq!(r.get("passed").and_then(|v| v.as_i64()), Some(8));
+        assert_eq!(r.get("passed").and_then(|v| v.as_i64()), Some(9));
     }
     #[test]
     fn synthesize_models_includes_claude_tiers() {

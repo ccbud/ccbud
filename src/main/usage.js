@@ -38,8 +38,9 @@ function bump(data, ev) {
   day.output += out;
   day.cacheRead += cr;
   day.cacheCreation += cc;
-  const model = ev.model || ev.requestedModel || ev.outgoingModel || 'unknown';
-  day.models[model] = (day.models[model] || 0) + total;
+  // tokens with no model attribution (e.g. <synthetic> turns) still count in the totals above
+  const model = ev.model || ev.requestedModel || ev.outgoingModel;
+  if (model) day.models[model] = (day.models[model] || 0) + total;
   if (ev.provider) day.providers[ev.provider] = (day.providers[ev.provider] || 0) + total;
   const h = new Date(ts).getHours();
   day.hours[h] = (day.hours[h] || 0) + total;
