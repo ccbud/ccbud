@@ -1622,6 +1622,9 @@ pub fn run() {
                                     .unwrap_or("all")
                                     .to_string();
                                 usage::warm_cache(&cfg, &active);
+                                if let Some(g) = h.try_state::<std::sync::Arc<gateway::GatewayState>>() {
+                                    g.log("info", usage::diag(&cfg, &active));
+                                }
                                 update_tray_title(&h);
                             });
                         }
@@ -1645,8 +1648,14 @@ pub fn run() {
                     .and_then(|v| v.as_str())
                     .unwrap_or("all")
                     .to_string();
+                let h = app.handle().clone();
                 std::thread::spawn(move || {
                     usage::warm_cache(&cfg, &active);
+                    // Surface the scan shape in the settings Logs panel — the first place to look
+                    // when the usage numbers look wrong.
+                    if let Some(g) = h.try_state::<std::sync::Arc<gateway::GatewayState>>() {
+                        g.log("info", usage::diag(&cfg, &active));
+                    }
                 });
             }
 

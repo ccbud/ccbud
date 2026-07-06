@@ -199,7 +199,7 @@ impl GatewayState {
         })
     }
 
-    fn log(&self, level: &str, msg: impl AsRef<str>) {
+    pub fn log(&self, level: &str, msg: impl AsRef<str>) {
         let seq = self.log_seq.fetch_add(1, Ordering::Relaxed) + 1;
         let ts = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

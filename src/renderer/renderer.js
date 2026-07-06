@@ -182,7 +182,7 @@ function scheduleHeroUsage() {
 function renderHero() {
   const hero = $('hero');
   const ap = activeProvider();
-  $('btnConnect').textContent = I18n.t(status.connected ? 'hero.disconnect' : 'hero.connect');
+  $('btnConnect').textContent = I18n.t(status.running ? 'hero.stopSvc' : 'hero.startSvc');
   if (status.running) {
     hero.classList.add('connected');
     const icon = $('heroIcon');
@@ -947,20 +947,21 @@ async function persist(patch) {
   status = await api.serverStatus();
   renderAll();
 }
+// The hero button is the gateway SERVICE switch (start/stop). CLI config wiring lives in
+// Settings → connect targets.
 async function toggleConnect() {
   const btn = $('btnConnect');
-  const wasConnected = status.connected;
+  const on = !status.running;
   btn.disabled = true;
-  btn.textContent = wasConnected ? I18n.t('hero.disconnecting') : I18n.t('hero.connecting');
-  const res = wasConnected ? await api.disconnect() : await api.connect();
+  let res;
+  try { res = await api.gatewaySetEnabled(on); } catch (_) { res = null; }
   btn.disabled = false;
+  config = await api.getConfig();
   status = await api.serverStatus();
   renderAll();
-    if (!res.ok) {
-      const m = res.reason === 'noProvider' ? I18n.t('settings.desktopNoProvider')
-        : (res.message || I18n.t('err.opFailed'));
-      showHeroNote(m, true);
-    }
+  if (res && res.ok === false) {
+    showHeroNote(res.message || I18n.t('err.opFailed'), true);
+  }
 }
 function copyFeedback(btn, text) {
   const orig = btn.dataset.copyOrig || (btn.dataset.copyOrig = btn.textContent);

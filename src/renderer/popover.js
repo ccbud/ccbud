@@ -129,10 +129,10 @@ async function render() {
 async function renderStatus() {
   const s = await api.serverStatus();
   const dot = $('popStatus').querySelector('.pulse-dot, .live-dot');
-  dot.className = 'pulse-dot w-1.75 h-1.75 rounded-full shrink-0 ' + (s.connected ? 'on bg-green animate-[pulse_2s_infinite]' : 'off bg-muted');
-  $('popStatusText').textContent = s.connected ? L('status.connected') : L('status.disconnected');
-  $('popConnect').textContent = s.connected ? L('pop.disconnect') : L('pop.connectFull');
-  $('popConnect').dataset.connected = s.connected ? '1' : '';
+  dot.className = 'pulse-dot w-1.75 h-1.75 rounded-full shrink-0 ' + (s.running ? 'on bg-green animate-[pulse_2s_infinite]' : 'off bg-muted');
+  $('popStatusText').textContent = s.running ? L('status.gwRunning') : L('status.gwStopped');
+  $('popConnect').textContent = s.running ? L('pop.svcStop') : L('pop.svcStart');
+  $('popConnect').dataset.running = s.running ? '1' : '';
 }
 
 function setTab(t) {
@@ -152,7 +152,7 @@ function bind() {
   $('popRanges').addEventListener('click', (e) => { if (e.target.dataset.range) setRange(e.target.dataset.range); });
   $('popConnect').addEventListener('click', async (e) => {
     e.target.disabled = true;
-    if (e.target.dataset.connected) await api.disconnect(); else await api.connect();
+    try { await api.gatewaySetEnabled(!e.target.dataset.running); } catch (_) {}
     e.target.disabled = false;
     renderStatus();
   });
