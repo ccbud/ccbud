@@ -181,19 +181,27 @@
   }, true);
 
   /* ---------- errors ---------- */
+  // Error messages can embed user paths or URLs — redact those before tagging.
+  function scrubError(s) {
+    return String(s == null ? 'unknown' : s)
+      .replace(/(?:file|https?):\/\/[^\s'")]+/gi, '<url>')
+      .replace(/(^|[\s'"(=:,])(?:~\/|\/)[^\s'")]+/g, '$1<path>')
+      .replace(/[A-Za-z]:\\[^\s'")]+/g, '<path>')
+      .slice(0, 120);
+  }
   window.addEventListener('error', function (e) {
     if (e && e.target && e.target !== w && e.target.nodeType === 1) {
       track('error:resource:' + (e.target.tagName || '').toLowerCase());
       return;
     }
     track('error:js');
-    tag('lastError', e && e.message ? e.message : 'unknown');
+    tag('lastError', scrubError(e && e.message));
     try { w.clarity('upgrade', 'js-error'); } catch (_) {}
   }, true);
   window.addEventListener('unhandledrejection', function (e) {
     var r = e && e.reason;
     track('error:unhandled-rejection');
-    tag('lastError', r && r.message ? r.message : String(r));
+    tag('lastError', scrubError(r && r.message ? r.message : r));
     try { w.clarity('upgrade', 'js-error'); } catch (_) {}
   });
 

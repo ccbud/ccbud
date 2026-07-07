@@ -38,14 +38,22 @@
     document.addEventListener('input', function (e) {
       if (!searched && e.target && e.target.id === 'q') { searched = true; track('export:search'); }
     }, true);
+    // Error messages can embed local paths or URLs — redact those before tagging.
+    var scrubError = function (s) {
+      return String(s == null ? 'unknown' : s)
+        .replace(/(?:file|https?):\/\/[^\s'")]+/gi, '<url>')
+        .replace(/(^|[\s'"(=:,])(?:~\/|\/)[^\s'")]+/g, '$1<path>')
+        .replace(/[A-Za-z]:\\[^\s'")]+/g, '<path>')
+        .slice(0, 120);
+    };
     window.addEventListener('error', function (e) {
       if (e && e.target && e.target !== window && e.target.nodeType === 1) return;
-      track('error:js'); tag('lastError', (e && e.message) || 'unknown');
+      track('error:js'); tag('lastError', scrubError(e && e.message));
       try { window.clarity('upgrade', 'js-error'); } catch (err) {}
     }, true);
     window.addEventListener('unhandledrejection', function (e) {
       var r = e && e.reason;
-      track('error:unhandled-rejection'); tag('lastError', (r && r.message) || String(r));
+      track('error:unhandled-rejection'); tag('lastError', scrubError(r && r.message ? r.message : r));
     });
   } catch (e) {}
 })();

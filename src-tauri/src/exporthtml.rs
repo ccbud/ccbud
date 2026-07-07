@@ -386,9 +386,13 @@ pub fn build_data(file: &str) -> Value {
 
 pub fn html_from_data(data: &Value) -> String {
     let json = serde_json::to_string(data).unwrap_or_default().replace('<', "\\u003c");
+    // Tab title uses the project name (already public via the export's filename), NOT the
+    // conversation title: Clarity reports document.title as page metadata that masking can't
+    // reach, and the conversation title is first-message text. The full title still renders
+    // in the viewer header, inside the Clarity-masked #app.
     let title = data
         .get("meta")
-        .and_then(|m| m.get("title"))
+        .and_then(|m| m.get("project"))
         .and_then(|v| v.as_str())
         .unwrap_or("Conversation")
         .replace(['<', '>'], "");

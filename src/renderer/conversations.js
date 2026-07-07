@@ -137,7 +137,9 @@
     const place = (el) => {
       const txt = el.getAttribute('data-tip');
       if (!txt) return;
-      if (!tipEl) { tipEl = document.createElement('div'); tipEl.className = 'cc-tip'; document.body.appendChild(tipEl); }
+      // body-level, so outside the Clarity-masked conversations section — mask it
+      // explicitly: it renders session titles and project paths.
+      if (!tipEl) { tipEl = document.createElement('div'); tipEl.className = 'cc-tip'; tipEl.setAttribute('data-clarity-mask', 'true'); document.body.appendChild(tipEl); }
       tipEl.textContent = txt;
       tipEl.classList.add('show');
       const r = el.getBoundingClientRect();
@@ -966,7 +968,7 @@
   /* ---------- export ---------- */
   function toast(msg, ok) {
     let t = document.querySelector('.conv-toast');
-    if (!t) { t = document.createElement('div'); t.className = 'conv-toast'; document.body.appendChild(t); }
+    if (!t) { t = document.createElement('div'); t.className = 'conv-toast'; t.setAttribute('data-clarity-mask', 'true'); document.body.appendChild(t); }
     t.textContent = msg;
     t.classList.toggle('err', ok === false);
     t.classList.add('show');

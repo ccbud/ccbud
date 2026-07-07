@@ -124,6 +124,8 @@ function ensureToastHost() {
   if (!host) {
     host = document.createElement('div');
     host.id = 'toastHost';
+    // Toast text can carry backend error strings (paths, upstream URLs) — keep it out of Clarity replays.
+    host.setAttribute('data-clarity-mask', 'true');
     host.style.cssText = 'position:fixed;top:20px;left:50%;transform:translateX(-50%);z-index:9999;display:flex;flex-direction:column;align-items:center;gap:8px;pointer-events:none;';
     document.body.appendChild(host);
   }

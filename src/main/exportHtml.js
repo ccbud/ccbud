@@ -240,7 +240,11 @@ function htmlFromData(data) {
   const hljs = readAsset(path.join('..', 'renderer', 'vendor', 'highlight.min.js'));
   const hljsCss = readAsset(path.join('..', 'renderer', 'vendor', 'hljs-dark.css')); // code blocks are dark in both themes
   const json = JSON.stringify(data).replace(/</g, '\\u003c');
-  const title = (data.meta.title || 'Conversation').replace(/[<>]/g, '');
+  // Tab title uses the project name (already public via the export's filename), NOT the
+  // conversation title: Clarity reports document.title as page metadata that masking can't
+  // reach, and the conversation title is first-message text. The full title still renders
+  // in the viewer header, inside the Clarity-masked #app.
+  const title = (data.meta.project || 'Conversation').replace(/[<>]/g, '');
   // Nonce-based CSP so the standalone exported file (opened in a plain browser, no app CSP) runs
   // ONLY these four generator scripts — an injected <img onerror> / javascript: link carries no
   // nonce and can't execute. The clarity.ms origins additionally allow the Clarity analytics tag
