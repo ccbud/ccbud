@@ -252,7 +252,7 @@ function htmlFromData(data) {
     + '<meta name="viewport" content="width=device-width,initial-scale=1">'
     + '<title>' + title + ' · ccbud</title>'
     + '<style>' + skin + '\n' + hljsCss + '</style>'
-    + '</head><body><div id="app"></div>'
+    + '</head><body><div id="app" data-clarity-mask="true"></div>'
     + '<script nonce="ccbudexport">' + marked + '</script>'
     + '<script nonce="ccbudexport">' + hljs + '</script>'
     + '<script nonce="ccbudexport">window.__CONV__=' + json + ';</script>'

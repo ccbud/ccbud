@@ -16,7 +16,10 @@
  * Privacy: only element identifiers, i18n keys and enum-ish dataset values are ever
  * used as event names — free text, input values and content-bearing dataset payloads
  * (paths, session ids, urls) never leave the app; Clarity's default masking covers
- * replay content, and password fields are never captured.
+ * replay content, and password fields are never captured. Secrets and user content
+ * rendered as page text (export snippet, conversations view, request inspector, …)
+ * additionally carry data-clarity-mask="true" in the markup so they stay masked in
+ * every Clarity masking mode.
  */
 (function () {
   var PROJECT_ID = 'xij8wflxsj';
