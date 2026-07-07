@@ -231,7 +231,14 @@
       if (ua.indexOf('Electron/') !== -1) return;
       ua += ' ccbud/' + version + ' Electron/' + version;
       if (ua.indexOf('Safari/') === -1) ua += ' Safari/605.1.15'; // parseable fallback token
-      Object.defineProperty(navigator, 'userAgent', { get: function () { return ua; }, configurable: true });
+      var read = function () { return ua; };
+      // Shadow the instance first; if that slot is unforgeable, patching the
+      // prototype accessor still takes effect for reads.
+      try {
+        Object.defineProperty(navigator, 'userAgent', { get: read, configurable: true });
+      } catch (_) {
+        Object.defineProperty(Navigator.prototype, 'userAgent', { get: read, configurable: true });
+      }
     } catch (_) {}
   }
 
