@@ -413,7 +413,7 @@ pub fn html_from_data(data: &Value) -> String {
 </head><body><div id=\"app\" data-clarity-mask=\"true\"></div>\
 <script nonce=\"ccbudexport\">{marked}</script>\
 <script nonce=\"ccbudexport\">{hljs}</script>\
-<script nonce=\"ccbudexport\">window.__CONV__={json};</script>\
+<script nonce=\"ccbudexport\">window.__CONV__={json};window.__CCBUD_VERSION__=\"{version}\";</script>\
 <script nonce=\"ccbudexport\">{runtime}</script>\
 </body></html>",
         csp = csp,
@@ -423,6 +423,7 @@ pub fn html_from_data(data: &Value) -> String {
         marked = MARKED,
         hljs = HLJS,
         json = json,
+        version = env!("CARGO_PKG_VERSION"),
         runtime = RUNTIME,
     )
 }

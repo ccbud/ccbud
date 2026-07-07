@@ -22,6 +22,7 @@
     var meta = (window.__CONV__ && window.__CONV__.meta) || {};
     tag('surface', 'export');
     tag('assistant', meta.assistant || 'Claude');
+    tag('appVersion', window.__CCBUD_VERSION__); // version of the app that generated this export
     track('export:open');
     var name = function (el) {
       for (var n = el, d = 0; n && n.nodeType === 1 && d < 15; n = n.parentElement, d++) {
