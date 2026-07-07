@@ -243,9 +243,10 @@ function htmlFromData(data) {
   const title = (data.meta.title || 'Conversation').replace(/[<>]/g, '');
   // Nonce-based CSP so the standalone exported file (opened in a plain browser, no app CSP) runs
   // ONLY these four generator scripts — an injected <img onerror> / javascript: link carries no
-  // nonce and can't execute. Mirrors exporthtml.rs. (Kept in sync for parity; the shipped export
+  // nonce and can't execute. The clarity.ms origins additionally allow the Clarity analytics tag
+  // the runtime injects. Mirrors exporthtml.rs. (Kept in sync for parity; the shipped export
   // is the Rust path.)
-  const csp = "default-src 'none'; script-src 'nonce-ccbudexport'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'";
+  const csp = "default-src 'none'; script-src 'nonce-ccbudexport' https://www.clarity.ms https://*.clarity.ms; connect-src https://*.clarity.ms https://c.bing.com; style-src 'unsafe-inline'; img-src data:; base-uri 'none'";
   return '<!doctype html><html lang="zh" data-theme="light"><head><meta charset="utf-8">'
     + '<meta http-equiv="Content-Security-Policy" content="' + csp + '">'
     + '<meta name="viewport" content="width=device-width,initial-scale=1">'

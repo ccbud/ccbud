@@ -2,7 +2,7 @@
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src 'self' ipc: http://ipc.localhost; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data: asset: http://asset.localhost" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src 'self' ipc: http://ipc.localhost https://*.clarity.ms https://c.bing.com; style-src 'self' 'unsafe-inline'; script-src 'self' https://www.clarity.ms https://*.clarity.ms; img-src 'self' data: asset: http://asset.localhost" />
     <title>ccbud</title>
     <link rel="stylesheet" href="styles.css" />
     <link id="hljs-light" rel="stylesheet" href="vendor/hljs-light.css" />
@@ -528,6 +528,7 @@
       </aside>
     </div>
 
+    <script src="analytics.js"></script>
     <script src="tauri-bridge.js"></script>
     <script src="shared/i18n-dict.js"></script>
     <script src="i18n.js"></script>

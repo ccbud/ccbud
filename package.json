@@ -1,6 +1,6 @@
 {
   "name": "ccbud",
-  "version": "1.2.2",
+  "version": "1.2.3",
   "description": "ccbud — Coding CLI Buddy. A cross-platform desktop app that proxies Claude Code to any Anthropic-compatible provider (one-click switching, model mapping) and browses your Claude Code & Codex session history.",
   "author": {
     "name": "loadchange",
@@ -14,6 +14,7 @@
   "scripts": {
     "build:css": "tailwindcss -i src/renderer/input.css -o src/renderer/styles.css",
     "sync:shared": "node -e \"require('fs').cpSync('src/shared','src/renderer/shared',{recursive:true})\"",
+    "sync:clarity": "node -e \"const fs=require('fs');fs.mkdirSync('src/renderer/vendor/clarity/src',{recursive:true});fs.copyFileSync('node_modules/@microsoft/clarity/index.js','src/renderer/vendor/clarity/index.js');fs.copyFileSync('node_modules/@microsoft/clarity/src/utils.js','src/renderer/vendor/clarity/src/utils.js')\"",
     "tauri": "tauri",
     "release": "node scripts/release.js",
     "start": "tauri dev",
@@ -33,6 +34,7 @@
     "tailwindcss": "^4.3.1"
   },
   "dependencies": {
+    "@microsoft/clarity": "^1.0.2",
     "js-tiktoken": "^1.0.21"
   }
 }

@@ -395,10 +395,11 @@ pub fn html_from_data(data: &Value) -> String {
     // The exported viewer is a static file opened in a plain browser (no app CSP). A nonce-based
     // CSP lets ONLY these four generator-emitted <script> blocks run: an injected inline handler
     // (e.g. an <img onerror> from a crafted image data-URL) or a `javascript:` link in a message
-    // carries no nonce, so the browser refuses to execute it. img-src data: keeps inline images;
+    // carries no nonce, so the browser refuses to execute it. The clarity.ms origins additionally
+    // allow the Clarity analytics tag the runtime injects. img-src data: keeps inline images;
     // style-src 'unsafe-inline' keeps the embedded skin. Nonce is static (a local file has no
     // replay threat model — it only separates our scripts from attacker-injected markup).
-    let csp = "default-src 'none'; script-src 'nonce-ccbudexport'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'";
+    let csp = "default-src 'none'; script-src 'nonce-ccbudexport' https://www.clarity.ms https://*.clarity.ms; connect-src https://*.clarity.ms https://c.bing.com; style-src 'unsafe-inline'; img-src data:; base-uri 'none'";
     format!(
         "<!doctype html><html lang=\"zh\" data-theme=\"light\"><head><meta charset=\"utf-8\">\
 <meta http-equiv=\"Content-Security-Policy\" content=\"{csp}\">\
