@@ -94,13 +94,8 @@ async fn config_save(
     // History dirs changed → invalidate + re-warm the usage cache and notify the renderer.
     if saved.get("historyDirs").cloned() != prev_dirs {
         usage::invalidate_cache();
-        let active = saved
-            .get("historyActive")
-            .and_then(|v| v.as_str())
-            .unwrap_or("all")
-            .to_string();
         let cfg2 = saved.clone();
-        std::thread::spawn(move || usage::warm_cache(&cfg2, &active));
+        std::thread::spawn(move || usage::warm_cache(&cfg2, "all"));
         let _ = app.emit("history:changed", json!({ "files": [] }));
     }
 
@@ -523,8 +518,9 @@ async fn server_status(
 fn usage_get(range: Option<String>) -> Value {
     let t = std::time::Instant::now();
     let cfg = store::read_config();
-    let active = cfg.get("historyActive").and_then(|v| v.as_str()).unwrap_or("all").to_string();
-    let r = usage::usage_get(&cfg, &active, range.as_deref().unwrap_or("7d"));
+    // Usage surfaces (popover heatmap/stats, hero) always aggregate EVERY configured dir — the
+    // conversations-page directory switcher must not silently filter the calendar down to one CLI.
+    let r = usage::usage_get(&cfg, "all", range.as_deref().unwrap_or("7d"));
     eprintln!(
         "[TIMING] usage_get(range={}) {}ms",
         range.as_deref().unwrap_or("7d"),
@@ -582,8 +578,8 @@ fn update_tray_title(app: &tauri::AppHandle) {
     let enabled = tu.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false);
     let title: Option<String> = if enabled {
         let range = tu.get("range").and_then(|v| v.as_str()).unwrap_or("7d").to_string();
-        let active = config.get("historyActive").and_then(|v| v.as_str()).unwrap_or("all").to_string();
-        let tokens = usage::usage_get(&config, &active, &range)
+        // Same global scope as the popover — the tray count is a whole-machine number.
+        let tokens = usage::usage_get(&config, "all", &range)
             .get("tokens")
             .and_then(|v| v.as_i64())
             .unwrap_or(0);
@@ -1616,14 +1612,9 @@ pub fn run() {
                             let h = app_w.clone();
                             std::thread::spawn(move || {
                                 let cfg = store::read_config();
-                                let active = cfg
-                                    .get("historyActive")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("all")
-                                    .to_string();
-                                usage::warm_cache(&cfg, &active);
+                                usage::warm_cache(&cfg, "all");
                                 if let Some(g) = h.try_state::<std::sync::Arc<gateway::GatewayState>>() {
-                                    g.log("info", usage::diag(&cfg, &active));
+                                    g.log("info", usage::diag(&cfg, "all"));
                                 }
                                 update_tray_title(&h);
                             });
@@ -1643,18 +1634,13 @@ pub fn run() {
             // instant instead of paying the ~0.5s cold-scan cost.
             {
                 let cfg = store::read_config();
-                let active = cfg
-                    .get("historyActive")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("all")
-                    .to_string();
                 let h = app.handle().clone();
                 std::thread::spawn(move || {
-                    usage::warm_cache(&cfg, &active);
+                    usage::warm_cache(&cfg, "all");
                     // Surface the scan shape in the settings Logs panel — the first place to look
                     // when the usage numbers look wrong.
                     if let Some(g) = h.try_state::<std::sync::Arc<gateway::GatewayState>>() {
-                        g.log("info", usage::diag(&cfg, &active));
+                        g.log("info", usage::diag(&cfg, "all"));
                     }
                 });
             }
