@@ -58,10 +58,6 @@
   tag('locale', navigator.language);
   try { tag('theme', localStorage.getItem('ccbud-theme') || 'light'); } catch (_) {}
   try { tag('lang', localStorage.getItem('ccbud-lang') || ''); } catch (_) {}
-  try {
-    var T = w.__TAURI__;
-    if (T && T.app && T.app.getVersion) T.app.getVersion().then(function (v) { tag('appVersion', v); }, function () {});
-  } catch (_) {}
   track('open:' + SURFACE);
   track('view:' + (SURFACE === 'popover' ? 'popover/overview' : 'providers'));
 
@@ -221,9 +217,49 @@
       (document.head || document.documentElement).appendChild(s);
     } catch (_) {}
   }
+  // Tauri webviews expose a bare engine UA (WKWebView has no browser token), so Clarity
+  // buckets every session under browser "Other/Unknown" — and its player tries to fetch
+  // our stylesheets from the app-local origin (tauri://localhost), unreachable from the
+  // internet, so replays render as bare unstyled HTML. clarity-js has a desktop mode
+  // keyed off an "Electron" token in the UA: it inlines each linked stylesheet's CSS
+  // text into the payload (nothing to fetch at replay time) and marks the session as a
+  // desktop client. Piggyback on it, carrying the real app version in the same UA so
+  // the reported client is versioned instead of anonymous.
+  function adoptDesktopUA(version) {
+    try {
+      var ua = navigator.userAgent;
+      if (ua.indexOf('Electron/') !== -1) return;
+      ua += ' ccbud/' + version + ' Electron/' + version;
+      if (ua.indexOf('Safari/') === -1) ua += ' Safari/605.1.15'; // parseable fallback token
+      Object.defineProperty(navigator, 'userAgent', { get: function () { return ua; }, configurable: true });
+    } catch (_) {}
+  }
+
+  var booted = false;
+  function boot(version) {
+    if (booted) return;
+    booted = true;
+    if (version) tag('appVersion', version);
+    adoptDesktopUA(version || '0.0.0');
+    try {
+      import('./vendor/clarity/index.js')
+        .then(function (m) { (m.default || m).init(PROJECT_ID); })
+        .catch(fallbackInject);
+    } catch (_) { fallbackInject(); }
+  }
+
+  // The UA must be in place before clarity-js loads and reads it, so resolve the app
+  // version first — time-boxed, so analytics never stalls on a broken IPC bridge.
+  var versionPromise = null;
   try {
-    import('./vendor/clarity/index.js')
-      .then(function (m) { (m.default || m).init(PROJECT_ID); })
-      .catch(fallbackInject);
-  } catch (_) { fallbackInject(); }
+    var T = w.__TAURI__;
+    if (T && T.app && T.app.getVersion) versionPromise = T.app.getVersion();
+  } catch (_) {}
+  if (versionPromise && typeof versionPromise.then === 'function') {
+    var bootTimer = setTimeout(function () { boot(''); }, 1000);
+    var settle = function (v) { clearTimeout(bootTimer); boot(typeof v === 'string' ? v : ''); };
+    versionPromise.then(settle, function () { settle(''); });
+  } else {
+    boot('');
+  }
 })();

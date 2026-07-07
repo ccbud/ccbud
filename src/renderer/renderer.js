@@ -1070,8 +1070,11 @@ function applyTheme(t) {
   const dark = t === 'dark';
   const hd = document.getElementById('hljs-dark');
   const hl = document.getElementById('hljs-light');
-  if (hd) hd.disabled = !dark;
-  if (hl) hl.disabled = dark;
+  // Media-attribute swap instead of .disabled: both sheets stay in document.styleSheets
+  // (so Clarity's desktop mode can inline them) and each flip is an attribute mutation
+  // the recording captures, keeping highlight colors faithful in replay.
+  if (hd) hd.media = dark ? 'all' : 'not all';
+  if (hl) hl.media = dark ? 'not all' : 'all';
   // Theme-toggle icon reflects the current mode: sun in light, moon in dark.
   const tbIcon = document.querySelector('#btnTheme [data-icon]');
   if (tbIcon) { const nm = dark ? 'moon' : 'theme'; tbIcon.dataset.icon = nm; if (I[nm]) tbIcon.innerHTML = I[nm]; }
