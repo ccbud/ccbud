@@ -240,18 +240,23 @@ function htmlFromData(data) {
   const hljs = readAsset(path.join('..', 'renderer', 'vendor', 'highlight.min.js'));
   const hljsCss = readAsset(path.join('..', 'renderer', 'vendor', 'hljs-dark.css')); // code blocks are dark in both themes
   const json = JSON.stringify(data).replace(/</g, '\\u003c');
-  const title = (data.meta.title || 'Conversation').replace(/[<>]/g, '');
+  // Tab title uses the project name (already public via the export's filename), NOT the
+  // conversation title: Clarity reports document.title as page metadata that masking can't
+  // reach, and the conversation title is first-message text. The full title still renders
+  // in the viewer header, inside the Clarity-masked #app.
+  const title = (data.meta.project || 'Conversation').replace(/[<>]/g, '');
   // Nonce-based CSP so the standalone exported file (opened in a plain browser, no app CSP) runs
   // ONLY these four generator scripts — an injected <img onerror> / javascript: link carries no
-  // nonce and can't execute. Mirrors exporthtml.rs. (Kept in sync for parity; the shipped export
+  // nonce and can't execute. The clarity.ms origins additionally allow the Clarity analytics tag
+  // the runtime injects. Mirrors exporthtml.rs. (Kept in sync for parity; the shipped export
   // is the Rust path.)
-  const csp = "default-src 'none'; script-src 'nonce-ccbudexport'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'";
+  const csp = "default-src 'none'; script-src 'nonce-ccbudexport' https://www.clarity.ms https://*.clarity.ms; connect-src https://*.clarity.ms https://c.bing.com; style-src 'unsafe-inline'; img-src data:; base-uri 'none'";
   return '<!doctype html><html lang="zh" data-theme="light"><head><meta charset="utf-8">'
     + '<meta http-equiv="Content-Security-Policy" content="' + csp + '">'
     + '<meta name="viewport" content="width=device-width,initial-scale=1">'
     + '<title>' + title + ' · ccbud</title>'
     + '<style>' + skin + '\n' + hljsCss + '</style>'
-    + '</head><body><div id="app"></div>'
+    + '</head><body><div id="app" data-clarity-mask="true"></div>'
     + '<script nonce="ccbudexport">' + marked + '</script>'
     + '<script nonce="ccbudexport">' + hljs + '</script>'
     + '<script nonce="ccbudexport">window.__CONV__=' + json + ';</script>'

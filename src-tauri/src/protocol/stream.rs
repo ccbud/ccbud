@@ -73,6 +73,18 @@ impl Transcoder {
             Self::AnthropicToResponses(t) => t.output_tokens(),
         }
     }
+
+    /// True once the terminal client event (`message_stop` / `response.completed` /
+    /// `response.failed`) has been emitted: the turn is semantically complete even though the
+    /// upstream socket may not have hit EOF yet — Responses clients (Codex) hang up exactly at
+    /// this point, so the gateway must not treat that disconnect as an abort.
+    pub fn done(&self) -> bool {
+        match self {
+            Self::ChatToAnthropic(t) => t.stopped,
+            Self::ChatToResponses(t) => t.stopped,
+            Self::AnthropicToResponses(t) => t.stopped,
+        }
+    }
 }
 
 fn map_stop(finish: Option<&str>, had_tool: bool) -> &'static str {
@@ -975,6 +987,27 @@ mod tests {
         assert!(out.contains("text_delta") && out.contains(r#""text":"hello""#));
         assert!(out.contains(r#""stop_reason":"end_turn""#));
         assert!(out.contains("event: message_stop"));
+    }
+
+    // The gateway's abort guard relies on done() flipping as soon as push() emits the terminal
+    // client event — that is the moment Responses clients (Codex) hang up, before upstream EOF.
+    #[test]
+    fn done_flips_on_terminal_event_before_eof() {
+        let mut tc = Transcoder::new(Wire::Anthropic, Wire::OpenAiResponses, "alias-x").unwrap();
+        tc.push("data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"usage\":{\"input_tokens\":3}}}\n");
+        tc.push("data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\"}}\n");
+        tc.push("data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hi\"}}\n");
+        assert!(!tc.done());
+        let out = tc.push("data: {\"type\":\"message_stop\"}\n");
+        assert!(out.contains("response.completed"));
+        assert!(tc.done());
+
+        let mut tc = Transcoder::new(Wire::OpenAiChat, Wire::Anthropic, "claude-x").unwrap();
+        tc.push("data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hello\"}}]}");
+        assert!(!tc.done());
+        let out = tc.push("data: [DONE]");
+        assert!(out.contains("event: message_stop"));
+        assert!(tc.done());
     }
 
     #[test]

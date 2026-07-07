@@ -2,7 +2,7 @@
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src 'self' ipc: http://ipc.localhost; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data: asset: http://asset.localhost" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src 'self' ipc: http://ipc.localhost https://*.clarity.ms https://c.bing.com; style-src 'self' 'unsafe-inline'; script-src 'self' https://www.clarity.ms https://*.clarity.ms; img-src 'self' data: asset: http://asset.localhost" />
     <title>ccbud</title>
     <link rel="stylesheet" href="styles.css" />
     <link id="hljs-light" rel="stylesheet" href="vendor/hljs-light.css" />
@@ -158,10 +158,10 @@
                 <button class="btn btn-sm bg-bg-elev text-fg border border-border-custom rounded-md px-2.25 py-1.25 font-medium text-[11px] leading-none cursor-pointer transition-all duration-140 hover:bg-chip-bg hover:border-border-strong active:scale-[0.985]" data-copy="endpoint" data-i18n="settings.copy">复制</button>
                 <label class="port-label text-[12px] text-muted flex items-center gap-1.25"><span data-i18n="settings.port">端口</span><input id="portInput" class="port-input w-[72px] px-1.75 py-1.25 bg-bg-input border border-border-custom rounded-md text-fg font-mono text-[12px] outline-none focus:border-primary" type="number" min="1" max="65535" /></label>
               </div>
-              <pre id="exportBlock" class="code-block font-mono text-[12px] leading-[1.55] !bg-[#0c0e12] !text-[#e8edf4] border border-white/8 rounded-lg px-3.25 py-2.75 overflow-x-auto"></pre>
+              <pre id="exportBlock" data-clarity-mask="true" class="code-block font-mono text-[12px] leading-[1.55] !bg-[#0c0e12] !text-[#e8edf4] border border-white/8 rounded-lg px-3.25 py-2.75 overflow-x-auto"></pre>
               <div class="connect-actions flex items-center gap-2.5">
                 <button class="btn btn-sm bg-bg-elev text-fg border border-border-custom rounded-md px-2.25 py-1.25 font-medium text-[11px] leading-none cursor-pointer transition-all duration-140 hover:bg-chip-bg hover:border-border-strong active:scale-[0.985]" id="btnCopyExport" data-i18n="settings.copyExport">复制 export</button>
-                <span class="caption text-[12px] text-caption" id="claudePath"></span>
+                <span class="caption text-[12px] text-caption" id="claudePath" data-clarity-mask="true"></span>
               </div>
               <p class="caption warn text-[12px] text-caption [&.warn]:text-amber" data-i18n="settings.exportWarn">若曾在终端 export ANTHROPIC_BASE_URL，请删除以免覆盖。</p>
             </div>
@@ -218,7 +218,7 @@
                   <span class="switch-label" data-i18n="settings.requireToken">本地访问令牌</span>
                 </label>
                 <span class="input-with-btn token-row hidden flex gap-1.75 items-center w-full max-w-[300px] [&.hidden]:hidden" id="tokenRow">
-                  <input id="fGatewayToken" class="bg-bg-input border border-border-custom rounded-md px-2 py-1.25 text-fg font-mono text-[12px] outline-none focus:border-primary flex-1" type="text" data-i18n-placeholder="settings.tokenPlaceholder" placeholder="网关令牌" />
+                  <input id="fGatewayToken" data-clarity-mask="true" class="bg-bg-input border border-border-custom rounded-md px-2 py-1.25 text-fg font-mono text-[12px] outline-none focus:border-primary flex-1" type="text" data-i18n-placeholder="settings.tokenPlaceholder" placeholder="网关令牌" />
                   <button class="btn btn-sm bg-bg-elev text-fg border border-border-custom rounded-md px-2.25 py-1.25 font-medium text-[11px] leading-none cursor-pointer transition-all duration-140 hover:bg-chip-bg hover:border-border-strong active:scale-[0.985]" id="btnGenToken" type="button" data-i18n="settings.generate">生成</button>
                 </span>
               </div>
@@ -256,7 +256,7 @@
                 <button class="btn btn-sm btn-primary bg-primary text-white border-none rounded-md px-2.25 py-1.25 font-semibold text-[11px] leading-none cursor-pointer transition-all duration-140 hover:bg-primary-hover active:scale-[0.985]" id="btnPickHistDir" type="button" data-i18n="settings.pickDir">选择目录…</button>
               </div>
               <p class="caption text-[12px] text-caption" data-i18n="settings.histDirDesc">对话与用量统计的数据来源 —— Claude Code 的配置目录（含 projects/）。默认 ~/.claude；若用 CLAUDE_CONFIG_DIR / claude --config 指定了其他目录，在此添加，可在「对话」页切换查看。</p>
-              <div id="histDirList" class="hist-dir-list"></div>
+              <div id="histDirList" class="hist-dir-list" data-clarity-mask="true"></div>
             </div>
             </div>
             <div data-pane="about" class="hidden">
@@ -347,12 +347,12 @@
 
           <details class="disclosure raw-log-wrap border border-border-custom rounded-xl bg-bg-elev overflow-hidden">
             <summary class="flex items-center gap-2 px-3.5 py-2.25 cursor-pointer text-[12px] font-semibold text-muted list-none outline-none select-none [&::-webkit-details-marker]:hidden [details[open]_>_&]:border-b [details[open]_>_&]:border-border-custom"><span data-i18n="monitor.gatewayLog">网关日志</span><span id="gwLogStatus" class="raw-log-badge ml-auto"></span></summary>
-            <div id="rawLog" class="raw-log font-mono text-[10.5px] text-caption px-3.5 pb-3 max-h-[150px] overflow-y-auto leading-[1.55]"></div>
+            <div id="rawLog" data-clarity-mask="true" class="raw-log font-mono text-[10.5px] text-caption px-3.5 pb-3 max-h-[150px] overflow-y-auto leading-[1.55]"></div>
           </details>
         </section>
 
         <!-- 对话 -->
-        <section id="view-conversations" class="panel-full hidden flex-grow min-h-0 w-full overflow-hidden flex animate-[panelIn_0.28s_ease-[cubic-bezier(0.23,1,0.32,1)]]">
+        <section id="view-conversations" data-clarity-mask="true" class="panel-full hidden flex-grow min-h-0 w-full overflow-hidden flex animate-[panelIn_0.28s_ease-[cubic-bezier(0.23,1,0.32,1)]]">
           <div class="conv-layout flex w-full h-full overflow-hidden">
             <aside class="conv-sidebar group/conv-sidebar border-r border-border-custom flex flex-col shrink-0 overflow-hidden [&.collapsed]:overflow-visible">
               <div class="conv-search p-[7px_8px] border-b border-border-custom flex gap-1.25 items-center min-w-0 shrink-0 group-[.collapsed]/conv-sidebar:p-0 group-[.collapsed]/conv-sidebar:h-full group-[.collapsed]/conv-sidebar:border-b-0 group-[.collapsed]/conv-sidebar:justify-center">
@@ -449,7 +449,7 @@
             </label>
             <label class="field flex flex-col gap-1.25 flex-1">
               <span class="field-label text-[11px] font-semibold text-caption uppercase tracking-[0.03em]" data-i18n="modal.apiUrl">API 地址</span>
-              <input id="fBaseUrl" class="bg-bg-input border border-border-custom rounded-[7px] px-2.75 py-2 text-fg text-[13px] font-mono w-full outline-none transition-colors duration-120 focus:border-primary" type="text" placeholder="https://open.bigmodel.cn/api/anthropic" />
+              <input id="fBaseUrl" data-clarity-mask="true" class="bg-bg-input border border-border-custom rounded-[7px] px-2.75 py-2 text-fg text-[13px] font-mono w-full outline-none transition-colors duration-120 focus:border-primary" type="text" placeholder="https://open.bigmodel.cn/api/anthropic" />
             </label>
           </div>
 
@@ -468,7 +468,7 @@
           <label class="field flex flex-col gap-1.25 flex-1">
             <span class="field-label text-[11px] font-semibold text-caption uppercase tracking-[0.03em]" data-i18n="modal.apiKey">API Key</span>
             <span class="input-with-btn flex gap-1.75 items-center w-full">
-              <input id="fToken" class="bg-bg-input border border-border-custom rounded-[7px] px-2.75 py-2 text-fg text-[13px] font-mono w-full outline-none transition-colors duration-120 focus:border-primary flex-1" type="password" data-i18n-placeholder="modal.pasteKey" placeholder="粘贴密钥" />
+              <input id="fToken" data-clarity-mask="true" class="bg-bg-input border border-border-custom rounded-[7px] px-2.75 py-2 text-fg text-[13px] font-mono w-full outline-none transition-colors duration-120 focus:border-primary flex-1" type="password" data-i18n-placeholder="modal.pasteKey" placeholder="粘贴密钥" />
               <button class="btn btn-sm bg-bg-elev text-fg border border-border-custom rounded-md px-2.25 py-1.25 font-medium text-[11px] leading-none cursor-pointer transition-all duration-140 hover:bg-chip-bg hover:border-border-strong active:scale-[0.985] shrink-0" id="fTokenToggle" type="button" data-i18n="modal.show">显示</button>
             </span>
           </label>
@@ -524,10 +524,11 @@
         <!-- Tabs are rendered by renderer.js per exchange: 2 tabs for passthrough, 4 for a
              protocol-translated exchange (client req / upstream req / upstream res / client res). -->
         <div class="drawer-tabs flex gap-1 p-[10px_16px_0] border-b border-border-custom" id="drTabs"></div>
-        <div class="drawer-body flex-grow min-h-0 overflow-y-auto p-[4px_16px_24px]" id="reqDrawerBody"></div>
+        <div class="drawer-body flex-grow min-h-0 overflow-y-auto p-[4px_16px_24px]" id="reqDrawerBody" data-clarity-mask="true"></div>
       </aside>
     </div>
 
+    <script src="analytics.js"></script>
     <script src="tauri-bridge.js"></script>
     <script src="shared/i18n-dict.js"></script>
     <script src="i18n.js"></script>

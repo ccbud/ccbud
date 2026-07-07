@@ -1,12 +1,12 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "ccbud",
-  "version": "1.2.2",
+  "version": "1.2.3",
   "identifier": "dev.ccbud.gateway",
   "build": {
     "frontendDist": "../src/renderer",
-    "beforeDevCommand": "npm run build:css && npm run sync:shared",
-    "beforeBuildCommand": "npm run build:css && npm run sync:shared"
+    "beforeDevCommand": "npm run build:css && npm run sync:shared && npm run sync:clarity",
+    "beforeBuildCommand": "npm run build:css && npm run sync:shared && npm run sync:clarity"
   },
   "app": {
     "withGlobalTauri": true,
@@ -36,7 +36,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; connect-src 'self' ipc: http://ipc.localhost; img-src 'self' data: asset: http://asset.localhost; style-src 'self' 'unsafe-inline'; script-src 'self'"
+      "csp": "default-src 'self'; connect-src 'self' ipc: http://ipc.localhost https://*.clarity.ms https://c.bing.com; img-src 'self' data: asset: http://asset.localhost; style-src 'self' 'unsafe-inline'; script-src 'self' https://www.clarity.ms https://*.clarity.ms"
     }
   },
   "plugins": {
