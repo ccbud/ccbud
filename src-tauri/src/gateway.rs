@@ -336,7 +336,7 @@ impl GatewayState {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct UsageAcc {
     input: i64,
     output: i64,
@@ -349,8 +349,15 @@ struct UsageAcc {
 /// The row + exchange record are normally emitted at the END of the response generator; when the
 /// client disconnects, axum simply drops the generator and that code never runs — the request
 /// vanished from the request stream (Codex users interrupt turns constantly). The generator owns
-/// this guard: `complete()` hands back the prepared exchange skeleton for the normal path, and
-/// Drop-without-complete emits the row + a record marked `aborted`.
+/// this guard: `complete()` hands back the prepared exchange (bodies filled) for the normal path,
+/// and Drop-without-complete emits the row + a record.
+///
+/// The response capture buffers live IN the guard rather than in generator locals: a dropped
+/// generator then still records whatever already streamed through. This matters beyond real
+/// aborts — Responses clients (Codex) tear the connection down the moment the terminal
+/// `response.completed` event arrives, before upstream EOF, which used to lose BOTH response
+/// bodies on every transcoded turn. When the transcoder has already emitted its terminal event
+/// (`finished`), that disconnect is the normal end of a turn and is not flagged `aborted`.
 struct StreamAbortGuard {
     armed: bool,
     st: Arc<GatewayState>,
@@ -362,7 +369,23 @@ struct StreamAbortGuard {
     routing: Routing,
     status: u16,
     ex: Value,
+    res_cap: String,
+    up_cap: Option<UpCapture>,
+    finished: bool,
+    usage: Option<UsageAcc>,
 }
+
+/// Raw upstream capture (pre-translation) for transcoded streams: status + headers are fixed at
+/// guard construction, text accumulates as chunks arrive.
+struct UpCapture {
+    status: u16,
+    headers: Value,
+    text: String,
+    total: usize,
+}
+
+const RES_CAP_MAX: usize = 2 * 1024 * 1024;
+const UP_CAP_MAX: usize = 1024 * 1024;
 
 impl StreamAbortGuard {
     #[allow(clippy::too_many_arguments)]
@@ -376,14 +399,46 @@ impl StreamAbortGuard {
         routing: Routing,
         status: u16,
         ex: Value,
+        upstream: Option<(u16, Value)>,
     ) -> Self {
-        Self { armed: true, st, id, started, method, path, provider, routing, status, ex }
+        let up_cap = upstream.map(|(status, headers)| UpCapture { status, headers, text: String::new(), total: 0 });
+        Self {
+            armed: true, st, id, started, method, path, provider, routing, status, ex,
+            res_cap: String::new(), up_cap, finished: false, usage: None,
+        }
     }
 
-    /// Normal completion: disarm and hand the exchange skeleton back to the caller (who fills in
-    /// ms / response bodies and records it).
+    /// Append to the client-facing response capture (the translated stream for transcoded pairs).
+    fn push_res(&mut self, s: &str) {
+        if self.res_cap.len() < RES_CAP_MAX {
+            self.res_cap.push_str(s);
+        }
+    }
+
+    /// Append raw upstream bytes (pre-translation) when this guard tracks an upstream capture.
+    fn push_up(&mut self, raw: &str) {
+        if let Some(u) = self.up_cap.as_mut() {
+            u.total += raw.len();
+            if u.text.len() < UP_CAP_MAX {
+                u.text.push_str(raw);
+            }
+        }
+    }
+
+    /// Write the captured bodies into the exchange skeleton — shared by normal and abort paths.
+    fn fill_bodies(&mut self) {
+        self.ex["resBody"] = json!({ "text": self.res_cap, "bytes": self.res_cap.len(), "truncated": 0 });
+        if let Some(u) = self.up_cap.as_ref() {
+            self.ex["upstreamRes"] = json!({ "status": u.status, "headers": u.headers,
+                "body": { "text": u.text, "bytes": u.total, "truncated": u.total.saturating_sub(u.text.len()) } });
+        }
+    }
+
+    /// Normal completion: disarm and hand the exchange (bodies filled) back to the caller (who
+    /// fills in ms / usage and records it).
     fn complete(&mut self) -> Value {
         self.armed = false;
+        self.fill_bodies();
         std::mem::take(&mut self.ex)
     }
 }
@@ -393,10 +448,15 @@ impl Drop for StreamAbortGuard {
         if !self.armed {
             return;
         }
+        self.fill_bodies();
         let mut ex = std::mem::take(&mut self.ex);
         ex["ms"] = json!(self.started.elapsed().as_millis() as u64);
-        ex["aborted"] = json!(true);
-        self.st.emit_request(self.id, self.started, &self.method, &self.path, &self.provider, &self.routing, self.status, None);
+        // A disconnect after the transcoder's terminal event is the normal end of a Responses
+        // turn — only flag genuinely interrupted streams.
+        if !self.finished {
+            ex["aborted"] = json!(true);
+        }
+        self.st.emit_request(self.id, self.started, &self.method, &self.path, &self.provider, &self.routing, self.status, self.usage.as_ref());
         let st = self.st.clone();
         // record_exchange is async and Drop is sync — spawn it, tolerating an already-torn-down
         // runtime at app quit.
@@ -917,6 +977,9 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
                     "resHeaders": json!({ "content-type": "text/event-stream", "x-ccbud-translated": xlabel }),
                     "resBody": json!({ "text": "", "bytes": 0, "truncated": 0 }),
                 }),
+                // raw upstream capture (pre-translation), so the monitor can show the exact
+                // upstream stream next to the translated one the client received
+                Some((status_code, up_res_headers)),
             );
             let method2 = method.clone();
             let path2 = req_path.clone();
@@ -925,25 +988,25 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
             let body_stream = async_stream::stream! {
                 let mut s = resp.bytes_stream();
                 let mut buf = String::new();
-                let mut res_cap = String::new();
-                // raw upstream capture (pre-translation), so the monitor can show the exact
-                // upstream stream next to the translated one the client received
-                let mut up_cap = String::new();
-                let mut up_total: usize = 0;
                 while let Some(chunk) = s.next().await {
                     match chunk {
                         Ok(bytes) => {
                             let raw = String::from_utf8_lossy(&bytes);
-                            up_total += raw.len();
-                            if up_cap.len() < 1024 * 1024 { up_cap.push_str(&raw); }
+                            guard.push_up(&raw);
                             buf.push_str(&raw);
                             let mut out = String::new();
                             while let Some(idx) = buf.find('\n') {
                                 let line: String = buf.drain(..=idx).collect();
                                 out.push_str(&tc.push(&line));
                             }
+                            // Keep the guard current BEFORE suspending: once the terminal event is
+                            // out, Codex closes the socket and the generator is dropped mid-await.
+                            guard.push_res(&out);
+                            guard.finished = tc.done();
+                            guard.usage = Some(UsageAcc {
+                                input: tc.input_tokens(), output: tc.output_tokens(), saw: true, ..Default::default()
+                            });
                             if !out.is_empty() {
-                                if res_cap.len() < 2 * 1024 * 1024 { res_cap.push_str(&out); }
                                 yield Ok::<Bytes, std::io::Error>(Bytes::from(out));
                             }
                         }
@@ -954,7 +1017,7 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
                 if !buf.is_empty() { tail.push_str(&tc.push(&buf)); }
                 tail.push_str(&tc.finish());
                 if !tail.is_empty() {
-                    if res_cap.len() < 2 * 1024 * 1024 { res_cap.push_str(&tail); }
+                    guard.push_res(&tail);
                     yield Ok(Bytes::from(tail));
                 }
                 let mut usage = UsageAcc::default();
@@ -963,12 +1026,7 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
                 usage.saw = true;
                 st2.emit_request(ex_id2, started2, &method2, &path2, &pname2, &routing2, status_code, Some(&usage));
                 let mut ex = guard.complete();
-                let res_len = res_cap.len();
-                let up_trunc = up_total.saturating_sub(up_cap.len());
                 ex["ms"] = json!(started2.elapsed().as_millis() as u64);
-                ex["resBody"] = json!({ "text": res_cap, "bytes": res_len, "truncated": 0 });
-                ex["upstreamRes"] = json!({ "status": status_code, "headers": up_res_headers,
-                    "body": { "text": up_cap, "bytes": up_total, "truncated": up_trunc } });
                 st2.record_exchange(ex).await;
             };
             let mut builder = Response::builder()
@@ -1002,6 +1060,7 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
                 "resHeaders": res_headers,
                 "resBody": json!({ "text": "", "bytes": 0, "truncated": 0 }),
             }),
+            None,
         );
         let method2 = method.clone();
         let path2 = req_path.clone();
@@ -1010,7 +1069,6 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
         let body_stream = async_stream::stream! {
             let mut s = resp.bytes_stream();
             let mut buf = String::new();
-            let mut res_cap = String::new();
             let mut usage = UsageAcc::default();
             while let Some(chunk) = s.next().await {
                 match chunk {
@@ -1021,10 +1079,9 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
                             let line: String = buf.drain(..=idx).collect();
                             out.push_str(&process_sse_line(&line, rewrite_model.as_deref(), &mut usage));
                         }
+                        guard.push_res(&out);
+                        guard.usage = Some(usage.clone());
                         if !out.is_empty() {
-                            if res_cap.len() < 2 * 1024 * 1024 {
-                                res_cap.push_str(&out);
-                            }
                             yield Ok::<Bytes, std::io::Error>(Bytes::from(out));
                         }
                     }
@@ -1033,16 +1090,12 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
             }
             if !buf.is_empty() {
                 let line = process_sse_line(&buf, rewrite_model.as_deref(), &mut usage);
-                if res_cap.len() < 2 * 1024 * 1024 {
-                    res_cap.push_str(&line);
-                }
+                guard.push_res(&line);
                 yield Ok(Bytes::from(line));
             }
             st2.emit_request(ex_id2, started2, &method2, &path2, &pname2, &routing2, status_code, Some(&usage));
             let mut ex = guard.complete();
-            let res_len = res_cap.len();
             ex["ms"] = json!(started2.elapsed().as_millis() as u64);
-            ex["resBody"] = json!({ "text": res_cap, "bytes": res_len, "truncated": 0 });
             st2.record_exchange(ex).await;
         };
         let mut builder = Response::builder().status(status.as_u16());
