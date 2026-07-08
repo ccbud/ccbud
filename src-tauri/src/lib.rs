@@ -974,6 +974,15 @@ static AUTO_UPDATE_RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::A
 static AUTO_UPDATE_LAST_TRY_MS: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
 const AUTO_UPDATE_RETRY_MS: i64 = 10 * 60 * 1000;
 
+/// Clears an in-flight flag on drop, so a panic/unwind or an early return can never leave
+/// UPDATE_DOWNLOADING / AUTO_UPDATE_RUNNING stuck true for the rest of the process.
+struct FlagGuard(&'static std::sync::atomic::AtomicBool);
+impl Drop for FlagGuard {
+    fn drop(&mut self) {
+        self.0.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
 fn build_update_state(app: &tauri::AppHandle) -> Value {
     let cfg = store::read_config();
     let current = app.package_info().version.to_string();
@@ -1042,23 +1051,19 @@ async fn run_update_download(app: &tauri::AppHandle) -> Result<Value, String> {
     if UPDATE_DOWNLOADING.swap(true, std::sync::atomic::Ordering::SeqCst) {
         return Err("busy".to_string());
     }
-    let res = async {
-        let updater = app.updater().map_err(|e| e.to_string())?;
-        match updater.check().await.map_err(|e| e.to_string())? {
-            Some(u) => {
-                u.download_and_install(|_chunk, _total| {}, || {}).await.map_err(|e| e.to_string())?;
-                *UPDATE_STAGED.lock().unwrap() = true;
-                let st = build_update_state(app);
-                let _ = app.emit("update:staged", st.clone());
-                let _ = app.emit("update:state", st.clone());
-                Ok(st)
-            }
-            None => Ok(json!({ "ok": true, "mode": "none" })),
+    let _busy = FlagGuard(&UPDATE_DOWNLOADING);
+    let updater = app.updater().map_err(|e| e.to_string())?;
+    match updater.check().await.map_err(|e| e.to_string())? {
+        Some(u) => {
+            u.download_and_install(|_chunk, _total| {}, || {}).await.map_err(|e| e.to_string())?;
+            *UPDATE_STAGED.lock().unwrap() = true;
+            let st = build_update_state(app);
+            let _ = app.emit("update:staged", st.clone());
+            let _ = app.emit("update:state", st.clone());
+            Ok(st)
         }
+        None => Ok(json!({ "ok": true, "mode": "none" })),
     }
-    .await;
-    UPDATE_DOWNLOADING.store(false, std::sync::atomic::Ordering::SeqCst);
-    res
 }
 #[tauri::command]
 async fn update_download(app: tauri::AppHandle) -> Result<Value, String> {
@@ -1178,15 +1183,16 @@ fn auto_update_on_visible(app: &tauri::AppHandle) {
     if AUTO_UPDATE_RUNNING.swap(true, std::sync::atomic::Ordering::SeqCst) {
         return;
     }
+    let running = FlagGuard(&AUTO_UPDATE_RUNNING);
     let au = store::read_config().get("autoUpdate").cloned().unwrap_or_else(|| json!({}));
     if !au.get("check").and_then(|v| v.as_bool()).unwrap_or(true) {
-        AUTO_UPDATE_RUNNING.store(false, std::sync::atomic::Ordering::SeqCst);
-        return;
+        return; // `running` drops here and clears the flag
     }
     AUTO_UPDATE_LAST_TRY_MS.store(now_ms(), std::sync::atomic::Ordering::Relaxed);
     let auto_dl = au.get("autoDownload").and_then(|v| v.as_bool()).unwrap_or(true);
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
+        let _running = running; // held until the task ends (cleared even on panic/unwind)
         match run_update_check(&app).await {
             Ok(None) => mark_auto_update_day(&today),
             Ok(Some(_)) => {
@@ -1197,17 +1203,23 @@ fn auto_update_on_visible(app: &tauri::AppHandle) {
                     prompt_restart_to_apply(&app).await;
                 } else if !auto_dl {
                     mark_auto_update_day(&today); // surfaced in the About pane only
-                } else if run_update_download(&app).await.is_ok() {
-                    mark_auto_update_day(&today);
-                    if UPDATE_STAGED.lock().map(|g| *g).unwrap_or(false) {
-                        prompt_restart_to_apply(&app).await;
+                } else {
+                    match run_update_download(&app).await {
+                        Ok(_) => {
+                            mark_auto_update_day(&today);
+                            if UPDATE_STAGED.lock().map(|g| *g).unwrap_or(false) {
+                                prompt_restart_to_apply(&app).await;
+                            }
+                        }
+                        // A manual download is already in flight — the user took over today's
+                        // update (the About pane drives the rest), so the day is done.
+                        Err(e) if e == "busy" => mark_auto_update_day(&today),
+                        Err(_) => {} // download failed → day left unstamped so a later visibility retries
                     }
                 }
-                // download failed → day left unstamped so a later visibility retries
             }
             Err(_) => {} // check failed (offline?) → retry on a later visibility
         }
-        AUTO_UPDATE_RUNNING.store(false, std::sync::atomic::Ordering::SeqCst);
     });
 }
 
