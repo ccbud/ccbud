@@ -607,7 +607,8 @@ struct TrayLabels {
 }
 fn tray_labels(lang: &str) -> TrayLabels {
     match lang {
-        "zh-CN" => TrayLabels { running_with: "● 网关运行中 · {name}", stopped: "○ 网关已停止", open_main: "打开主界面", stop_gw: "停止网关服务", start_gw: "启动网关服务", quit: "退出 ccbud", check_updates: "检查更新…" },
+        // config.language stores "zh" (store.rs normalize) — accept both spellings.
+        "zh" | "zh-CN" => TrayLabels { running_with: "● 网关运行中 · {name}", stopped: "○ 网关已停止", open_main: "打开主界面", stop_gw: "停止网关服务", start_gw: "启动网关服务", quit: "退出 ccbud", check_updates: "检查更新…" },
         "zh-TW" => TrayLabels { running_with: "● 閘道執行中 · {name}", stopped: "○ 閘道已停止", open_main: "開啟主視窗", stop_gw: "停止閘道服務", start_gw: "啟動閘道服務", quit: "結束 ccbud", check_updates: "檢查更新…" },
         "ja" => TrayLabels { running_with: "● ゲートウェイ稼働中 · {name}", stopped: "○ ゲートウェイ停止中", open_main: "メインウィンドウを開く", stop_gw: "ゲートウェイを停止", start_gw: "ゲートウェイを起動", quit: "ccbud を終了", check_updates: "更新を確認…" },
         "ko" => TrayLabels { running_with: "● 게이트웨이 실행 중 · {name}", stopped: "○ 게이트웨이 중지됨", open_main: "메인 창 열기", stop_gw: "게이트웨이 중지", start_gw: "게이트웨이 시작", quit: "ccbud 종료", check_updates: "업데이트 확인…" },
@@ -963,6 +964,24 @@ static UPDATE_LATEST: std::sync::Mutex<Option<(String, Option<String>)>> =
     std::sync::Mutex::new(None);
 static UPDATE_CHECKED: std::sync::Mutex<bool> = std::sync::Mutex::new(false);
 static UPDATE_STAGED: std::sync::Mutex<bool> = std::sync::Mutex::new(false);
+// A download is in flight (manual or auto) — second caller gets "busy" instead of a duplicate.
+static UPDATE_DOWNLOADING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+// Daily auto-check bookkeeping: the day (local YYYY-MM-DD) whose auto check already completed
+// (in-memory mirror of the on-disk stamp), an in-flight guard, and the last attempt time so a
+// failed attempt (offline) is retried on a later visibility change instead of on every focus.
+static AUTO_UPDATE_DONE_DAY: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+static AUTO_UPDATE_RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static AUTO_UPDATE_LAST_TRY_MS: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+const AUTO_UPDATE_RETRY_MS: i64 = 10 * 60 * 1000;
+
+/// Clears an in-flight flag on drop, so a panic/unwind or an early return can never leave
+/// UPDATE_DOWNLOADING / AUTO_UPDATE_RUNNING stuck true for the rest of the process.
+struct FlagGuard(&'static std::sync::atomic::AtomicBool);
+impl Drop for FlagGuard {
+    fn drop(&mut self) {
+        self.0.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+}
 
 fn build_update_state(app: &tauri::AppHandle) -> Value {
     let cfg = store::read_config();
@@ -995,8 +1014,9 @@ fn build_update_state(app: &tauri::AppHandle) -> Value {
 fn update_state(app: tauri::AppHandle) -> Value {
     build_update_state(&app)
 }
-#[tauri::command]
-async fn update_check(app: tauri::AppHandle) -> Result<Value, String> {
+/// Hit the updater endpoint and sync UPDATE_CHECKED/UPDATE_LATEST + the renderer's
+/// update:state. Shared by the manual update_check command and the daily auto check.
+async fn run_update_check(app: &tauri::AppHandle) -> Result<Option<tauri_plugin_updater::Update>, String> {
     use tauri_plugin_updater::UpdaterExt;
     *UPDATE_CHECKED.lock().unwrap() = true;
     let result = match app.updater() {
@@ -1004,39 +1024,50 @@ async fn update_check(app: tauri::AppHandle) -> Result<Value, String> {
         Err(e) => Err(e),
     };
     match result {
-        Ok(Some(u)) => {
-            *UPDATE_LATEST.lock().unwrap() = Some((u.version.clone(), u.body.clone()));
+        Ok(found) => {
+            *UPDATE_LATEST.lock().unwrap() =
+                found.as_ref().map(|u| (u.version.clone(), u.body.clone()));
+            let _ = app.emit("update:state", build_update_state(app));
+            Ok(found)
         }
-        Ok(None) => {
-            *UPDATE_LATEST.lock().unwrap() = None;
-        }
-        Err(e) => {
-            return Ok(json!({
-                "ok": false,
-                "error": e.to_string(),
-                "runningVersion": app.package_info().version.to_string(),
-            }));
-        }
+        Err(e) => Err(e.to_string()),
     }
-    let st = build_update_state(&app);
-    let _ = app.emit("update:state", st.clone());
-    Ok(st)
 }
 #[tauri::command]
-async fn update_download(app: tauri::AppHandle) -> Result<Value, String> {
+async fn update_check(app: tauri::AppHandle) -> Result<Value, String> {
+    match run_update_check(&app).await {
+        Ok(_) => Ok(build_update_state(&app)),
+        Err(e) => Ok(json!({
+            "ok": false,
+            "error": e,
+            "runningVersion": app.package_info().version.to_string(),
+        })),
+    }
+}
+/// Download + stage the available update (restart applies it). Shared by the manual
+/// update_download command and the daily auto flow; UPDATE_DOWNLOADING dedupes the two.
+async fn run_update_download(app: &tauri::AppHandle) -> Result<Value, String> {
     use tauri_plugin_updater::UpdaterExt;
+    if UPDATE_DOWNLOADING.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return Err("busy".to_string());
+    }
+    let _busy = FlagGuard(&UPDATE_DOWNLOADING);
     let updater = app.updater().map_err(|e| e.to_string())?;
     match updater.check().await.map_err(|e| e.to_string())? {
         Some(u) => {
             u.download_and_install(|_chunk, _total| {}, || {}).await.map_err(|e| e.to_string())?;
             *UPDATE_STAGED.lock().unwrap() = true;
-            let st = build_update_state(&app);
+            let st = build_update_state(app);
             let _ = app.emit("update:staged", st.clone());
             let _ = app.emit("update:state", st.clone());
             Ok(st)
         }
         None => Ok(json!({ "ok": true, "mode": "none" })),
     }
+}
+#[tauri::command]
+async fn update_download(app: tauri::AppHandle) -> Result<Value, String> {
+    run_update_download(&app).await
 }
 #[tauri::command]
 fn update_apply(app: tauri::AppHandle) -> Value {
@@ -1057,6 +1088,139 @@ fn update_set_auto(patch: Value) -> Value {
     cfg["autoUpdate"] = au.clone();
     store::write_config(cfg);
     au
+}
+
+// ---- daily auto update (first time the app becomes visible each day) ----
+// The stamp lives in its own tiny file (NOT config.json) so the daily writer never races the
+// renderer's whole-config round-trips through config_save.
+fn auto_update_stamp_file() -> std::path::PathBuf {
+    store::ccbud_home().join("update-check.json")
+}
+fn today_local() -> String {
+    chrono::Local::now().format("%Y-%m-%d").to_string()
+}
+fn last_auto_update_day() -> String {
+    std::fs::read_to_string(auto_update_stamp_file())
+        .ok()
+        .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+        .and_then(|v| v.get("lastAutoCheckDay").and_then(|d| d.as_str()).map(|s| s.to_string()))
+        .unwrap_or_default()
+}
+fn mark_auto_update_day(day: &str) {
+    if let Ok(mut g) = AUTO_UPDATE_DONE_DAY.lock() {
+        *g = Some(day.to_string());
+    }
+    let _ = std::fs::create_dir_all(store::ccbud_home());
+    let _ = std::fs::write(
+        auto_update_stamp_file(),
+        serde_json::to_vec(&json!({ "lastAutoCheckDay": day })).unwrap_or_default(),
+    );
+}
+
+// Native restart prompt after an auto-downloaded update (localized like tray_labels — the main
+// window may be hidden when the popover triggered the check, so this can't live in the renderer).
+struct UpdatePromptLabels {
+    title: &'static str,
+    body: &'static str, // {v} → new version
+    restart: &'static str,
+    later: &'static str,
+}
+fn update_prompt_labels(lang: &str) -> UpdatePromptLabels {
+    match lang {
+        "zh" | "zh-CN" => UpdatePromptLabels { title: "更新已就绪", body: "新版本 {v} 已自动下载完成。是否立即重启以应用新版本？", restart: "立即重启", later: "稍后" },
+        "zh-TW" => UpdatePromptLabels { title: "更新已就緒", body: "新版本 {v} 已自動下載完成。要立即重新啟動以套用新版本嗎？", restart: "立即重啟", later: "稍後" },
+        "ja" => UpdatePromptLabels { title: "アップデートの準備ができました", body: "新しいバージョン {v} のダウンロードが完了しました。今すぐ再起動して適用しますか？", restart: "今すぐ再起動", later: "後で" },
+        "ko" => UpdatePromptLabels { title: "업데이트 준비 완료", body: "새 버전 {v} 다운로드가 완료되었습니다. 지금 다시 시작하여 적용할까요?", restart: "지금 다시 시작", later: "나중에" },
+        _ => UpdatePromptLabels { title: "Update ready", body: "Version {v} has been downloaded. Restart now to switch to the new version?", restart: "Restart now", later: "Later" },
+    }
+}
+async fn prompt_restart_to_apply(app: &tauri::AppHandle) {
+    let version = UPDATE_LATEST
+        .lock()
+        .ok()
+        .and_then(|g| g.as_ref().map(|(v, _)| v.clone()))
+        .unwrap_or_default();
+    let l = update_prompt_labels(&config_lang(&store::read_config()));
+    // On Linux this shells out to zenity; without it rfd logs an error and returns Cancel,
+    // degrading to the staged update applying on the next launch (About pane shows "restart").
+    let res = rfd::AsyncMessageDialog::new()
+        .set_level(rfd::MessageLevel::Info)
+        .set_title(l.title)
+        .set_description(l.body.replace("{v}", &version))
+        .set_buttons(rfd::MessageButtons::OkCancelCustom(l.restart.to_string(), l.later.to_string()))
+        .show()
+        .await;
+    if matches!(&res, rfd::MessageDialogResult::Custom(s) if s == l.restart) {
+        app.restart();
+    }
+}
+
+/// Called from every "app became visible" site (main window focus, popover show, launch).
+/// The first such moment each day — with autoUpdate.check on — runs one update check; when an
+/// update exists and autoUpdate.autoDownload is on it's downloaded, then the user is asked
+/// whether to restart into the new version (declining leaves it staged for the next launch).
+/// The day is stamped only after a flow that reached the network succeeds, so an offline
+/// launch doesn't burn the day's only attempt — the next visibility (≥10 min later) retries.
+fn auto_update_on_visible(app: &tauri::AppHandle) {
+    let today = today_local();
+    if AUTO_UPDATE_DONE_DAY
+        .lock()
+        .map(|g| g.as_deref() == Some(today.as_str()))
+        .unwrap_or(false)
+    {
+        return;
+    }
+    if last_auto_update_day() == today {
+        // Stamped by a previous run of this process instance or a crashed one — mirror it.
+        if let Ok(mut g) = AUTO_UPDATE_DONE_DAY.lock() {
+            *g = Some(today);
+        }
+        return;
+    }
+    if now_ms() - AUTO_UPDATE_LAST_TRY_MS.load(std::sync::atomic::Ordering::Relaxed) < AUTO_UPDATE_RETRY_MS {
+        return;
+    }
+    if AUTO_UPDATE_RUNNING.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
+    let running = FlagGuard(&AUTO_UPDATE_RUNNING);
+    let au = store::read_config().get("autoUpdate").cloned().unwrap_or_else(|| json!({}));
+    if !au.get("check").and_then(|v| v.as_bool()).unwrap_or(true) {
+        return; // `running` drops here and clears the flag
+    }
+    AUTO_UPDATE_LAST_TRY_MS.store(now_ms(), std::sync::atomic::Ordering::Relaxed);
+    let auto_dl = au.get("autoDownload").and_then(|v| v.as_bool()).unwrap_or(true);
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let _running = running; // held until the task ends (cleared even on panic/unwind)
+        match run_update_check(&app).await {
+            Ok(None) => mark_auto_update_day(&today),
+            Ok(Some(_)) => {
+                let staged = UPDATE_STAGED.lock().map(|g| *g).unwrap_or(false);
+                if staged {
+                    // Downloaded on an earlier day but never restarted — just re-ask.
+                    mark_auto_update_day(&today);
+                    prompt_restart_to_apply(&app).await;
+                } else if !auto_dl {
+                    mark_auto_update_day(&today); // surfaced in the About pane only
+                } else {
+                    match run_update_download(&app).await {
+                        Ok(_) => {
+                            mark_auto_update_day(&today);
+                            if UPDATE_STAGED.lock().map(|g| *g).unwrap_or(false) {
+                                prompt_restart_to_apply(&app).await;
+                            }
+                        }
+                        // A manual download is already in flight — the user took over today's
+                        // update (the About pane drives the rest), so the day is done.
+                        Err(e) if e == "busy" => mark_auto_update_day(&today),
+                        Err(_) => {} // download failed → day left unstamped so a later visibility retries
+                    }
+                }
+            }
+            Err(_) => {} // check failed (offline?) → retry on a later visibility
+        }
+    });
 }
 
 // ---- debug self-check (gated by CCBUD_SELFCHECK env; injected via on_page_load) ----
@@ -1516,6 +1680,8 @@ pub fn run() {
                                     let _ = app.emit("popover:show", ());
                                     LAST_POPOVER_SHOW_MS
                                         .store(now_ms(), std::sync::atomic::Ordering::Relaxed);
+                                    // The popover appearing counts as "app became visible today".
+                                    auto_update_on_visible(app);
                                     action = "show";
                                 }
                                 if let Ok(path) = std::env::var("CCBUD_SELFCHECK_OUT") {
@@ -1579,6 +1745,36 @@ pub fn run() {
                                     .store(now_ms(), std::sync::atomic::Ordering::Relaxed);
                             }
                         }
+                    }
+                });
+            }
+
+            // Daily auto update, triggered by the app becoming visible (see auto_update_on_visible).
+            // Main-window focus covers launch, tray "open main", Dock/taskbar switches and the
+            // single-instance re-open; the popover-show branch of the tray click covers tray-only days.
+            if let Some(main) = app.get_webview_window("main") {
+                let h = app.handle().clone();
+                main.on_window_event(move |event| {
+                    if let tauri::WindowEvent::Focused(focused) = event {
+                        if *focused {
+                            auto_update_on_visible(&h);
+                        }
+                    }
+                });
+            }
+            // Launch counts as today's first visibility even if no focus event fires (e.g. an
+            // autostarted login launch that opens unfocused). Delayed a few seconds so the
+            // network/gateway are up before the first check.
+            {
+                let h = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                    let visible = h
+                        .get_webview_window("main")
+                        .and_then(|w| w.is_visible().ok())
+                        .unwrap_or(false);
+                    if visible {
+                        auto_update_on_visible(&h);
                     }
                 });
             }
