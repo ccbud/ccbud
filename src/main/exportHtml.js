@@ -232,6 +232,10 @@ function readAsset(rel) {
   try { return fs.readFileSync(path.join(__dirname, rel), 'utf8'); } catch (_) { return ''; }
 }
 
+function appVersion() {
+  try { return require('../../package.json').version || ''; } catch (_) { return ''; }
+}
+
 /** Build the full self-contained HTML document from an already-parsed data object. */
 function htmlFromData(data) {
   const skin = readAsset('export-assets/skin.css');
@@ -259,7 +263,7 @@ function htmlFromData(data) {
     + '</head><body><div id="app" data-clarity-mask="true"></div>'
     + '<script nonce="ccbudexport">' + marked + '</script>'
     + '<script nonce="ccbudexport">' + hljs + '</script>'
-    + '<script nonce="ccbudexport">window.__CONV__=' + json + ';</script>'
+    + '<script nonce="ccbudexport">window.__CONV__=' + json + ';window.__CCBUD_VERSION__=' + JSON.stringify(appVersion()) + ';</script>'
     + '<script nonce="ccbudexport">' + runtime + '</script>'
     + '</body></html>';
 }
