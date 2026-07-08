@@ -397,7 +397,7 @@ function renderProviders() {
       <div class="prov-icon w-9 h-9 rounded-[9px] shrink-0 flex items-center justify-center text-white font-bold text-[13px] tracking-tight shadow-sm" style="${iconData.style}">${iconData.html}</div>
       <div class="pinfo min-w-0">
         <div class="pname flex items-center gap-1.5 font-semibold text-[14.5px] tracking-tight text-fg">${escapeHtml(p.name)} ${protoBadge} ${isActive ? '<span class="badge-active text-[10.5px] font-semibold text-green bg-green-soft rounded-full px-1.75 py-0.25">' + escapeHtml(I18n.t('providers.active')) + '</span>' : ''}</div>
-        <div class="pmeta mt-0.5 text-xs font-mono text-caption truncate">${escapeHtml(mask(p.authToken))} · ${escapeHtml(p.baseUrl.replace(/^https?:\/\//,''))}</div>
+        <div class="pmeta mt-0.5 text-xs font-mono text-caption truncate" data-clarity-mask="true">${escapeHtml(mask(p.authToken))} · ${escapeHtml(p.baseUrl.replace(/^https?:\/\//,''))}</div>
       </div>
       <div class="pmodels flex gap-1 flex-wrap justify-end max-w-[340px]">${tags.join('') || '<span class="caption text-caption text-xs">—</span>'}</div>
       <div class="pactions flex gap-0.25">
