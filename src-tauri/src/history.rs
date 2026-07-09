@@ -324,9 +324,10 @@ fn mtime_ms(file: &Path) -> f64 {
         .unwrap_or(0.0)
 }
 
-/// File creation (birth) time in ms. Stable across in-place rewrites (a `__ccbud__` tag/title edit
-/// bumps mtime but not this), so the list order doesn't shuffle when you tag a conversation. Falls
-/// back to mtime on filesystems that don't record a birth time.
+/// File creation (birth) time in ms; mtime on filesystems that don't record one. NOT stable
+/// across a title/tag edit — set_ccbud rewrites via tmp+rename, which gives the path the tmp
+/// file's (fresh) birth time — so this is only the FALLBACK sort key when a session's records
+/// carry no timestamp; record_created_ms is the real one.
 pub(crate) fn created_ms(file: &Path) -> f64 {
     fs::metadata(file)
         .and_then(|m| m.created())
@@ -335,6 +336,21 @@ pub(crate) fn created_ms(file: &Path) -> f64 {
         .map(|d| d.as_millis() as f64)
         .filter(|v| *v > 0.0)
         .unwrap_or_else(|| mtime_ms(file))
+}
+
+/// Session creation time for ORDERING: the first record's timestamp, i.e. content-derived and
+/// therefore immune to file rewrites — renaming/tagging a conversation (tmp+rename resets the
+/// fs birth time) must never reshuffle the list. Falls back to fs times when no record carries
+/// a timestamp. Claude records and Codex rollout lines both put `timestamp` at the top level.
+pub(crate) fn record_created_ms(recs: &[Value], file: &Path) -> f64 {
+    for r in recs {
+        if let Some(ts) = r.get("timestamp").and_then(|v| v.as_str()) {
+            if let Ok(d) = chrono::DateTime::parse_from_rfc3339(ts) {
+                return d.timestamp_millis() as f64;
+            }
+        }
+    }
+    created_ms(file)
 }
 
 fn imports_root() -> PathBuf {
@@ -446,7 +462,7 @@ fn session_meta(file: &Path, dir_name: &str, dir_id: &str, dir_label: &str) -> O
         "isSubagent": subagent,
         "imported": dir_id == "__imported__",
         "deleted": cc_deleted,
-        "createdAt": created_ms(file),
+        "createdAt": record_created_ms(&recs, file),
         "lastActivity": mt,
         "sizeKB": (size as f64 / 1024.0).round() as i64,
     }))
@@ -461,8 +477,8 @@ pub fn list_sessions(config: &Value, active: &str, limit: usize) -> Vec<Value> {
         if !trash && active != "all" && id != active {
             return;
         }
-        // Sort by creation time (stable): tagging/renaming rewrites the file and bumps mtime, which
-        // would otherwise reshuffle the list on every edit.
+        // Pre-sort by fs creation time — only a read-bounding heuristic for the limit walk below;
+        // the returned order is re-keyed on the content-derived createdAt.
         let ct = created_ms(&file);
         files.push((file, dir_name, id.to_string(), label.to_string(), ct));
     });
@@ -480,6 +496,10 @@ pub fn list_sessions(config: &Value, active: &str, limit: usize) -> Vec<Value> {
             }
         }
     }
+    // Final order: the session's OWN creation time (first record timestamp), newest first — stable
+    // across title/tag edits, which rewrite the file and reset its fs birth time.
+    let key = |v: &Value| v.get("createdAt").and_then(|x| x.as_f64()).unwrap_or(0.0);
+    out.sort_by(|a, b| key(b).partial_cmp(&key(a)).unwrap_or(std::cmp::Ordering::Equal));
     out
 }
 
@@ -1530,6 +1550,44 @@ mod tests {
         assert_eq!(subs.len(), 2);
         assert!(subs.iter().any(|(n, d)| n == "agent-b1.jsonl" && String::from_utf8_lossy(d).contains("sub done")));
         assert!(subs.iter().any(|(n, _)| n == "agent-b1.meta.json"));
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    // The list is ordered by the session's FIRST RECORD TIMESTAMP, not fs times — a title/tag
+    // edit rewrites the file via tmp+rename (which resets its fs birth time to "now") and must
+    // NOT reshuffle the list.
+    #[test]
+    fn list_order_survives_title_and_tag_edits() {
+        let base = std::env::temp_dir().join("ccbud-order-test");
+        let _ = fs::remove_dir_all(&base);
+        let proj = base.join("projects").join("-ord-cwd");
+        fs::create_dir_all(&proj).unwrap();
+        let older = proj.join("older.jsonl");
+        let newer = proj.join("newer.jsonl");
+        fs::write(&older, "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"old one\"},\"cwd\":\"/ord/cwd\",\"sessionId\":\"older\",\"timestamp\":\"2025-01-01T10:00:00.000Z\"}\n").unwrap();
+        fs::write(&newer, "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"new one\"},\"cwd\":\"/ord/cwd\",\"sessionId\":\"newer\",\"timestamp\":\"2025-06-01T10:00:00.000Z\"}\n").unwrap();
+        let config = json!({ "historyDirs": [ base.to_string_lossy() ] });
+        let order = |cfg: &Value| -> Vec<String> {
+            list_sessions(cfg, "all", 50)
+                .iter()
+                .filter(|s| s.get("cwd").and_then(|v| v.as_str()) == Some("/ord/cwd"))
+                .map(|s| s.get("sessionId").and_then(|v| v.as_str()).unwrap_or("").to_string())
+                .collect()
+        };
+        assert_eq!(order(&config), vec!["newer", "older"], "newest record time first");
+
+        // Rename + tag the OLDER session: the file is rewritten through a fresh tmp inode, yet
+        // the list order must not change.
+        let r = set_ccbud(&older.to_string_lossy(), &json!({ "title": "Renamed", "tags": ["pinned"] }), &config);
+        assert_eq!(r.get("ok").and_then(|v| v.as_bool()), Some(true));
+        assert_eq!(order(&config), vec!["newer", "older"], "tag/title edit must not reshuffle");
+
+        // And the row's createdAt still reflects the record timestamp, not the rewrite moment.
+        let rows = list_sessions(&config, "all", 50);
+        let row = rows.iter().find(|s| s.get("sessionId").and_then(|v| v.as_str()) == Some("older")).unwrap();
+        let want = chrono::DateTime::parse_from_rfc3339("2025-01-01T10:00:00.000Z").unwrap().timestamp_millis() as f64;
+        assert_eq!(row.get("createdAt").and_then(|v| v.as_f64()), Some(want));
 
         let _ = fs::remove_dir_all(&base);
     }
