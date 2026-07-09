@@ -411,7 +411,34 @@ fn each_session_file<F: FnMut(PathBuf, String, &str, &str)>(config: &Value, mut 
     }
 }
 
+/// Mtime+size-keyed memo of session_meta list rows (mirrors the JS metaCache). List refreshes
+/// fire on every watched write during a live session and previously re-read every candidate's
+/// file head each time — with the memo, unchanged sessions cost a stat. Pruned in list_sessions
+/// against the live file set; a live Codex rollout's sidecar edit (which does NOT touch the
+/// file) is invalidated explicitly by set_ccbud.
+fn meta_cache() -> &'static std::sync::Mutex<std::collections::HashMap<PathBuf, (f64, u64, Value)>> {
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<PathBuf, (f64, u64, Value)>>> =
+        std::sync::OnceLock::new();
+    CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
 fn session_meta(file: &Path, dir_name: &str, dir_id: &str, dir_label: &str) -> Option<Value> {
+    let (mt, size) = (mtime_ms(file), fs::metadata(file).ok()?.len());
+    if let Ok(cache) = meta_cache().lock() {
+        if let Some((cmt, csz, v)) = cache.get(file) {
+            if *cmt == mt && *csz == size {
+                return Some(v.clone());
+            }
+        }
+    }
+    let built = build_session_meta(file, dir_name, dir_id, dir_label)?;
+    if let Ok(mut cache) = meta_cache().lock() {
+        cache.insert(file.to_path_buf(), (mt, size, built.clone()));
+    }
+    Some(built)
+}
+
+fn build_session_meta(file: &Path, dir_name: &str, dir_id: &str, dir_label: &str) -> Option<Value> {
     let meta = fs::metadata(file).ok()?;
     let size = meta.len();
     let head = read_head(file, 131072);
@@ -472,34 +499,30 @@ pub fn list_sessions(config: &Value, active: &str, limit: usize) -> Vec<Value> {
     // The recycle bin spans every dir and shows only soft-deleted sessions; every other view
     // is scoped to its dir and hides them.
     let trash = active == TRASH_ID;
-    let mut files: Vec<(PathBuf, String, String, String, f64)> = vec![];
+    // Read (memoized) metas for EVERY candidate, then select + order on the content-derived
+    // createdAt — both the sort AND the limit cut key on the session's own first-record time,
+    // so a title/tag rewrite (which resets fs times) can neither reshuffle nor evict a row.
+    // The meta cache turns the full walk into stats for unchanged files.
+    let mut live: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
+    let mut out: Vec<Value> = Vec::new();
     each_session_file(config, |file, dir_name, id, label| {
+        live.insert(file.clone());
         if !trash && active != "all" && id != active {
             return;
         }
-        // Pre-sort by fs creation time — only a read-bounding heuristic for the limit walk below;
-        // the returned order is re-keyed on the content-derived createdAt.
-        let ct = created_ms(&file);
-        files.push((file, dir_name, id.to_string(), label.to_string(), ct));
-    });
-    files.sort_by(|a, b| b.4.partial_cmp(&a.4).unwrap_or(std::cmp::Ordering::Equal));
-    // Walk newest-first, reading until `limit` rows land on the right side of the deleted/active
-    // partition. Bounds normal-view cost to ~limit reads (deleted sessions are the rare case).
-    let mut out: Vec<Value> = Vec::new();
-    for (file, dn, id, label, _) in files {
-        if out.len() >= limit {
-            break;
-        }
-        if let Some(m) = session_meta(&file, &dn, &id, &label) {
+        if let Some(m) = session_meta(&file, &dir_name, id, label) {
             if m.get("deleted").and_then(|v| v.as_bool()).unwrap_or(false) == trash {
                 out.push(m);
             }
         }
+    });
+    // Drop memo entries for files that no longer exist, so removed dirs don't pin stale rows.
+    if let Ok(mut cache) = meta_cache().lock() {
+        cache.retain(|k, _| live.contains(k));
     }
-    // Final order: the session's OWN creation time (first record timestamp), newest first — stable
-    // across title/tag edits, which rewrite the file and reset its fs birth time.
     let key = |v: &Value| v.get("createdAt").and_then(|x| x.as_f64()).unwrap_or(0.0);
     out.sort_by(|a, b| key(b).partial_cmp(&key(a)).unwrap_or(std::cmp::Ordering::Equal));
+    out.truncate(limit);
     out
 }
 
@@ -1056,15 +1079,22 @@ pub fn search_sessions(config: &Value, active: &str, query: &str, limit: usize) 
         return vec![];
     }
     let trash = active == TRASH_ID;
-    // JSON string encoding escapes quotes/backslashes/control chars, so only queries free of
-    // those can be prefiltered against the raw bytes.
-    let raw_safe = q.bytes().all(|b| b != b'"' && b != b'\\' && b >= 0x20);
+    // The raw-bytes prefilter only applies to queries whose every byte is guaranteed to appear
+    // verbatim in the file's JSON encoding: printable ASCII minus the chars JSON escapes
+    // (quote/backslash/control). Non-ASCII stays OFF the prefilter — some producers (e.g.
+    // Python's json.dumps default) escape it as \uXXXX, which a byte scan would miss; those
+    // queries always take the parse+extract path (cached, so paid once per file version).
+    let raw_safe = q.bytes().all(|b| b.is_ascii() && b != b'"' && b != b'\\' && b >= 0x20);
     let mut files: Vec<(PathBuf, f64)> = vec![];
-    each_session_file(config, |file, _dn, id, _label| {
+    each_session_file(config, |file, dir_name, id, label| {
         if !trash && active != "all" && id != active {
             return;
         }
-        let ct = created_ms(&file);
+        // Same content-derived key the list orders by (memoized), so the candidate cap below
+        // keeps exactly the sessions the list can show.
+        let ct = session_meta(&file, &dir_name, id, label)
+            .and_then(|m| m.get("createdAt").and_then(|v| v.as_f64()))
+            .unwrap_or_else(|| created_ms(&file));
         files.push((file, ct));
     });
     files.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
@@ -1115,7 +1145,15 @@ pub fn set_ccbud(file: &str, patch: &Value, config: &Value) -> Value {
     // inside our store (marked by .import.json) and take the normal in-file path below.
     let head: Vec<Value> = raw.lines().take(8).filter_map(|l| serde_json::from_str(l.trim()).ok()).collect();
     if crate::codex::looks_codex(&head) && read_import_meta(file).is_none() {
-        return crate::codex::set_meta(file, patch);
+        let r = crate::codex::set_meta(file, patch);
+        // A sidecar edit changes the row without touching the rollout file (no mtime bump), so
+        // the list-meta memo must be dropped by hand. In-file writes below invalidate via mtime.
+        if r.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+            if let Ok(mut cache) = meta_cache().lock() {
+                cache.remove(target);
+            }
+        }
+        return r;
     }
     let mut lines: Vec<String> = raw.split('\n').map(|s| s.to_string()).collect();
     let mut found: Option<(usize, Value)> = None;
@@ -1186,6 +1224,11 @@ pub fn set_ccbud(file: &str, patch: &Value, config: &Value) -> Value {
     if fs::rename(&tmp, file).is_err() {
         let _ = fs::remove_file(&tmp);
         return json!({ "ok": false, "reason": "write" });
+    }
+    // The rewrite bumps mtime/size, which already invalidates the list-meta memo — dropping the
+    // entry outright also covers a same-millisecond, same-length rewrite.
+    if let Ok(mut cache) = meta_cache().lock() {
+        cache.remove(target);
     }
     json!({ "ok": true })
 }
@@ -1583,11 +1626,13 @@ mod tests {
         assert_eq!(r.get("ok").and_then(|v| v.as_bool()), Some(true));
         assert_eq!(order(&config), vec!["newer", "older"], "tag/title edit must not reshuffle");
 
-        // And the row's createdAt still reflects the record timestamp, not the rewrite moment.
+        // And the row's createdAt still reflects the record timestamp, not the rewrite moment,
+        // while the edited title shows up immediately (list-meta memo invalidated by the write).
         let rows = list_sessions(&config, "all", 50);
         let row = rows.iter().find(|s| s.get("sessionId").and_then(|v| v.as_str()) == Some("older")).unwrap();
         let want = chrono::DateTime::parse_from_rfc3339("2025-01-01T10:00:00.000Z").unwrap().timestamp_millis() as f64;
         assert_eq!(row.get("createdAt").and_then(|v| v.as_f64()), Some(want));
+        assert_eq!(row.get("title").and_then(|v| v.as_str()), Some("Renamed"));
 
         let _ = fs::remove_dir_all(&base);
     }
@@ -1616,6 +1661,14 @@ mod tests {
         )
         .unwrap();
         fs::write(sub.join("agent-s1.meta.json"), "{\"agentType\":\"explore\",\"description\":\"d\",\"toolUseId\":\"tu1\"}").unwrap();
+        // Content stored as \uXXXX escapes (e.g. python json.dumps output) — a byte scan can't
+        // see the decoded text, so non-ASCII queries must bypass the raw prefilter.
+        let esc = proj.join("escsess.jsonl");
+        fs::write(
+            &esc,
+            "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"\\u4e2d\\u6587\\u5185\\u5bb9 escaped\"},\"cwd\":\"/srch/cwd\",\"sessionId\":\"escsess\",\"timestamp\":\"2025-01-02T10:00:00.000Z\"}\n",
+        )
+        .unwrap();
         // A codex rollout in the same work dir's sessions/ tree — its own record format, scanned
         // through the codex shaper.
         let cdir = base.join("sessions").join("2026").join("07").join("04");
@@ -1645,6 +1698,11 @@ mod tests {
             let hits = search_sessions(&config, "all", "kangaroo", 50);
             assert_eq!(hits.len(), 1, "pass {}: codex rollout matches", pass);
             assert_eq!(hits[0].get("agent").and_then(|v| v.as_str()), Some("main"));
+
+            // \uXXXX-escaped content still matches a non-ASCII query (no raw prefilter for those)
+            let hits = search_sessions(&config, "all", "中文", 50);
+            assert_eq!(hits.len(), 1, "pass {}: escaped unicode content matches", pass);
+            assert!(hits[0].get("snippet").and_then(|v| v.as_str()).unwrap_or("").contains("中文内容"));
 
             // injected system-reminder content is NOT searchable (matches the renderer)
             assert!(search_sessions(&config, "all", "reminder-secret", 50).is_empty());

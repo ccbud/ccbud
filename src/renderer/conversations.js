@@ -56,8 +56,10 @@
   const MAX_WIN = 240;     // hard cap on rendered messages — load-more trims the far end past this. Keeps the
                            //  DOM small so collapse/resize/scroll stay cheap no matter how far you browse.
   let vStart = 0, vEnd = 0;      // rendered window into the active thread's messages
-  // Per-message plain text for data-driven search, keyed by thread: { main: [...], [subKey]: [...] }.
-  // Spans the main thread AND every subagent, so the in-conversation search finds cross-agent
+  // Per-message plain text for data-driven search: Map<threadKey, texts[]> in reading order
+  // ('main' first, then subagents by call site). A Map — not a plain object — so transcript-
+  // supplied keys (tool_use ids) can't collide with Object.prototype and iteration order is
+  // exactly insertion order. Spans every thread, so the in-conversation search finds cross-agent
   // content. Built lazily on first search (not on every live re-render) and invalidated on change.
   let searchDocs = null;
 
@@ -230,11 +232,11 @@
     return ['main'].concat(keys);
   }
   function buildSearchDocs() {
-    searchDocs = {};
+    searchDocs = new Map();
     for (const agent of searchAgentOrder()) {
       const msgs = threadMessages(agent);
       const results = buildResults(msgs);
-      searchDocs[agent] = msgs.map((m) => messagePlainText(m, results));
+      searchDocs.set(agent, msgs.map((m) => messagePlainText(m, results)));
     }
   }
 
@@ -272,9 +274,9 @@
     if (!searchDocs) buildSearchDocs();
     let re; try { re = new RegExp(escapeRegExp(query), 'gi'); } catch (_) { return; }
     // Scan the parsed message texts (NOT the DOM) — each matching message lists once in searchOcc,
-    // and every match inside it is highlighted on arrival.
-    for (const agent of Object.keys(searchDocs)) {
-      const texts = searchDocs[agent] || [];
+    // and every match inside it is highlighted on arrival. Map iteration = insertion order =
+    // reading order (main first, then subagents by call site), so navigation is deterministic.
+    for (const [agent, texts] of searchDocs) {
       for (let i = 0; i < texts.length; i++) {
         const t = texts[i]; if (!t) continue; re.lastIndex = 0; let m, has = false;
         while ((m = re.exec(t)) !== null) { searchTotalOcc++; has = true; if (m[0].length === 0) re.lastIndex++; }
