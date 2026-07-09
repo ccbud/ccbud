@@ -4369,6 +4369,31 @@ body {
   color: var(--amber-text);
   background: var(--amber-soft);
 }
+.conv-item-snippet {
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.5;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  word-break: break-all;
+}
+.conv-item-snippet mark {
+  background: rgba(255, 200, 50, 0.40);
+  color: inherit;
+  border-radius: 2px;
+  padding: 0 1px;
+}
+.conv-snip-agent {
+  color: var(--brand);
+  font-weight: 600;
+  white-space: nowrap;
+}
+.conv-snip-n {
+  color: var(--caption);
+  font-size: 10px;
+}
 .conv-item-tags {
   display: flex;
   align-items: center;

@@ -18,6 +18,12 @@
   let openId = null;
   let openFile = null;
   let search = '';
+  // Big-search content matching (backend scan of session bodies — main, subagents, codex):
+  let contentHits = null;       // Map<file, hit> for the current query; null = no content results yet
+  let contentSearching = false; // a backend content scan is in flight (list shows a "searching" hint)
+  let contentSeq = 0;           // staleness guard: results from a superseded query are dropped
+  let contentTimer = null;
+  let pendingLocate = null;     // { query, agent } — auto-locate target consumed after opening a content hit
   let activeDir = 'all';  // active history bucket; '__trash__' = recycle bin (deleted sessions)
   let tagFilter = null;   // when set, the list shows only conversations carrying this exact tag
   let tagClickTimer = null; // debounces a tag's single-click (filter) so a double-click (edit) can cancel it
@@ -29,14 +35,16 @@
   // id in detail.subagents). Each subagent is an independent session, so it gets the WHOLE panel —
   // switched via the agent list in the right nav, not nested inline. Reset to 'main' on open.
   let activeAgent = 'main';
-  // The message list currently shown in the main panel (main thread or the active subagent's).
-  function activeMessages() {
+  // Message list of one thread of the open session ('main' or a subagent key).
+  function threadMessages(agent) {
     if (!currentDetail) return [];
-    if (activeAgent !== 'main' && currentDetail.subagents && currentDetail.subagents[activeAgent]) {
-      return currentDetail.subagents[activeAgent].messages || [];
+    if (agent !== 'main' && currentDetail.subagents && currentDetail.subagents[agent]) {
+      return currentDetail.subagents[agent].messages || [];
     }
-    return currentDetail.messages || [];
+    return agent === 'main' ? (currentDetail.messages || []) : [];
   }
+  // The message list currently shown in the main panel (main thread or the active subagent's).
+  function activeMessages() { return threadMessages(activeAgent); }
   // Render only the most recent N messages of a thread; a "load earlier" control reveals more.
   // Huge threads (1000s of turns) otherwise put 1000s of nodes in the DOM, so every window
   // resize / live re-render walks the whole tree (~1s) — the measured root cause of the jank.
@@ -47,18 +55,22 @@
   const LOAD_MORE = 120;   // messages revealed per load-earlier / load-later click
   const MAX_WIN = 240;     // hard cap on rendered messages — load-more trims the far end past this. Keeps the
                            //  DOM small so collapse/resize/scroll stay cheap no matter how far you browse.
-  let vStart = 0, vEnd = 0;      // rendered window into currentDetail.messages
-  let detailTexts = null;        // per-message plain text, for data-driven search (built on open)
+  let vStart = 0, vEnd = 0;      // rendered window into the active thread's messages
+  // Per-message plain text for data-driven search, keyed by thread: { main: [...], [subKey]: [...] }.
+  // Spans the main thread AND every subagent, so the in-conversation search finds cross-agent
+  // content. Built lazily on first search (not on every live re-render) and invalidated on change.
+  let searchDocs = null;
 
   try { collapsed = new Set(JSON.parse(localStorage.getItem('ccbud-collapsed-projects') || '[]')); } catch (_) {}
   function persistCollapsed() { try { localStorage.setItem('ccbud-collapsed-projects', JSON.stringify([...collapsed])); } catch (_) {} }
 
-  // Detail search state (data-driven). searchOcc = every match occurrence across the whole thread,
-  // found in the parsed message text (not the DOM): [{ mi: messageIndex, k: kth-match-in-that-message }].
-  let searchOcc = [];        // indices of messages that contain ≥1 match (navigation steps through these)
-  let searchIndex = -1;
+  // Detail search state (data-driven). Matches are found in the parsed message text (not the DOM)
+  // across EVERY thread of the open session — navigation steps through matching messages and
+  // switches the panel between main/subagents as it crosses thread boundaries.
+  let searchOcc = [];        // [{ agent, mi }] — messages with ≥1 match, in reading order (main first)
+  let searchIndex = -1;      // position in searchOcc; -1 = matches known but not navigated yet
   let searchQuery = '';
-  let searchTotalOcc = 0;    // total match occurrences across the thread (shown after the message count)
+  let searchTotalOcc = 0;    // total match occurrences across all threads (shown after the count)
 
   if (window.marked && window.marked.setOptions) {
     window.marked.setOptions({ gfm: true, breaks: true });
@@ -174,11 +186,10 @@
 
   function clearDetailSearchHighlights() {
     if (hasHighlightAPI()) { CSS.highlights.delete('cd-search'); CSS.highlights.delete('cd-current'); }
-    searchOcc = []; searchIndex = -1; searchQuery = '';
+    searchOcc = []; searchIndex = -1; searchQuery = ''; searchTotalOcc = 0;
     const countEl = $('convDetailSearchCount');
     if (countEl) countEl.textContent = '';
   }
-  function invalidateSearchNodes() { /* no-op: search is data-driven now (kept so callers stay valid) */ }
 
   // Per-message plain text, for DATA-driven search — we find matches in the parsed messages (fast, no
   // DOM), so search never has to render the whole thread. Built once when a conversation opens.
@@ -187,17 +198,17 @@
     if (Array.isArray(c)) return c.map((x) => (x && (x.text != null ? x.text : (typeof x.content === 'string' ? x.content : ''))) || '').join(' ');
     return '';
   }
-  // Mirror renderMessage's logic so detailTexts[i] is non-empty iff message i actually renders, and
-  // holds the SAME searchable text (incl. tool results, which render inside the assistant's tool card —
-  // not the user turn that carries them). This keeps search matches aligned with rendered messages.
+  // Mirror renderMessage's logic so a thread's texts[i] is non-empty iff message i actually renders,
+  // and holds the SAME searchable text (incl. tool results, which render inside the assistant's tool
+  // card — not the user turn that carries them). Keeps search matches aligned with rendered messages.
   function messagePlainText(m, results) {
     const blocks = normContent(m.content);
     if (m.role === 'user') {
       const vis = blocks.filter((b) => b.type === 'text' || b.type === 'image');
       if (!vis.length) return '';
-      const tv = vis.map((b) => b.text || '').join('');
-      if (tv.includes('<system-reminder>') || tv.includes('<command-name>') || tv.includes('<local-command')) return '';
-      return vis.map((b) => b.text || '').join('\n');
+      // Same stripping renderMessage applies: injected reminders/commands are unsearchable, but the
+      // human prose beside them (e.g. the first turn, which carries a reminder) IS.
+      return vis.map((b) => (b.type === 'text' ? stripInjected(b.text) : '')).filter(Boolean).join('\n');
     }
     let s = '';
     for (const b of blocks) {
@@ -207,10 +218,24 @@
     }
     return s;
   }
-  function buildDetailTexts() {
-    const messages = activeMessages();
-    const results = buildResults(messages);
-    detailTexts = messages.map((m) => messagePlainText(m, results));
+  // Thread keys in reading order — main first, then subagents by where they were spawned in the
+  // main thread (unresolved call sites sort last). Cross-agent search steps through this order.
+  function searchAgentOrder() {
+    const subs = (currentDetail && currentDetail.subagents) || {};
+    const keys = Object.keys(subs);
+    if (!keys.length) return ['main'];
+    if (!subIndex) buildSubIndex();
+    const pos = (k) => { const cs = subIndex.callSite.get(k); return cs && cs.thread === 'main' ? cs.mi : Infinity; };
+    keys.sort((a, b) => pos(a) - pos(b));
+    return ['main'].concat(keys);
+  }
+  function buildSearchDocs() {
+    searchDocs = {};
+    for (const agent of searchAgentOrder()) {
+      const msgs = threadMessages(agent);
+      const results = buildResults(msgs);
+      searchDocs[agent] = msgs.map((m) => messagePlainText(m, results));
+    }
   }
 
   // Highlight every match inside the CURRENT window via the CSS Custom Highlight API (Range-based, zero
@@ -231,32 +256,57 @@
     CSS.highlights.set('cd-search', h);
   }
 
-  function performDetailSearch(query) {
+  // Run the message search across EVERY thread (main + subagents). Landing rules:
+  //  - opts.agent (big-search auto-locate): jump to that thread's first match, switching the panel;
+  //  - opts.first (Enter confirm): jump to the first match overall, switching if needed;
+  //  - opts.silent (live refresh): recompute counts/highlights only, never move the view;
+  //  - default (typing): jump only within the CURRENT thread — matches elsewhere just show in the
+  //    count until the user navigates (Enter / ↑↓), so the panel never switches under the cursor.
+  function performDetailSearch(query, opts) {
+    opts = opts || {};
     searchQuery = query || '';
     if (hasHighlightAPI()) { CSS.highlights.delete('cd-search'); CSS.highlights.delete('cd-current'); }
     searchOcc = []; searchIndex = -1; searchTotalOcc = 0;
     const c = $('convDetailSearchCount');
     if (!query) { if (c) c.textContent = ''; return; }
-    if (!detailTexts) buildDetailTexts();
+    if (!searchDocs) buildSearchDocs();
     let re; try { re = new RegExp(escapeRegExp(query), 'gi'); } catch (_) { return; }
-    // Scan the parsed message texts (NOT the DOM) for matches across the whole thread. Navigate by
-    // matching MESSAGE (robust — no need to align data-text offsets with rendered-DOM offsets); each
-    // matching message lists once in searchOcc, and every match inside it is highlighted on arrival.
-    for (let i = 0; i < detailTexts.length; i++) {
-      const t = detailTexts[i]; if (!t) continue; re.lastIndex = 0; let m, has = false;
-      while ((m = re.exec(t)) !== null) { searchTotalOcc++; has = true; if (m[0].length === 0) re.lastIndex++; }
-      if (has) searchOcc.push(i);
+    // Scan the parsed message texts (NOT the DOM) — each matching message lists once in searchOcc,
+    // and every match inside it is highlighted on arrival.
+    for (const agent of Object.keys(searchDocs)) {
+      const texts = searchDocs[agent] || [];
+      for (let i = 0; i < texts.length; i++) {
+        const t = texts[i]; if (!t) continue; re.lastIndex = 0; let m, has = false;
+        while ((m = re.exec(t)) !== null) { searchTotalOcc++; has = true; if (m[0].length === 0) re.lastIndex++; }
+        if (has) searchOcc.push({ agent, mi: i });
+      }
     }
     if (!searchOcc.length) { if (c) c.textContent = '0/0'; return; }
-    gotoDetailSearchMatch(0); // jump to the first matching message (renders its window on demand)
+    if (opts.silent) { updateSearchCount(); refreshWindowHighlights(); return; }
+    let target = -1;
+    if (opts.agent) { target = searchOcc.findIndex((o) => o.agent === opts.agent); if (target < 0) target = 0; }
+    else if (opts.first) target = 0;
+    else target = searchOcc.findIndex((o) => o.agent === activeAgent);
+    if (target >= 0) gotoDetailSearchMatch(target);
+    else { updateSearchCount(); refreshWindowHighlights(); } // matches exist, none here — count only
   }
 
-  // Navigate to matching message #newIndex: bring it into the window, highlight every match in the
-  // window, mark + centre the first match in the target message. Bounded — never renders the whole thread.
+  function updateSearchCount() {
+    const c = $('convDetailSearchCount'); if (!c) return;
+    if (!searchOcc.length) { c.textContent = searchQuery ? '0/0' : ''; return; }
+    const pos = searchIndex >= 0 ? String(searchIndex + 1) : '–';
+    c.textContent = `${pos}/${searchOcc.length}` + (searchTotalOcc > searchOcc.length ? ` · ${searchTotalOcc}` : '');
+  }
+
+  // Navigate to match #newIndex (wraps): switch the panel to the match's thread when it lives in a
+  // different agent, bring the message into the window, highlight every match in the window, and
+  // mark + centre the first match in the target message. Bounded — never renders a whole thread.
   function gotoDetailSearchMatch(newIndex) {
     const len = searchOcc.length; if (!len) return;
     searchIndex = ((newIndex % len) + len) % len;
-    const mi = searchOcc[searchIndex];
+    const occ = searchOcc[searchIndex];
+    if (occ.agent !== activeAgent) setPanelAgent(occ.agent); // cross-agent step: move the panel first
+    const mi = occ.mi;
     jumpToMessage(mi, 'center');
     refreshWindowHighlights();
     const host = $('convDetail');
@@ -277,8 +327,7 @@
         if (rect && hr && rect.height) host.scrollTop += (rect.top - hr.top) - host.clientHeight / 2;
       }
     }
-    const c = $('convDetailSearchCount');
-    if (c) c.textContent = `${searchIndex + 1}/${len}` + (searchTotalOcc > len ? ` · ${searchTotalOcc}` : '');
+    updateSearchCount();
   }
 
   /* ---------- list (projects → sessions) ---------- */
@@ -327,14 +376,56 @@
         const sessions = p.sessions.filter((s) => {
           if (tagFilter && (s.tags || []).indexOf(tagFilter) < 0) return false;
           if (!q) return true;
-          return (s.title || '').toLowerCase().includes(q) ||
+          if ((s.title || '').toLowerCase().includes(q) ||
             (s.model || '').toLowerCase().includes(q) ||
             (p.name || '').toLowerCase().includes(q) ||
-            (s.tags || []).some((t) => t.toLowerCase().includes(q));
+            (s.tags || []).some((t) => t.toLowerCase().includes(q))) return true;
+          // Content match (async backend scan of message bodies, incl. subagents) — see
+          // scheduleContentSearch; these rows carry a snippet in sessionItem.
+          return !!(contentHits && contentHits.has(s.file));
         });
         return sessions.length ? Object.assign({}, p, { sessions }) : null;
       })
       .filter(Boolean);
+  }
+
+  // Big-search content matching: ask the backend to scan session BODIES (message text, thinking,
+  // tool calls/results — main thread, every subagent transcript, codex rollouts) for the query.
+  // Debounced per keystroke; responses for a superseded query are dropped. Field filtering above
+  // stays instant — content hits merge into the same list as they arrive.
+  function scheduleContentSearch() {
+    clearTimeout(contentTimer);
+    contentSeq++;
+    contentHits = null;
+    contentSearching = false;
+    const q = search;
+    if (!q || !api.historySearch) return;
+    contentSearching = true;
+    const seq = contentSeq;
+    contentTimer = setTimeout(async () => {
+      let res = null;
+      try { res = await api.historySearch(q); } catch (_) { res = null; }
+      if (seq !== contentSeq) return; // a newer query took over while this one was scanning
+      contentSearching = false;
+      const map = new Map();
+      for (const h of (Array.isArray(res) ? res : [])) if (h && h.file) map.set(h.file, h);
+      contentHits = map;
+      renderList();
+    }, 220);
+  }
+
+  // Escape a content snippet and wrap query matches in <mark> for the session row.
+  function markSnippet(text, q) {
+    const s = String(text || '');
+    if (!q) return esc(s);
+    let re; try { re = new RegExp(escapeRegExp(q), 'gi'); } catch (_) { return esc(s); }
+    let out = '', last = 0, m;
+    while ((m = re.exec(s)) !== null) {
+      out += esc(s.slice(last, m.index)) + '<mark>' + esc(m[0]) + '</mark>';
+      last = m.index + m[0].length;
+      if (m[0].length === 0) re.lastIndex++;
+    }
+    return out + esc(s.slice(last));
   }
 
   function renderList() {
@@ -347,7 +438,7 @@
       : '';
     if (!total) {
       const emptyMsg = (search || tagFilter)
-        ? esc(L('conv.noMatch'))
+        ? esc(search && contentSearching ? L('conv.searching') : L('conv.noMatch'))
         : (activeDir === '__trash__'
           ? esc(L('conv.trashEmpty'))
           : esc(L('conv.noLocal')) + '<br><span class="text-muted text-[11px]">~/.claude/projects</span>');
@@ -398,12 +489,19 @@
     const tags = (c.tags || []).map((t) =>
       `<span class="conv-tag ${t === tagFilter ? 'active' : ''}" data-tag="${esc(t)}" data-file="${esc(c.file || '')}"><span class="conv-tag-label">${esc(t)}</span><button type="button" class="conv-tag-x" data-del-tag="${esc(t)}" data-file="${esc(c.file || '')}" title="${esc(L('conv.delTag'))}">×</button></span>`).join('');
     const tagsRow = tags ? `<div class="conv-item-tags" data-file="${esc(c.file || '')}">${tags}</div>` : '';
+    // Content-search hit: show WHERE the query matched — a highlighted snippet, badged with the
+    // subagent's type when the match lives inside one (clicking auto-opens there).
+    const hit = (search && contentHits) ? contentHits.get(c.file) : null;
+    const snipRow = hit && hit.snippet
+      ? `<div class="conv-item-snippet">${hit.agent && hit.agent !== 'main' ? `<span class="conv-snip-agent">🤖 ${esc(hit.agentType || L('conv.subagent'))}</span> ` : ''}${markSnippet(hit.snippet, search)}${hit.count > 1 ? ` <span class="conv-snip-n">×${hit.count}</span>` : ''}</div>`
+      : '';
     // Full title on hover; when a custom title overrides the auto one, also surface the original first line.
     const fullTitle = c.title || L('conv.untitled');
     const tip = (c.autoTitle && c.title && c.autoTitle !== c.title) ? (fullTitle + ' · ' + c.autoTitle) : fullTitle;
     return `<div class="conv-item group cursor-pointer flex flex-col gap-0.75 py-2.5 pr-3 pl-[22px] transition-colors duration-150 hover:bg-chip-bg border-0 ${c.id === openId ? 'active' : ''}" data-id="${esc(c.id)}" data-file="${esc(c.file || '')}">
       <div class="conv-item-top flex items-center gap-1.25">${live}<span class="conv-title text-[13.5px] font-semibold truncate min-w-0" data-tip="${esc(tip)}">${esc(fullTitle)}</span>${rm}</div>
       <div class="conv-item-sub flex items-center gap-1.5 text-[11.5px] text-caption font-mono truncate">${model}${sub}${imp}</div>
+      ${snipRow}
       ${tagsRow}
       <div class="conv-item-meta flex items-center gap-1.5 text-[11px] text-caption">${metaTimes(c)}${c.sizeKB ? '<span>' + fmtSizeKB(c.sizeKB) + '</span>' : ''}</div>
     </div>`;
@@ -426,7 +524,7 @@
     openId = id; openFile = file || null;
     syncConvNav();
     activeAgent = 'main'; // new conversation always opens on its main thread
-    detailTexts = null; vStart = 0; vEnd = 0; // reset the render window for the new conversation
+    searchDocs = null; vStart = 0; vEnd = 0; // reset the render window for the new conversation
     lastRender = { file: null, count: -1 };
     const eb = $('convExportBtn'); if (eb) eb.disabled = !openFile;
     const cp = $('convCopyPathBtn'); if (cp) cp.disabled = !openFile;
@@ -438,6 +536,14 @@
     const host = $('convDetail');
     if (host && openFile) host.innerHTML = `<div class="conv-empty">${esc(L('conv.loading'))}</div>`;
     await rerenderDetail(true);
+    // Opened from a big-search content hit: restore the query in the message search box, move the
+    // panel to the matched thread (subagent hits switch automatically), and land on the match.
+    // The openFile identity check drops the jump when another session was opened mid-load.
+    if (pendingLocate && openFile && openFile === (file || null) && currentDetail) {
+      const pl = pendingLocate; pendingLocate = null;
+      if (ds) ds.value = pl.query;
+      performDetailSearch(pl.query, { agent: pl.agent || 'main' });
+    }
   }
 
   async function rerenderDetail(force) {
@@ -474,7 +580,7 @@
 
     const total = activeMessages().length; // window/paint follow the ACTIVE session (main or subagent)
     const wasBottom = isNearBottom(host);
-    buildDetailTexts();
+    searchDocs = null; // content changed (or fresh open) — search docs rebuild lazily on next use
     if (force) {
       clearDetailSearchHighlights();
       // A still-running session opens at the newest turns (trailing window, pinned to the bottom) so
@@ -500,6 +606,17 @@
       // scrolled up reading history: don't repaint (preserves scroll + expanded panels); new turns are
       // appended past the window and surface via the "load later" affordance / next jump.
       vEnd = Math.min(vEnd, total);
+    }
+    // A live-updating session with an active search: refresh counts/highlights against the new
+    // content without moving the view, keeping the current position when it still exists.
+    // (force paths cleared the search above.)
+    if (searchQuery) {
+      const cur = searchIndex >= 0 ? searchOcc[searchIndex] : null;
+      performDetailSearch(searchQuery, { silent: true });
+      if (cur) {
+        const i = searchOcc.findIndex((o) => o.agent === cur.agent && o.mi === cur.mi);
+        if (i >= 0) { searchIndex = i; updateSearchCount(); }
+      }
     }
     renderSidePanels(detail);
     renderAgentTabs(detail);
@@ -849,22 +966,29 @@
     const dd = `<div class="conv-agent-dd relative"><button type="button" data-agent-dd class="${seg(!!activeSub)}">${ddLabel}<span class="text-[8px] opacity-70 ml-0.5">▾</span></button>${menu}</div>`;
     host.innerHTML = mainTab + dd;
   }
-  // Move the main panel to a different session (main thread or a subagent). Resets the render window
-  // + search and repaints from the bottom, exactly like opening a fresh conversation.
+  // Move the panel to another thread (main ↔ subagent) KEEPING search state — used by cross-agent
+  // search navigation and the big-search auto-locate, where the jump that follows paints the window.
+  // Resets the window to "unpainted" so the follow-up jumpToMessage always renders fresh.
+  function setPanelAgent(key) {
+    if (!currentDetail || key === activeAgent) return;
+    agentMenuOpen = false;
+    activeAgent = key;
+    vStart = 0; vEnd = 0;
+    renderAgentTabs(currentDetail);
+    renderSidePanels(currentDetail);
+  }
+  // User-driven move of the main panel to a different session (main thread or a subagent). Resets
+  // the render window + search and repaints from the bottom, exactly like opening a fresh conversation.
   function switchAgent(key) {
     agentMenuOpen = false;
     if (key === activeAgent) { renderAgentTabs(currentDetail); return; }
-    activeAgent = key;
-    detailTexts = null; vStart = 0; vEnd = 0;
     clearDetailSearchHighlights();
     const ds = $('convDetailSearch'); if (ds) ds.value = '';
-    buildDetailTexts();
+    setPanelAgent(key);
     const total = activeMessages().length;
     vEnd = total; vStart = Math.max(0, total - DETAIL_WIN);
     paintWindow();
     const host = $('convDetail'); if (host) host.scrollTop = host.scrollHeight;
-    renderAgentTabs(currentDetail);
-    renderSidePanels(currentDetail);
   }
 
   // Map every subagent to where it was spawned: callSite.get(subKey) = { thread, mi } where thread is
@@ -905,7 +1029,7 @@
     if (!currentDetail || !(currentDetail.subagents || {})[key]) return;
     const chain = subChain(key);
     if (!chain.length) { switchAgent(key); return; } // call site unknown → standalone full-panel view
-    if (activeAgent !== 'main') { activeAgent = 'main'; detailTexts = null; vStart = 0; vEnd = 0; buildDetailTexts(); }
+    if (activeAgent !== 'main') setPanelAgent('main'); // search docs span all threads — no rebuild
     const top = subIndex.callSite.get(chain[0]); // { thread:'main', mi }
     jumpToMessage(top.mi, 'center');
     const host = $('convDetail');
@@ -1252,7 +1376,13 @@
         return;
       }
       const item = e.target.closest('.conv-item');
-      if (item) openConversation(item.dataset.id, item.dataset.file);
+      if (item) {
+        // Opening from a content hit carries the query along, so the conversation lands right on
+        // the match — switching to the matching subagent first when that's where it lives.
+        const hit = (search && contentHits) ? contentHits.get(item.dataset.file) : null;
+        pendingLocate = hit ? { query: search, agent: hit.agent || 'main' } : null;
+        openConversation(item.dataset.id, item.dataset.file);
+      }
     });
     // Right-click a conversation → rename / add-tag menu.
     if (list) list.addEventListener('contextmenu', (e) => {
@@ -1274,9 +1404,9 @@
     document.addEventListener('click', (e) => { if (!e.target.closest('.conv-ctx-menu')) hideCtxMenu(); });
     document.addEventListener('keydown', (e) => { if (e.key === 'Escape') hideCtxMenu(); });
     const sb = $('convSearch');
-    if (sb) sb.addEventListener('input', (e) => { search = e.target.value.trim(); renderList(); });
+    if (sb) sb.addEventListener('input', (e) => { search = e.target.value.trim(); scheduleContentSearch(); renderList(); });
     const clr = $('convClear');
-    if (clr) clr.addEventListener('click', () => { const i = $('convSearch'); if (i) { i.value = ''; search = ''; renderList(); i.focus(); } });
+    if (clr) clr.addEventListener('click', () => { const i = $('convSearch'); if (i) { i.value = ''; search = ''; scheduleContentSearch(); renderList(); i.focus(); } });
     const imp = $('convImportBtn');
     if (imp && api.historyImport) imp.addEventListener('click', async () => {
       imp.disabled = true;
@@ -1389,20 +1519,28 @@
       });
     }
 
-    // Detail message search
+    // Detail message search. Typing searches (and highlights) without pulling the view to another
+    // agent; Enter CONFIRMS — it jumps straight to the first match, switching to its thread if
+    // needed — and further Enter presses step next/previous (Shift). ↑/↓ step across agents too.
     const dsearch = $('convDetailSearch');
     if (dsearch) {
       let t;
       dsearch.addEventListener('input', () => { clearTimeout(t); t = setTimeout(() => performDetailSearch(dsearch.value.trim()), 200); });
       dsearch.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter') { e.preventDefault(); if (searchOcc.length) gotoDetailSearchMatch(searchIndex + (e.shiftKey ? -1 : 1)); }
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          const q = dsearch.value.trim();
+          clearTimeout(t);
+          if (q !== searchQuery) performDetailSearch(q, { first: true });
+          else if (searchOcc.length) gotoDetailSearchMatch(searchIndex < 0 ? 0 : searchIndex + (e.shiftKey ? -1 : 1));
+        }
         if (e.key === 'Escape') { dsearch.value = ''; clearDetailSearchHighlights(); }
       });
     }
     const dprev = $('convDetailSearchPrev');
-    if (dprev) dprev.addEventListener('click', () => { if (searchOcc.length) gotoDetailSearchMatch(searchIndex - 1); });
+    if (dprev) dprev.addEventListener('click', () => { if (searchOcc.length) gotoDetailSearchMatch(searchIndex < 0 ? -1 : searchIndex - 1); });
     const dnext = $('convDetailSearchNext');
-    if (dnext) dnext.addEventListener('click', () => { if (searchOcc.length) gotoDetailSearchMatch(searchIndex + 1); });
+    if (dnext) dnext.addEventListener('click', () => { if (searchOcc.length) gotoDetailSearchMatch(searchIndex < 0 ? 0 : searchIndex + 1); });
     const dclear = $('convDetailSearchClear');
     if (dclear) dclear.addEventListener('click', () => { const inp = $('convDetailSearch'); if (inp) inp.value = ''; clearDetailSearchHighlights(); });
 

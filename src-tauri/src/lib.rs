@@ -766,6 +766,15 @@ fn history_get(file: String) -> Value {
     history::get_session(&file)
 }
 #[tauri::command]
+async fn history_search(query: String) -> Result<Value, String> {
+    let cfg = store::read_config();
+    let active = cfg.get("historyActive").and_then(|v| v.as_str()).unwrap_or("all").to_string();
+    // Content scan is read/parse heavy — keep it off the IPC thread so the UI stays responsive.
+    tauri::async_runtime::spawn_blocking(move || json!(history::search_sessions(&cfg, &active, &query, 120)))
+        .await
+        .map_err(|e| e.to_string())
+}
+#[tauri::command]
 fn history_dirs() -> Value {
     let cfg = store::read_config();
     let active = cfg.get("historyActive").and_then(|v| v.as_str()).unwrap_or("all").to_string();
@@ -1859,7 +1868,7 @@ pub fn run() {
             claude_connect, claude_disconnect, set_connect_target, desktop_status, desktop_connect, desktop_disconnect, desktop_replay,
             server_status, gateway_set_enabled, usage_get, monitor_get, monitor_clear, logs_get, logs_clear,
             app_open_main, app_quit, window_settings_mode, window_view_min_width,
-            history_projects, history_list, history_get, history_dirs, history_pick_dir, history_set_active,
+            history_projects, history_list, history_get, history_search, history_dirs, history_pick_dir, history_set_active,
             history_import, history_import_paths, history_remove_import, history_set_meta, history_delete_forever, history_export_raw, history_export_html,
             util_copy, util_open_external,
             update_state, update_check, update_download, update_apply, update_set_auto,

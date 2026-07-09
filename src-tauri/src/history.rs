@@ -769,6 +769,314 @@ pub fn get_session(file: &str) -> Value {
     })
 }
 
+// ---- content search (the session list's "big search") ----
+//
+// Scans session CONTENT (message text / thinking / tool calls + results) across every listed
+// session — main threads, their subagent transcripts, and Codex rollouts — and reports, per
+// matching session, WHERE the first match lives ("main" or a subagent's tool_use key) plus a
+// display snippet. The renderer opens the session, switches the panel to that agent, and
+// re-finds the query locally, so list hits and in-conversation positioning stay aligned.
+//
+// Performance model (this runs per keystroke, debounced):
+//  - extraction cache: path -> (mtime, size, extracted text), so repeated queries pay the JSON
+//    parse + shaping once per file version;
+//  - raw prefilter: on a cache miss the raw JSONL bytes are substring-scanned first, and only
+//    files that could match are parsed at all (JSON escapes quotes/backslashes/control chars,
+//    so the prefilter is skipped for queries containing those);
+//  - parallel scan: per-file work fans out over a small thread pool.
+
+/// ASCII-case-insensitive substring search (byte-wise; non-ASCII must match exactly — CJK has no
+/// case). A valid-UTF-8 needle can only match at char boundaries of valid-UTF-8 text (ASCII bytes
+/// never equal continuation bytes), so the returned byte offset is safe to slice on.
+fn ifind(hay: &str, needle: &str, from: usize) -> Option<usize> {
+    let h = hay.as_bytes();
+    let n = needle.as_bytes();
+    if n.is_empty() || h.len() < n.len() {
+        return None;
+    }
+    let last = h.len() - n.len();
+    let n0 = n[0].to_ascii_lowercase();
+    let mut i = from;
+    while i <= last {
+        if h[i].to_ascii_lowercase() == n0 {
+            let mut k = 1;
+            while k < n.len() && h[i + k].to_ascii_lowercase() == n[k].to_ascii_lowercase() {
+                k += 1;
+            }
+            if k == n.len() {
+                return Some(i);
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
+/// Non-overlapping case-insensitive occurrence count (same fold as ifind).
+fn icount(hay: &str, needle: &str) -> usize {
+    let (mut i, mut c) = (0usize, 0usize);
+    while let Some(p) = ifind(hay, needle, i) {
+        c += 1;
+        i = p + needle.len().max(1);
+    }
+    c
+}
+
+/// Strip harness-injected blocks from user prose — mirrors the renderer's stripInjected, so what
+/// the big search matches is exactly what the in-conversation search (and the panel) will show.
+fn strip_injected(s: &str) -> String {
+    static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let re = RE.get_or_init(|| {
+        regex::Regex::new(
+            r"(?s)<system-reminder>.*?</system-reminder>|<command-[a-z-]+>.*?</command-[a-z-]+>|<local-command-[a-z]+>.*?</local-command-[a-z]+>",
+        )
+        .unwrap()
+    });
+    re.replace_all(s, "").trim().to_string()
+}
+
+fn tool_result_search_text(c: &Value) -> String {
+    if let Some(s) = c.as_str() {
+        return s.to_string();
+    }
+    if let Some(arr) = c.as_array() {
+        return arr
+            .iter()
+            .filter_map(|x| x.get("text").and_then(|t| t.as_str()))
+            .collect::<Vec<_>>()
+            .join("\n");
+    }
+    String::new()
+}
+
+/// One searchable text blob for a shaped message list — the renderer's messagePlainText, flattened:
+/// user prose (injected blocks stripped), assistant text, thinking, tool name + input JSON, and
+/// tool results. Images and raw structure are skipped so a hit here is findable in the panel.
+fn extract_search_text(messages: &[Value]) -> String {
+    let mut out = String::new();
+    let mut push = |t: &str| {
+        if !t.is_empty() {
+            out.push_str(t);
+            out.push('\n');
+        }
+    };
+    for m in messages {
+        let role = m.get("role").and_then(|v| v.as_str()).unwrap_or("");
+        let content = match m.get("content") {
+            Some(c) => c,
+            None => continue,
+        };
+        if let Some(s) = content.as_str() {
+            if role == "user" {
+                push(&strip_injected(s));
+            } else {
+                push(s);
+            }
+            continue;
+        }
+        let arr = match content.as_array() {
+            Some(a) => a,
+            None => continue,
+        };
+        for b in arr {
+            match b.get("type").and_then(|v| v.as_str()).unwrap_or("") {
+                "text" => {
+                    let t = b.get("text").and_then(|v| v.as_str()).unwrap_or("");
+                    if role == "user" {
+                        push(&strip_injected(t));
+                    } else {
+                        push(t);
+                    }
+                }
+                "thinking" => push(b.get("thinking").and_then(|v| v.as_str()).unwrap_or("")),
+                "tool_use" => {
+                    let name = b.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                    let input = b.get("input").map(|i| i.to_string()).unwrap_or_default();
+                    push(&format!("{} {}", name, input));
+                }
+                "tool_result" => {
+                    push(&tool_result_search_text(b.get("content").unwrap_or(&Value::Null)))
+                }
+                _ => {}
+            }
+        }
+    }
+    out
+}
+
+struct SearchCache {
+    map: std::collections::HashMap<PathBuf, (f64, u64, std::sync::Arc<String>)>,
+    bytes: usize,
+}
+/// Extracted-text memo, keyed path -> (mtime, size, text). Cleared wholesale past the byte budget
+/// (crude but safe — the next search simply re-extracts what it touches).
+fn search_cache() -> &'static std::sync::Mutex<SearchCache> {
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<SearchCache>> = std::sync::OnceLock::new();
+    CACHE.get_or_init(|| std::sync::Mutex::new(SearchCache { map: std::collections::HashMap::new(), bytes: 0 }))
+}
+const SEARCH_CACHE_BUDGET: usize = 128 * 1024 * 1024;
+
+/// Search one transcript file for `q`: (extracted text, first-match byte offset), or None.
+/// Serves from the extraction cache when fresh; otherwise prefilters the raw bytes and only
+/// parses candidates — files that can't match are neither parsed nor cached.
+fn thread_scan(path: &Path, q: &str, raw_safe: bool) -> Option<(std::sync::Arc<String>, usize)> {
+    let meta = fs::metadata(path).ok()?;
+    let (mt, sz) = (mtime_ms(path), meta.len());
+    if let Ok(cache) = search_cache().lock() {
+        if let Some((cmt, csz, text)) = cache.map.get(path) {
+            if *cmt == mt && *csz == sz {
+                let t = text.clone();
+                drop(cache);
+                return ifind(&t, q, 0).map(|p| (t, p));
+            }
+        }
+    }
+    let raw = fs::read_to_string(path).ok()?;
+    if raw_safe && ifind(&raw, q, 0).is_none() {
+        return None;
+    }
+    let recs = parse_lines(&raw);
+    let messages: Vec<Value> = if crate::codex::looks_codex(&recs) {
+        crate::codex::session_from_recs(&path.to_string_lossy(), &recs)
+            .get("messages")
+            .and_then(|v| v.as_array())
+            .cloned()
+            .unwrap_or_default()
+    } else {
+        shape_messages(&recs).messages
+    };
+    let text = std::sync::Arc::new(extract_search_text(&messages));
+    if let Ok(mut cache) = search_cache().lock() {
+        if cache.bytes + text.len() > SEARCH_CACHE_BUDGET {
+            cache.map.clear();
+            cache.bytes = 0;
+        }
+        if let Some((_, _, old)) = cache.map.insert(path.to_path_buf(), (mt, sz, text.clone())) {
+            cache.bytes = cache.bytes.saturating_sub(old.len()); // replaced a stale entry
+        }
+        cache.bytes += text.len();
+    }
+    ifind(&text, q, 0).map(|p| (text, p))
+}
+
+/// Display snippet around the first match: ~56 chars of context either side, whitespace collapsed,
+/// ellipsized at cut edges. Slice bounds snap outward/inward to char boundaries.
+fn snippet_around(text: &str, pos: usize, match_len: usize) -> String {
+    const CTX: usize = 56;
+    let mut start = pos.saturating_sub(CTX);
+    while start > 0 && !text.is_char_boundary(start) {
+        start -= 1;
+    }
+    let mut end = (pos + match_len + CTX).min(text.len());
+    while end < text.len() && !text.is_char_boundary(end) {
+        end += 1;
+    }
+    let body = text[start..end].split_whitespace().collect::<Vec<_>>().join(" ");
+    format!("{}{}{}", if start > 0 { "…" } else { "" }, body, if end < text.len() { "…" } else { "" })
+}
+
+/// Scan one session — main thread first, then each subagent transcript — and shape the hit the
+/// renderer needs to auto-locate: which agent matched, a snippet, and the occurrence count.
+fn scan_session(file: &Path, q: &str, raw_safe: bool) -> Option<Value> {
+    if let Some((text, pos)) = thread_scan(file, q, raw_safe) {
+        return Some(json!({
+            "file": file.to_string_lossy(),
+            "agent": "main",
+            "snippet": snippet_around(&text, pos, q.len()),
+            "count": icount(&text, q),
+        }));
+    }
+    let dir = subagent_dir(file)?;
+    let mut names: Vec<String> = vec![];
+    if let Ok(entries) = fs::read_dir(&dir) {
+        for ent in entries.flatten() {
+            let name = ent.file_name().to_string_lossy().into_owned();
+            if name.starts_with("agent-") && name.ends_with(".jsonl") {
+                names.push(name);
+            }
+        }
+    }
+    names.sort();
+    for name in names {
+        if let Some((text, pos)) = thread_scan(&dir.join(&name), q, raw_safe) {
+            let agent_id = name.trim_start_matches("agent-").trim_end_matches(".jsonl").to_string();
+            let meta: Value = fs::read_to_string(dir.join(format!("agent-{}.meta.json", agent_id)))
+                .ok()
+                .and_then(|s| serde_json::from_str(&s).ok())
+                .unwrap_or_else(|| json!({}));
+            // Key by the spawning tool_use id — the same key read_subagents uses, so the renderer
+            // can switch its panel straight to this agent.
+            let key = meta
+                .get("toolUseId")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| format!("agent:{}", agent_id));
+            let agent_type = meta
+                .get("agentType")
+                .and_then(|v| v.as_str())
+                .or_else(|| meta.get("subagent_type").and_then(|v| v.as_str()))
+                .unwrap_or("agent");
+            return Some(json!({
+                "file": file.to_string_lossy(),
+                "agent": key,
+                "agentType": agent_type,
+                "snippet": snippet_around(&text, pos, q.len()),
+                "count": icount(&text, q),
+            }));
+        }
+    }
+    None
+}
+
+/// Content search over the same candidate set (and dir/trash scoping) as the list view, newest
+/// first. Returns [{ file, agent, agentType?, snippet, count }] for up to `limit` sessions.
+pub fn search_sessions(config: &Value, active: &str, query: &str, limit: usize) -> Vec<Value> {
+    let q = query.trim();
+    if q.is_empty() {
+        return vec![];
+    }
+    let trash = active == TRASH_ID;
+    // JSON string encoding escapes quotes/backslashes/control chars, so only queries free of
+    // those can be prefiltered against the raw bytes.
+    let raw_safe = q.bytes().all(|b| b != b'"' && b != b'\\' && b >= 0x20);
+    let mut files: Vec<(PathBuf, f64)> = vec![];
+    each_session_file(config, |file, _dn, id, _label| {
+        if !trash && active != "all" && id != active {
+            return;
+        }
+        let ct = created_ms(&file);
+        files.push((file, ct));
+    });
+    files.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    files.truncate(600); // the list view's own cap — search what the list can show
+    let hits = std::sync::Mutex::new(Vec::<(f64, Value)>::new());
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let workers = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).clamp(1, 8);
+    std::thread::scope(|s| {
+        for _ in 0..workers {
+            s.spawn(|| loop {
+                let i = next.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                if i >= files.len() {
+                    break;
+                }
+                let (file, ct) = &files[i];
+                if is_session_deleted(file) != trash {
+                    continue;
+                }
+                if let Some(hit) = scan_session(file, q, raw_safe) {
+                    if let Ok(mut h) = hits.lock() {
+                        h.push((*ct, hit));
+                    }
+                }
+            });
+        }
+    });
+    let mut hits = hits.into_inner().unwrap_or_else(|e| e.into_inner());
+    hits.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+    hits.truncate(limit);
+    hits.into_iter().map(|(_, v)| v).collect()
+}
+
 /// Write per-conversation customization (custom title + tags) onto the FIRST parseable line as a
 /// `__ccbud__` field. Atomic (tmp + rename). Guarded to the configured dirs + the imports store
 /// (renderer can't drive an arbitrary-path write, but imported sessions must be titleable/taggable
@@ -1222,6 +1530,69 @@ mod tests {
         assert_eq!(subs.len(), 2);
         assert!(subs.iter().any(|(n, d)| n == "agent-b1.jsonl" && String::from_utf8_lossy(d).contains("sub done")));
         assert!(subs.iter().any(|(n, _)| n == "agent-b1.meta.json"));
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    // Content search: a main-thread hit reports agent "main"; a subagent-only hit reports the
+    // spawning tool_use key (+ agent type); injected <system-reminder> text never matches; and
+    // ASCII case folds. Runs twice so the second pass exercises the extraction cache.
+    #[test]
+    fn search_sessions_finds_main_and_subagent_content() {
+        let base = std::env::temp_dir().join("ccbud-search-test");
+        let _ = fs::remove_dir_all(&base);
+        let proj = base.join("projects").join("-srch-cwd");
+        fs::create_dir_all(&proj).unwrap();
+        let main = proj.join("srchsess.jsonl");
+        fs::write(
+            &main,
+            "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"find the zebra crossing<system-reminder>reminder-secret</system-reminder>\"},\"cwd\":\"/srch/cwd\",\"sessionId\":\"srchsess\",\"timestamp\":\"2025-01-01T10:00:00.000Z\"}\n\
+             {\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"tu1\",\"name\":\"Task\",\"input\":{}}]},\"sessionId\":\"srchsess\",\"timestamp\":\"2025-01-01T10:00:01.000Z\"}\n",
+        )
+        .unwrap();
+        let sub = proj.join("srchsess").join("subagents");
+        fs::create_dir_all(&sub).unwrap();
+        fs::write(
+            sub.join("agent-s1.jsonl"),
+            "{\"type\":\"assistant\",\"isSidechain\":true,\"agentId\":\"s1\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"the quokka was found here\"}]},\"sessionId\":\"srchsess\",\"timestamp\":\"2025-01-01T10:00:02.000Z\"}\n",
+        )
+        .unwrap();
+        fs::write(sub.join("agent-s1.meta.json"), "{\"agentType\":\"explore\",\"description\":\"d\",\"toolUseId\":\"tu1\"}").unwrap();
+        // A codex rollout in the same work dir's sessions/ tree — its own record format, scanned
+        // through the codex shaper.
+        let cdir = base.join("sessions").join("2026").join("07").join("04");
+        fs::create_dir_all(&cdir).unwrap();
+        fs::write(
+            cdir.join("rollout-c.jsonl"),
+            "{\"timestamp\":\"2026-07-04T00:00:00Z\",\"type\":\"session_meta\",\"payload\":{\"session_id\":\"c1\",\"cwd\":\"/cx\"}}\n\
+             {\"timestamp\":\"2026-07-04T00:00:01Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"codex kangaroo request\"}]}}\n",
+        )
+        .unwrap();
+        let config = json!({ "historyDirs": [ base.to_string_lossy() ] });
+
+        for pass in 0..2 {
+            // main-thread hit
+            let hits = search_sessions(&config, "all", "zebra crossing", 50);
+            assert_eq!(hits.len(), 1, "pass {}: one session matches", pass);
+            assert_eq!(hits[0].get("agent").and_then(|v| v.as_str()), Some("main"));
+            assert!(hits[0].get("snippet").and_then(|v| v.as_str()).unwrap_or("").contains("zebra"));
+
+            // subagent-only hit → keyed by the spawning tool_use id, labeled with the agent type
+            let hits = search_sessions(&config, "all", "QUOKKA", 50); // also proves case folding
+            assert_eq!(hits.len(), 1);
+            assert_eq!(hits[0].get("agent").and_then(|v| v.as_str()), Some("tu1"));
+            assert_eq!(hits[0].get("agentType").and_then(|v| v.as_str()), Some("explore"));
+
+            // codex rollout content is searchable too
+            let hits = search_sessions(&config, "all", "kangaroo", 50);
+            assert_eq!(hits.len(), 1, "pass {}: codex rollout matches", pass);
+            assert_eq!(hits[0].get("agent").and_then(|v| v.as_str()), Some("main"));
+
+            // injected system-reminder content is NOT searchable (matches the renderer)
+            assert!(search_sessions(&config, "all", "reminder-secret", 50).is_empty());
+            // no match at all
+            assert!(search_sessions(&config, "all", "wombat", 50).is_empty());
+        }
 
         let _ = fs::remove_dir_all(&base);
     }
