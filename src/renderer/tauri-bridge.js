@@ -65,6 +65,7 @@
     historyProjects: () => inv('history_projects'),
     historyList: () => inv('history_list'),
     historyGet: (file) => inv('history_get', { file }),
+    historySearch: (query) => inv('history_search', { query }),
     historyDirs: () => inv('history_dirs'),
     historyPickDir: () => inv('history_pick_dir'),
     historySetActive: (id) => inv('history_set_active', { id }),
