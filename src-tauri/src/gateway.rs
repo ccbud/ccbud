@@ -60,12 +60,13 @@ fn model_family(name: &str) -> ModelFamily {
 fn is_claude_fast(name: &str) -> bool {
     name.to_ascii_lowercase().contains("haiku")
 }
-/// Codex primary tier = `gpt-<ver>-sol` / `gpt-<ver>-terra` (trailing segment). Every
-/// other gpt-* (e.g. `-luna`, `-mini`) routes to the fast model.
+/// Codex primary tier = any gpt-* whose name has a `sol` / `terra` segment. Matches
+/// gpt-5.6-sol, gpt-5.6-terra, and the auto-connect gpt-5.6-sol-pro; other gpt-*
+/// (e.g. `-luna`, `-mini`) route to the fast model.
 fn is_codex_primary(name: &str) -> bool {
-    let n = name.to_ascii_lowercase();
-    let last = n.rsplit('-').next().unwrap_or("");
-    last == "sol" || last == "terra"
+    name.to_ascii_lowercase()
+        .split('-')
+        .any(|seg| seg == "sol" || seg == "terra")
 }
 /// True if the request comes from a Codex/OpenAI-family client (vs Claude), detected by
 /// the client's self-reported identity — User-Agent, or Codex's `originator` header.
@@ -1792,9 +1793,11 @@ mod tests {
         assert_eq!(out(resolve_routing(Some("claude-haiku-4-5"), &cfg, None)).as_deref(), Some("small"));
         assert_eq!(out(resolve_routing(Some("claude-fable-5"), &cfg, None)).as_deref(), Some("big"));
         assert_eq!(out(resolve_routing(Some("claude-opus-4-8"), &cfg, None)).as_deref(), Some("big"));
-        // Codex: -sol/-terra → primary, -luna (and others) → fast.
+        // Codex: sol/terra segment → primary (incl. auto-connect gpt-5.6-sol-pro),
+        // -luna (and others) → fast.
         assert_eq!(out(resolve_routing(Some("gpt-5.6-sol"), &cfg, None)).as_deref(), Some("big"));
         assert_eq!(out(resolve_routing(Some("gpt-5.6-terra"), &cfg, None)).as_deref(), Some("big"));
+        assert_eq!(out(resolve_routing(Some("gpt-5.6-sol-pro"), &cfg, None)).as_deref(), Some("big"));
         assert_eq!(out(resolve_routing(Some("gpt-5.6-luna"), &cfg, None)).as_deref(), Some("small"));
     }
     #[test]

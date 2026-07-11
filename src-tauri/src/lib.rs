@@ -407,12 +407,15 @@ fn connect_targets(cfg: &Value) -> Vec<String> {
     out
 }
 
-/// The model written into Codex's config: the fixed sentinel "gpt-5.5-ccbud". Codex derives its
-/// model family from the name — a foreign name (e.g. "z-ai/glm-5.2") makes it warn about an
-/// unknown/degraded model on every launch, while a gpt-5.5-prefixed one is accepted silently.
-/// The gateway routes any "*-ccbud" sentinel to the active provider's primary model.
+/// The model written into Codex's config: "gpt-5.6-sol-pro". Codex derives its model
+/// family from the name — a foreign name (e.g. "z-ai/glm-5.2") makes it warn about an
+/// unknown/degraded model on every launch, while a gpt-5.6-prefixed one is accepted
+/// silently. The gateway routes it to the active provider's PRIMARY model via its
+/// "sol" segment (see resolve_routing / is_codex_primary); the distinct "-pro" suffix
+/// marks it as the auto-connect model vs the plain gpt-5.6-sol advertised in /v1/models.
+/// (Legacy configs still using the "*-ccbud" sentinel keep routing to primary too.)
 fn codex_model(_cfg: &Value) -> String {
-    "gpt-5.5-ccbud".to_string()
+    "gpt-5.6-sol-pro".to_string()
 }
 
 /// Make each CLI's config file match the selected `connectTargets`: write the selected ones to

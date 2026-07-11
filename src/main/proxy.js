@@ -58,10 +58,9 @@ function modelFamily(name) {
 }
 /** Claude fast/light tier = haiku models; fable/opus/sonnet (and other claude-*) → primary. */
 function isClaudeFast(name) { return /haiku/i.test(name || ''); }
-/** Codex primary tier = gpt-<ver>-sol / gpt-<ver>-terra (trailing segment); other gpt-* → fast. */
+/** Codex primary tier = any gpt-* with a sol/terra segment (gpt-5.6-sol, gpt-5.6-sol-pro); other gpt-* → fast. */
 function isCodexPrimary(name) {
-  const last = (name || '').toLowerCase().split('-').pop();
-  return last === 'sol' || last === 'terra';
+  return (name || '').toLowerCase().split('-').some((s) => s === 'sol' || s === 'terra');
 }
 /** True if the request is from a Codex/OpenAI-family client — by client identity
  *  (User-Agent, or Codex's `originator` header), not the auth scheme. */
