@@ -409,6 +409,157 @@ function renderProviders() {
   }
 }
 
+/* ---------- plugins (sidecar coding-agent backends) ---------- */
+let pluginListWired = false;
+async function loadPlugins() {
+  const list = $('pluginList');
+  if (!list) return;
+  if (!pluginListWired) {
+    pluginListWired = true;
+    list.addEventListener('click', onPluginAction);
+    const bi = $('btnPluginInstall');
+    if (bi) bi.addEventListener('click', async () => {
+      try { const r = await api.pluginInstall(); if (r && r.ok) showToast(I18n.t('plugins.added', { id: r.id }), 'ok'); }
+      catch (e) { showToast(I18n.t('plugins.addFailed', { msg: (e && e.message) || e }), 'err'); }
+      await loadPlugins();
+    });
+    const bo = $('btnPluginOpenDir');
+    if (bo) bo.addEventListener('click', () => { try { api.pluginOpenDir(); } catch (_) {} });
+    const bg = $('btnPluginGit');
+    if (bg) bg.addEventListener('click', openPluginGitModal);
+    const bgc = $('btnGitCancel');
+    if (bgc) bgc.addEventListener('click', closePluginGitModal);
+    const bgm = $('pluginGitModal');
+    if (bgm) bgm.addEventListener('click', (e) => { if (e.target === bgm) closePluginGitModal(); });
+    const bgo = $('btnPluginGitGo');
+    if (bgo) bgo.addEventListener('click', importFromGit);
+    const gu = $('pluginGitUrl');
+    if (gu) gu.addEventListener('keydown', (e) => { if (e.key === 'Enter') importFromGit(); });
+  }
+  let plugins = [];
+  try { plugins = await api.pluginList(); }
+  catch (e) { showToast(I18n.t('plugins.loadFailed', { msg: (e && e.message) || e }), 'err'); }
+  const arr = Array.isArray(plugins) ? plugins : [];
+  renderPlugins(arr);
+  for (const p of arr) { if (p.hasSource) checkPluginUpdate(p.id); }
+}
+async function checkPluginUpdate(id) {
+  let r;
+  try { r = await api.pluginCheckUpdate(id); } catch (_) { return; }
+  if (!r || !r.updateAvailable) return;
+  const sel = (window.CSS && CSS.escape) ? CSS.escape(id) : id;
+  const slot = document.querySelector('[data-update-slot="' + sel + '"]');
+  if (slot) slot.innerHTML = '<button class="text-[10.5px] font-semibold text-amber bg-amber-soft rounded-full px-1.75 py-0.25 border-none cursor-pointer hover:opacity-85" data-plugin-update="' + escapeHtml(id) + '" title="' + escapeHtml(I18n.t('plugins.updateTitle', { ver: r.latest || '' })) + '">↑ v' + escapeHtml(r.latest || '') + '</button>';
+}
+async function importFromGit() {
+  const u = $('pluginGitUrl');
+  const url = ((u && u.value) || '').trim();
+  if (!url) return;
+  closePluginGitModal();
+  showPluginBusy(I18n.t('plugins.importing'));
+  try {
+    const r = await api.pluginInstallGit(url);
+    hidePluginBusy();
+    if (r && r.ok) showToast(I18n.t('plugins.gitImported', { id: r.id }), 'ok');
+  } catch (e) {
+    hidePluginBusy();
+    showToast(I18n.t('plugins.gitFailed', { msg: (e && e.message) || e }), 'err');
+  }
+  await loadPlugins();
+}
+function renderPlugins(plugins) {
+  const list = $('pluginList');
+  if (!list) return;
+  const empty = $('emptyPlugins');
+  if (empty) empty.classList.toggle('hidden', plugins.length > 0);
+  list.innerHTML = '';
+  for (const p of plugins) {
+    const running = !!p.running;
+    const auth = p.auth || {};
+    const st = auth.state || '';
+    const authLabel = st === 'logged_in' ? (I18n.t('plugins.authLoggedIn') + (auth.account ? ' · ' + auth.account : ''))
+      : st === 'expired' ? I18n.t('plugins.authExpired')
+        : st === 'logged_out' ? I18n.t('plugins.authLoggedOut')
+          : running ? I18n.t('plugins.authUnknown') : I18n.t('plugins.authNotRunning');
+    const authColor = st === 'logged_in' ? 'text-green' : (st === 'expired' ? 'text-amber' : 'text-caption');
+    const iconData = renderProviderIcon(p.name, p.icon);
+    const dot = `<span class="inline-block w-1.5 h-1.5 rounded-full ${running ? 'bg-green' : 'bg-border-strong'} shrink-0"></span>`;
+    const loginBtn = running && st !== 'logged_in'
+      ? `<button class="btn btn-sm bg-brand text-white border-none rounded-md px-2.5 py-1.25 font-medium text-[11px] leading-none cursor-pointer hover:opacity-90 active:scale-[0.985]" data-plugin-login="${escapeHtml(p.id)}">${escapeHtml(I18n.t('plugins.login'))}</button>` : '';
+    const logoutBtn = running && st === 'logged_in'
+      ? `<button class="btn btn-sm bg-bg-elev text-muted border border-border-custom rounded-md px-2.5 py-1.25 font-medium text-[11px] leading-none cursor-pointer hover:bg-chip-bg hover:text-fg active:scale-[0.985]" data-plugin-logout="${escapeHtml(p.id)}">${escapeHtml(I18n.t('plugins.logout'))}</button>` : '';
+    const toggleBtn = `<button class="btn btn-sm ${running ? 'bg-red-soft text-red border border-red/18' : 'bg-green-soft text-green border border-green/18'} rounded-md px-2.75 py-1.25 font-semibold text-[11px] leading-none cursor-pointer hover:opacity-90 active:scale-[0.985]" data-plugin-toggle="${escapeHtml(p.id)}" data-enabled="${running ? '1' : '0'}">${running ? escapeHtml(I18n.t('plugins.disable')) : escapeHtml(I18n.t('plugins.enable'))}</button>`;
+    const delBtn = `<button class="w-6.5 h-6.5 border-0 rounded-[6px] bg-transparent text-muted cursor-pointer flex items-center justify-center transition-all duration-100 hover:bg-red-soft hover:text-red" title="${escapeHtml(I18n.t('plugins.deleteTitle'))}" data-plugin-uninstall="${escapeHtml(p.id)}">${I.trash || '⌫'}</button>`;
+    const el = document.createElement('div');
+    el.className = 'plugin group grid grid-cols-[36px_1fr_auto] items-center gap-3 p-2.5 pr-3.5 min-h-[60px] bg-bg-elev border border-border-custom rounded-[13px] shadow-card relative transition-all duration-150 hover:border-border-strong';
+    el.dataset.id = p.id;
+    el.innerHTML = `
+      <div class="prov-icon w-9 h-9 rounded-[9px] shrink-0 flex items-center justify-center text-white font-bold text-[13px] shadow-sm" style="${iconData.style}">${iconData.html}</div>
+      <div class="min-w-0">
+        <div class="flex items-center gap-1.5 font-semibold text-[14.5px] tracking-tight text-fg">${escapeHtml(p.name || p.id)} <span class="text-[10.5px] font-mono text-caption font-normal">v${escapeHtml(p.version || '')}</span>${p.official ? ' <span class="text-[10px] font-semibold text-brand bg-brand-soft rounded-full px-1.5 py-0.25 shrink-0" title="' + escapeHtml(I18n.t('plugins.trusted')) + '">' + escapeHtml(I18n.t('plugins.trusted')) + '</span>' : ''}<span data-update-slot="${escapeHtml(p.id)}"></span> <span class="proto-badge proto-badge-xlate">${escapeHtml(p.protocol || '')}</span></div>
+        <div class="mt-0.5 text-xs text-caption truncate">${escapeHtml(p.description || '')}</div>
+        <div class="mt-1 flex items-center gap-1.5 text-[11.5px] ${authColor}">${dot}<span>${running ? escapeHtml(I18n.t('plugins.running')) : escapeHtml(I18n.t('plugins.stopped'))} · ${escapeHtml(authLabel)}</span></div>
+      </div>
+      <div class="flex items-center gap-1.5 shrink-0">${loginBtn}${logoutBtn}${toggleBtn}${delBtn}</div>`;
+    list.appendChild(el);
+  }
+}
+async function onPluginAction(e) {
+  const toggle = e.target.closest('[data-plugin-toggle]');
+  const login = e.target.closest('[data-plugin-login]');
+  const logout = e.target.closest('[data-plugin-logout]');
+  const uninstall = e.target.closest('[data-plugin-uninstall]');
+  const update = e.target.closest('[data-plugin-update]');
+  const btn = toggle || login || logout || uninstall || update;
+  if (!btn) return;
+  btn.disabled = true;
+  try {
+    if (toggle) {
+      await api.pluginSetEnabled(toggle.dataset.pluginToggle, toggle.dataset.enabled !== '1');
+      config = await api.getConfig();   // enabling adds a provider, disabling removes it
+      renderProviders();
+    } else if (login) {
+      const r = await api.pluginAuthLogin(login.dataset.pluginLogin);
+      if (r && r.mode === 'browser') showToast(I18n.t('plugins.loginOpened'), 'ok');
+    } else if (logout) {
+      await api.pluginAuthLogout(logout.dataset.pluginLogout);
+    } else if (uninstall) {
+      const r = await api.pluginUninstall(uninstall.dataset.pluginUninstall);
+      if (!(r && r.canceled)) { config = await api.getConfig(); renderProviders(); }
+    } else if (update) {
+      update.disabled = true;
+      await api.pluginUpdate(update.dataset.pluginUpdate);
+      config = await api.getConfig(); renderProviders();
+    }
+  } catch (err) {
+    showToast(I18n.t('plugins.opFailed', { msg: (err && err.message) || err }), 'err');
+  }
+  await loadPlugins();
+  if (login) { setTimeout(loadPlugins, 2000); setTimeout(loadPlugins, 5000); }
+}
+function openPluginGitModal() {
+  const m = $('pluginGitModal'); if (!m) return;
+  m.classList.remove('hidden');
+  const u = $('pluginGitUrl'); if (u) { u.value = ''; u.focus(); }
+}
+function closePluginGitModal() { const m = $('pluginGitModal'); if (m) m.classList.add('hidden'); }
+// Full-screen blocking overlay shown while a git clone/build runs — the user
+// cannot interact with the rest of the app until it finishes.
+function showPluginBusy(text) {
+  let ov = document.getElementById('pluginBusy');
+  if (!ov) {
+    ov = document.createElement('div');
+    ov.id = 'pluginBusy';
+    ov.className = 'overlay fixed inset-0 flex flex-col items-center justify-center z-[300] backdrop-blur-md';
+    ov.style.background = 'rgba(0,0,0,0.45)';
+    ov.innerHTML = '<div class="animate-spin" style="width:34px;height:34px;border:3px solid rgba(255,255,255,0.28);border-top-color:#fff;border-radius:50%"></div><p id="pluginBusyText" style="color:#fff;margin-top:14px;font-size:13px;font-weight:600"></p>';
+    document.body.appendChild(ov);
+  }
+  const t = ov.querySelector('#pluginBusyText'); if (t) t.textContent = text || '';
+  ov.style.display = 'flex';
+}
+function hidePluginBusy() { const ov = document.getElementById('pluginBusy'); if (ov) ov.style.display = 'none'; }
+
 function renderMonitor() {
   $('mStatusText').textContent = status.connected ? I18n.t('status.connected') : status.running ? I18n.t('status.running') : I18n.t('status.disconnected');
   const dot = $('mStatus').querySelector('.pulse-dot, .live-dot');
@@ -1006,6 +1157,7 @@ function switchView(view) {
   // Smooth fade between views
   const viewIds = {
     providers: 'view-providers',
+    plugins: 'view-plugins',
     monitor: 'view-monitor',
     conversations: 'view-conversations',
     settings: 'view-settings',
@@ -1043,6 +1195,7 @@ function switchView(view) {
     }
 
     if (view === 'conversations' && window.ccbudConversations) window.ccbudConversations.onShow();
+    if (view === 'plugins') loadPlugins();
     if (view === 'monitor') refreshGatewayLog();
     if (view === 'settings') startDesktopPoll(); else stopDesktopPoll();
     // Lock the window to a fixed, non-resizable size on Settings; restore it elsewhere.

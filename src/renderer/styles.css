@@ -30,6 +30,7 @@
     --radius-2xl: 1rem;
     --shadow-sm: 0 1px 3px 0 rgb(0 0 0 / 0.1), 0 1px 2px -1px rgb(0 0 0 / 0.1);
     --ease-out: cubic-bezier(0, 0, 0.2, 1);
+    --animate-spin: spin 1s linear infinite;
     --animate-pulse: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
     --blur-md: 12px;
     --default-transition-duration: 150ms;
@@ -274,8 +275,14 @@
   .z-\[100\] {
     z-index: 100;
   }
+  .z-\[120\] {
+    z-index: 120;
+  }
   .z-\[200\] {
     z-index: 200;
+  }
+  .z-\[300\] {
+    z-index: 300;
   }
   .container {
     width: 100%;
@@ -574,6 +581,9 @@
   .w-\[348px\] {
     width: 348px;
   }
+  .w-\[460px\] {
+    width: 460px;
+  }
   .w-\[580px\] {
     width: 580px;
   }
@@ -688,6 +698,9 @@
   .animate-\[pulse_2s_infinite\] {
     animation: pulse 2s infinite;
   }
+  .animate-spin {
+    animation: var(--animate-spin);
+  }
   .cursor-grab {
     cursor: grab;
   }
@@ -708,6 +721,9 @@
   }
   .grid-cols-\[14px_36px_1fr_minmax\(72px\,auto\)_auto\] {
     grid-template-columns: 14px 36px 1fr minmax(72px,auto) auto;
+  }
+  .grid-cols-\[36px_1fr_auto\] {
+    grid-template-columns: 36px 1fr auto;
   }
   .flex-col {
     flex-direction: column;
@@ -966,6 +982,12 @@
       border-color: color-mix(in oklab, var(--color-brand) 25%, transparent);
     }
   }
+  .border-green\/18 {
+    border-color: var(--color-green);
+    @supports (color: color-mix(in lab, red, red)) {
+      border-color: color-mix(in oklab, var(--color-green) 18%, transparent);
+    }
+  }
   .border-primary {
     border-color: var(--color-primary);
   }
@@ -973,6 +995,12 @@
     border-color: var(--color-red);
     @supports (color: color-mix(in lab, red, red)) {
       border-color: color-mix(in oklab, var(--color-red) 12%, transparent);
+    }
+  }
+  .border-red\/18 {
+    border-color: var(--color-red);
+    @supports (color: color-mix(in lab, red, red)) {
+      border-color: color-mix(in oklab, var(--color-red) 18%, transparent);
     }
   }
   .border-transparent {
@@ -1016,6 +1044,9 @@
   }
   .bg-\[\#ff9f0a\]\/4 {
     background-color: color-mix(in oklab, #ff9f0a 4%, transparent);
+  }
+  .bg-amber-soft {
+    background-color: var(--color-amber-soft);
   }
   .bg-bg-app {
     background-color: var(--color-bg-app);
@@ -1850,6 +1881,9 @@
     -webkit-user-select: none;
     user-select: none;
   }
+  .\[sync\:clarity\] {
+    sync: clarity;
+  }
   .group-hover\:opacity-65 {
     &:is(:where(.group):hover *) {
       @media (hover: hover) {
@@ -2273,6 +2307,20 @@
     &:hover {
       @media (hover: hover) {
         text-decoration-line: underline;
+      }
+    }
+  }
+  .hover\:opacity-85 {
+    &:hover {
+      @media (hover: hover) {
+        opacity: 85%;
+      }
+    }
+  }
+  .hover\:opacity-90 {
+    &:hover {
+      @media (hover: hover) {
+        opacity: 90%;
       }
     }
   }
@@ -6287,6 +6335,11 @@ pre.cb-has-gutter > code {
   syntax: "*";
   inherits: false;
   initial-value: 1;
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 @keyframes pulse {
   50% {

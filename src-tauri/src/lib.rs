@@ -13,6 +13,7 @@ mod counttokens;
 mod exporthtml;
 mod gateway;
 mod history;
+mod plugin;
 mod protocol;
 mod store;
 mod usage;
@@ -163,6 +164,115 @@ fn provider_set_active(id: String) -> Value {
     let mut cfg = store::read_config();
     cfg["activeProviderId"] = json!(id);
     store::write_config(cfg)
+}
+
+// ---- plugins (sidecar coding-agent backends, see plugin.rs) ----
+type PluginState<'a> = tauri::State<'a, std::sync::Arc<plugin::PluginManager>>;
+
+/// List discovered plugins with running + auth status.
+#[tauri::command]
+async fn plugin_list(pm: PluginState<'_>) -> Result<Value, String> {
+    Ok(pm.list().await)
+}
+/// Single plugin status snapshot.
+#[tauri::command]
+async fn plugin_status(pm: PluginState<'_>, id: String) -> Result<Value, String> {
+    Ok(pm.status(&id).await)
+}
+/// Enable (spawn + health-gate + register provider) or disable (stop + unregister) a plugin.
+#[tauri::command]
+async fn plugin_set_enabled(pm: PluginState<'_>, id: String, enabled: bool) -> Result<Value, String> {
+    if enabled {
+        pm.start(&id).await?;
+    } else {
+        pm.stop(&id)?;
+    }
+    Ok(pm.status(&id).await)
+}
+/// Start a plugin login (forwarded to the plugin's control plane).
+#[tauri::command]
+async fn plugin_auth_login(pm: PluginState<'_>, id: String) -> Result<Value, String> {
+    pm.auth_login(&id).await
+}
+/// Clear a plugin's cached login.
+#[tauri::command]
+async fn plugin_auth_logout(pm: PluginState<'_>, id: String) -> Result<Value, String> {
+    pm.auth_logout(&id).await
+}
+/// Add a plugin: pick a local folder containing plugin.json and install it.
+#[tauri::command]
+async fn plugin_install(pm: PluginState<'_>) -> Result<Value, String> {
+    let picked = rfd::AsyncFileDialog::new()
+        .set_title("选择插件目录（内含 plugin.json）")
+        .pick_folder()
+        .await;
+    let dir = match picked {
+        Some(f) => f.path().to_path_buf(),
+        None => return Ok(json!({ "canceled": true })),
+    };
+    let id = pm.install(&dir)?;
+    Ok(json!({ "ok": true, "id": id }))
+}
+/// Remove a plugin after a native confirm: stop it, drop its provider, delete its files.
+#[tauri::command]
+async fn plugin_uninstall(pm: PluginState<'_>, id: String) -> Result<Value, String> {
+    let res = rfd::AsyncMessageDialog::new()
+        .set_level(rfd::MessageLevel::Warning)
+        .set_title("删除插件")
+        .set_description(format!(
+            "确定删除插件「{}」？将停用它、移除对应服务，并删除其安装目录。",
+            id
+        ))
+        .set_buttons(rfd::MessageButtons::OkCancel)
+        .show()
+        .await;
+    if !matches!(res, rfd::MessageDialogResult::Ok) {
+        return Ok(json!({ "canceled": true }));
+    }
+    pm.uninstall(&id)?;
+    Ok(json!({ "ok": true }))
+}
+/// Open the plugins folder in the OS file browser.
+#[tauri::command]
+fn plugin_open_dir() -> bool {
+    let dir = plugin::plugins_root();
+    let _ = std::fs::create_dir_all(&dir);
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open").arg(&dir).spawn().is_ok()
+    }
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("explorer").arg(&dir).spawn().is_ok()
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        std::process::Command::new("xdg-open").arg(&dir).spawn().is_ok()
+    }
+}
+/// Install a plugin from a git repository (clone + build + install). Runs the
+/// blocking git/build work off the async runtime.
+#[tauri::command]
+async fn plugin_install_git(pm: PluginState<'_>, url: String) -> Result<Value, String> {
+    let mgr = pm.inner().clone();
+    let id = tokio::task::spawn_blocking(move || mgr.install_from_git(&url))
+        .await
+        .map_err(|e| e.to_string())??;
+    Ok(json!({ "ok": true, "id": id }))
+}
+/// Check whether a plugin's git source has a newer version.
+#[tauri::command]
+async fn plugin_check_update(pm: PluginState<'_>, id: String) -> Result<Value, String> {
+    Ok(pm.check_update(&id).await)
+}
+/// Update a plugin from its recorded git source (re-clone + build + replace).
+#[tauri::command]
+async fn plugin_update(pm: PluginState<'_>, id: String) -> Result<Value, String> {
+    let mgr = pm.inner().clone();
+    let id = tokio::task::spawn_blocking(move || mgr.update(&id))
+        .await
+        .map_err(|e| e.to_string())??;
+    Ok(json!({ "ok": true, "id": id }))
 }
 /// Build the upstream `/v1/messages` URL from a provider baseUrl.
 /// Live connection test: POST a tiny ping to the provider, shaped for its declared wire protocol
@@ -1506,6 +1616,9 @@ pub fn run() {
             // Start the localhost gateway on the configured port (proxy.js parity).
             let gw = gateway::GatewayState::new(app.handle().clone());
             app.manage(gw.clone());
+            // Sidecar plugin manager (see plugin.rs) — discovers, launches, and health-gates
+            // coding-agent plugins, surfacing each running one as a backend:"plugin" provider.
+            app.manage(plugin::PluginManager::new());
             let startup_cfg = store::read_config();
             let port = startup_cfg.get("port").and_then(|v| v.as_u64()).unwrap_or(8788) as u16;
             let enabled = startup_cfg.get("gatewayEnabled").and_then(|v| v.as_bool()).unwrap_or(true);
@@ -1865,6 +1978,9 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             config_get, config_save, provider_upsert, provider_delete, provider_set_active, provider_test,
+            plugin_list, plugin_status, plugin_set_enabled, plugin_auth_login, plugin_auth_logout,
+            plugin_install, plugin_uninstall, plugin_open_dir,
+            plugin_install_git, plugin_check_update, plugin_update,
             claude_connect, claude_disconnect, set_connect_target, desktop_status, desktop_connect, desktop_disconnect, desktop_replay,
             server_status, gateway_set_enabled, usage_get, monitor_get, monitor_clear, logs_get, logs_clear,
             app_open_main, app_quit, window_settings_mode, window_view_min_width,

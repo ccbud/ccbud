@@ -125,6 +125,21 @@ pub fn normalize(input: Value) -> Value {
                         .insert("icon".into(), json!(ic.trim()));
                 }
             }
+            // Backend type. 'http' (default) = an ordinary upstream at baseUrl. 'plugin' = fronted
+            // by a local sidecar plugin process (see plugin.rs); its baseUrl points at the plugin's
+            // localhost port, maintained by PluginManager. pluginId links back to the plugin.
+            let backend = match p.get("backend").and_then(|v| v.as_str()) {
+                Some("plugin") => "plugin",
+                _ => "http",
+            };
+            np.as_object_mut()
+                .unwrap()
+                .insert("backend".into(), json!(backend));
+            if backend == "plugin" {
+                np.as_object_mut()
+                    .unwrap()
+                    .insert("pluginId".into(), json!(str_of(p.get("pluginId"))));
+            }
             norm_provs.push(np);
         }
     }
