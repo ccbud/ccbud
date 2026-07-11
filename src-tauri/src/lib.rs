@@ -204,11 +204,6 @@ async fn plugin_set_enabled(pm: PluginState<'_>, id: String, enabled: bool) -> R
     }
     Ok(pm.status(&id).await)
 }
-/// Start a plugin login (forwarded to the plugin's control plane).
-#[tauri::command]
-async fn plugin_auth_login(pm: PluginState<'_>, id: String) -> Result<Value, String> {
-    pm.auth_login(&id).await
-}
 /// Run a plugin-declared UI action: forward form `values` to its control plane.
 #[tauri::command]
 async fn plugin_action(pm: PluginState<'_>, id: String, action: String, values: Value) -> Result<Value, String> {
@@ -2015,7 +2010,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             config_get, config_save, provider_upsert, provider_delete, provider_set_active, provider_test,
-            plugin_list, plugin_status, plugin_set_enabled, plugin_auth_login,
+            plugin_list, plugin_status, plugin_set_enabled,
             plugin_action, plugin_action_load,
             plugin_install, plugin_uninstall, plugin_open_dir,
             plugin_install_git, plugin_check_update, plugin_update,

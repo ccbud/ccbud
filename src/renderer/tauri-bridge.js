@@ -42,7 +42,6 @@
     pluginList: () => inv('plugin_list'),
     pluginStatus: (id) => inv('plugin_status', { id }),
     pluginSetEnabled: (id, enabled) => inv('plugin_set_enabled', { id, enabled }),
-    pluginAuthLogin: (id) => inv('plugin_auth_login', { id }),
     pluginAction: (id, action, values) => inv('plugin_action', { id, action, values: values || {} }),
     pluginActionLoad: (id, action) => inv('plugin_action_load', { id, action }),
     pluginInstall: (title) => inv('plugin_install', { title }),

@@ -46,9 +46,8 @@ pub struct Manifest {
     pub models: Vec<(String, String)>,
     pub primary: String,
     pub light: String,
-    /// Control-plane auth paths.
+    /// Control-plane auth status path (read-only; the plugin reuses a CLI login).
     pub auth_status_path: String,
-    pub auth_login_path: String,
     /// source.git — upstream git repo used for install/update (optional).
     pub source_git: String,
     pub source_branch: String,
@@ -135,7 +134,6 @@ impl Manifest {
             primary: s(&["modelMapping", "primary"], ""),
             light: s(&["modelMapping", "light"], ""),
             auth_status_path: s(&["auth", "statusPath"], "/v1/plugin/auth"),
-            auth_login_path: s(&["auth", "loginPath"], "/v1/plugin/auth/login"),
             source_git: s(&["source", "git"], ""),
             source_branch: {
                 let b = s(&["source", "branch"], "");
@@ -547,21 +545,6 @@ impl PluginManager {
             out.push(self.status(&m.id).await);
         }
         json!(out)
-    }
-
-    /// Forward a login request to the plugin's control plane.
-    pub async fn auth_login(&self, id: &str) -> Result<Value, String> {
-        let man = self.manifest(id).ok_or("plugin not found")?;
-        let port = self.running_port(id).ok_or("plugin not running")?;
-        let url = format!("http://127.0.0.1:{}{}", port, man.auth_login_path);
-        let r = self
-            .client
-            .post(&url)
-            .timeout(Duration::from_secs(15))
-            .send()
-            .await
-            .map_err(|e| e.to_string())?;
-        r.json::<Value>().await.map_err(|e| e.to_string())
     }
 
     /// Run a declarative UI action: POST the form `values` to the action's control
