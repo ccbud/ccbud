@@ -1657,7 +1657,13 @@ function bind() {
       });
       if (!ok) return;
     }
-    config = await api.setActive(card.dataset.id);
+    try {
+      config = await api.setActive(card.dataset.id);
+    } catch (err) {
+      const msg = (err && err.message) || String(err);
+      showToast(msg.includes('pluginNotRunning') ? I18n.t('providers.pluginOff') : msg, 'err');
+      return;
+    }
     renderAll();
   });
   wireDrag();

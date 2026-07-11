@@ -400,12 +400,24 @@ impl PluginManager {
             let _ = rp.child.kill();
             let _ = rp.child.wait();
         }
+        // Keep the provider (the service mirrors install state, not running state),
+        // but if this stopped plugin was the active provider, switch away — it can no
+        // longer serve requests. Pick the first other provider, else clear.
         let pid = provider_id(id);
         let mut cfg = store::read_config();
-        if let Some(arr) = cfg.get_mut("providers").and_then(|v| v.as_array_mut()) {
-            arr.retain(|x| x.get("id").and_then(|v| v.as_str()) != Some(pid.as_str()));
+        if cfg.get("activeProviderId").and_then(|v| v.as_str()) == Some(pid.as_str()) {
+            let next = cfg
+                .get("providers")
+                .and_then(|v| v.as_array())
+                .and_then(|arr| {
+                    arr.iter()
+                        .find(|p| p.get("id").and_then(|v| v.as_str()) != Some(pid.as_str()))
+                        .and_then(|p| p.get("id").and_then(|v| v.as_str()))
+                        .map(|s| s.to_string())
+                });
+            cfg["activeProviderId"] = next.map(Value::String).unwrap_or(Value::Null);
+            store::write_config(cfg);
         }
-        store::write_config(cfg); // normalize fixes activeProviderId
         Ok(())
     }
 
@@ -432,14 +444,12 @@ impl PluginManager {
         }
     }
 
-    /// Upsert the `backend:"plugin"` provider that fronts this plugin.
+    /// Upsert the `backend:"plugin"` provider that fronts this plugin. The provider is
+    /// fully derived from the manifest each time: primary/light from modelMapping and
+    /// NO custom aliases — the plugin advertises the rest via its own /v1/models, so an
+    /// identity-alias list would just be noise.
     fn ensure_provider(&self, man: &Manifest, port: u16) {
         let pid = provider_id(&man.id);
-        let models: Vec<Value> = man
-            .models
-            .iter()
-            .map(|(a, u)| json!({ "alias": a, "upstream": u }))
-            .collect();
         let provider = json!({
             "id": pid,
             "name": man.name,
@@ -451,7 +461,7 @@ impl PluginManager {
             "defaultModel": man.primary,
             "smallFastModel": man.light,
             "mapDefaultModels": true,
-            "models": models,
+            "models": [],
             "icon": man.icon_data_uri(),
         });
 
@@ -467,11 +477,38 @@ impl PluginManager {
             .iter()
             .position(|x| x.get("id").and_then(|v| v.as_str()) == Some(pid.as_str()))
         {
-            arr[i] = provider;
+            arr[i] = provider; // keep position, refresh contents
         } else {
             arr.push(provider);
         }
         store::write_config(cfg);
+    }
+
+    /// Reconcile the provider list with the set of installed plugins: add a provider
+    /// for every installed plugin (created even while stopped, so the service is
+    /// visible but — see provider_set_active — not switchable until running) and
+    /// prune plugin providers whose plugin is no longer installed.
+    pub fn sync_providers(&self) {
+        let discovered = self.discover();
+        for man in &discovered {
+            let port = self.running_port(&man.id).unwrap_or_else(|| self.port_for(&man.id));
+            self.ensure_provider(man, port);
+        }
+        let ids: std::collections::HashSet<String> = discovered.iter().map(|m| m.id.clone()).collect();
+        let mut cfg = store::read_config();
+        if let Some(arr) = cfg.get_mut("providers").and_then(|v| v.as_array_mut()) {
+            arr.retain(|p| {
+                if p.get("backend").and_then(|v| v.as_str()) == Some("plugin") {
+                    p.get("pluginId")
+                        .and_then(|v| v.as_str())
+                        .map(|pid| ids.contains(pid))
+                        .unwrap_or(false)
+                } else {
+                    true
+                }
+            });
+        }
+        store::write_config(cfg); // normalize fixes activeProviderId if it was pruned
     }
 
     /// Full snapshot for the UI: install info + running + auth (queried live).
@@ -612,16 +649,18 @@ impl PluginManager {
             std::fs::remove_dir_all(&dst).map_err(|e| e.to_string())?;
         }
         copy_dir_all(&src_dir, &dst).map_err(|e| format!("拷贝失败: {}", e))?;
+        self.sync_providers(); // installing a plugin auto-adds its service
         Ok(man.id)
     }
 
-    /// Uninstall a plugin: stop it, drop its provider, and delete its directory.
+    /// Uninstall a plugin: stop it, delete its directory, and drop its service.
     pub fn uninstall(&self, id: &str) -> Result<(), String> {
         let _ = self.stop(id);
         let dir = self.plugin_dir(id);
         if dir.exists() {
             std::fs::remove_dir_all(&dir).map_err(|e| e.to_string())?;
         }
+        self.sync_providers(); // removing a plugin auto-removes its service
         Ok(())
     }
 
@@ -705,6 +744,7 @@ impl PluginManager {
             return Err(format!("安装失败: {}", e));
         }
         let _ = std::fs::remove_dir_all(&tmp);
+        self.sync_providers(); // installing/updating from git auto-adds its service
         Ok(man.id)
     }
 

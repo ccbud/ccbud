@@ -160,10 +160,25 @@ fn provider_delete(id: String) -> Value {
     store::write_config(cfg)
 }
 #[tauri::command]
-fn provider_set_active(id: String) -> Value {
+fn provider_set_active(pm: PluginState<'_>, id: String) -> Result<Value, String> {
+    let cfg = store::read_config();
+    // A plugin-backed service can only be activated while its plugin is running —
+    // otherwise the gateway would forward to a dead port. The UI localizes this code.
+    if let Some(p) = cfg
+        .get("providers")
+        .and_then(|v| v.as_array())
+        .and_then(|arr| arr.iter().find(|p| p.get("id").and_then(|v| v.as_str()) == Some(id.as_str())))
+    {
+        if p.get("backend").and_then(|v| v.as_str()) == Some("plugin") {
+            let plugin_id = p.get("pluginId").and_then(|v| v.as_str()).unwrap_or("");
+            if !pm.is_running(plugin_id) {
+                return Err("pluginNotRunning".into());
+            }
+        }
+    }
     let mut cfg = store::read_config();
     cfg["activeProviderId"] = json!(id);
-    store::write_config(cfg)
+    Ok(store::write_config(cfg))
 }
 
 // ---- plugins (sidecar coding-agent backends, see plugin.rs) ----
@@ -1630,16 +1645,39 @@ pub fn run() {
             let gw = gateway::GatewayState::new(app.handle().clone());
             app.manage(gw.clone());
             // Sidecar plugin manager (see plugin.rs) — discovers, launches, and health-gates
-            // coding-agent plugins, surfacing each running one as a backend:"plugin" provider.
-            app.manage(plugin::PluginManager::new());
+            // coding-agent plugins, surfacing each installed one as a backend:"plugin" provider.
+            let pm = plugin::PluginManager::new();
+            pm.sync_providers(); // reconcile services with installed plugins on boot
+            let pm_boot = pm.clone();
+            app.manage(pm);
             let startup_cfg = store::read_config();
             let port = startup_cfg.get("port").and_then(|v| v.as_u64()).unwrap_or(8788) as u16;
             let enabled = startup_cfg.get("gatewayEnabled").and_then(|v| v.as_bool()).unwrap_or(true);
+            // If the active service is plugin-backed, remember its plugin id so we can
+            // auto-start it on boot — otherwise the active service would be dead until
+            // the user re-enables the plugin.
+            let active_plugin_id = startup_cfg
+                .get("activeProviderId")
+                .and_then(|v| v.as_str())
+                .and_then(|aid| {
+                    startup_cfg
+                        .get("providers")
+                        .and_then(|v| v.as_array())
+                        .and_then(|arr| arr.iter().find(|p| p.get("id").and_then(|v| v.as_str()) == Some(aid)))
+                })
+                .filter(|p| p.get("backend").and_then(|v| v.as_str()) == Some("plugin"))
+                .and_then(|p| p.get("pluginId").and_then(|v| v.as_str()))
+                .map(|s| s.to_string());
             let app_for_tray = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 if enabled {
                     if let Err(e) = gw.start(port).await {
                         eprintln!("[ccbud] gateway start failed: {}", e);
+                    }
+                }
+                if let Some(pid) = active_plugin_id {
+                    if let Err(e) = pm_boot.start(&pid).await {
+                        eprintln!("[ccbud] active plugin '{}' start failed: {}", pid, e);
                     }
                 }
                 refresh_tray_menu(&app_for_tray);
