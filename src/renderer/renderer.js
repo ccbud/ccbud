@@ -423,7 +423,7 @@ async function loadPlugins() {
     if (bd) bd.addEventListener('click', (e) => { e.preventDefault(); try { api.openExternal(PLUGIN_DOCS_URL); } catch (_) {} });
     const bi = $('btnPluginInstall');
     if (bi) bi.addEventListener('click', async () => {
-      try { const r = await api.pluginInstall(); if (r && r.ok) showToast(I18n.t('plugins.added', { id: r.id }), 'ok'); }
+      try { const r = await api.pluginInstall(I18n.t('plugins.pickDir')); if (r && r.ok) showToast(I18n.t('plugins.added', { id: r.id }), 'ok'); }
       catch (e) { showToast(I18n.t('plugins.addFailed', { msg: (e && e.message) || e }), 'err'); }
       await loadPlugins();
     });
@@ -493,7 +493,7 @@ function renderPlugins(plugins) {
     const logoutBtn = running && st === 'logged_in'
       ? `<button class="btn btn-sm bg-bg-elev text-muted border border-border-custom rounded-md px-2.5 py-1.25 font-medium text-[11px] leading-none cursor-pointer hover:bg-chip-bg hover:text-fg active:scale-[0.985]" data-plugin-logout="${escapeHtml(p.id)}">${escapeHtml(I18n.t('plugins.logout'))}</button>` : '';
     const toggleBtn = `<button class="btn btn-sm ${running ? 'bg-red-soft text-red border border-red/18' : 'bg-green-soft text-green border border-green/18'} rounded-md px-2.75 py-1.25 font-semibold text-[11px] leading-none cursor-pointer hover:opacity-90 active:scale-[0.985]" data-plugin-toggle="${escapeHtml(p.id)}" data-enabled="${running ? '1' : '0'}">${running ? escapeHtml(I18n.t('plugins.disable')) : escapeHtml(I18n.t('plugins.enable'))}</button>`;
-    const delBtn = `<button class="w-6.5 h-6.5 border-0 rounded-[6px] bg-transparent text-muted cursor-pointer flex items-center justify-center transition-all duration-100 hover:bg-red-soft hover:text-red" title="${escapeHtml(I18n.t('plugins.deleteTitle'))}" data-plugin-uninstall="${escapeHtml(p.id)}">${I.trash || '⌫'}</button>`;
+    const delBtn = `<button class="w-6.5 h-6.5 border-0 rounded-[6px] bg-transparent text-muted cursor-pointer flex items-center justify-center transition-all duration-100 hover:bg-red-soft hover:text-red" title="${escapeHtml(I18n.t('plugins.deleteTitle'))}" data-plugin-uninstall="${escapeHtml(p.id)}" data-plugin-name="${escapeHtml(p.name || p.id)}">${I.trash || '⌫'}</button>`;
     // Plugin-declared actions (buttons/forms) — display driven entirely by the manifest.
     const actionBtns = (Array.isArray(p.actions) ? p.actions : []).map((a) => {
       if (!a || !a.id) return '';
@@ -546,6 +546,13 @@ async function onPluginAction(e) {
     } else if (logout) {
       await api.pluginAuthLogout(logout.dataset.pluginLogout);
     } else if (uninstall) {
+      const ok = await confirmDialog({
+        title: I18n.t('plugins.deleteTitle'),
+        message: I18n.t('plugins.deleteConfirmMsg', { name: uninstall.dataset.pluginName || uninstall.dataset.pluginUninstall }),
+        confirmText: I18n.t('plugins.confirmDelete'),
+        danger: true,
+      });
+      if (!ok) { uninstall.disabled = false; return; }
       const r = await api.pluginUninstall(uninstall.dataset.pluginUninstall);
       if (!(r && r.canceled)) { config = await api.getConfig(); renderProviders(); }
     } else if (update) {

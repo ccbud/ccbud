@@ -225,10 +225,12 @@ async fn plugin_action_load(pm: PluginState<'_>, id: String, action: String) -> 
     pm.action_load(&id, &action).await
 }
 /// Add a plugin: pick a local folder containing plugin.json and install it.
+/// `title` is the localized folder-picker title (supplied by the renderer).
 #[tauri::command]
-async fn plugin_install(pm: PluginState<'_>) -> Result<Value, String> {
+async fn plugin_install(pm: PluginState<'_>, title: Option<String>) -> Result<Value, String> {
+    let title = title.filter(|t| !t.trim().is_empty()).unwrap_or_else(|| "Select the plugin folder".into());
     let picked = rfd::AsyncFileDialog::new()
-        .set_title("选择插件目录（内含 plugin.json）")
+        .set_title(&title)
         .pick_folder()
         .await;
     let dir = match picked {
@@ -238,22 +240,11 @@ async fn plugin_install(pm: PluginState<'_>) -> Result<Value, String> {
     let id = pm.install(&dir)?;
     Ok(json!({ "ok": true, "id": id }))
 }
-/// Remove a plugin after a native confirm: stop it, drop its provider, delete its files.
+/// Remove a plugin (the renderer confirms first): stop it, drop its service, delete its files.
 #[tauri::command]
 async fn plugin_uninstall(pm: PluginState<'_>, id: String) -> Result<Value, String> {
-    let res = rfd::AsyncMessageDialog::new()
-        .set_level(rfd::MessageLevel::Warning)
-        .set_title("删除插件")
-        .set_description(format!(
-            "确定删除插件「{}」？将停用它、移除对应服务，并删除其安装目录。",
-            id
-        ))
-        .set_buttons(rfd::MessageButtons::OkCancel)
-        .show()
-        .await;
-    if !matches!(res, rfd::MessageDialogResult::Ok) {
-        return Ok(json!({ "canceled": true }));
-    }
+    // The confirmation is shown by the renderer (localized confirmDialog) before
+    // this is called, so we just do the work here.
     pm.uninstall(&id)?;
     Ok(json!({ "ok": true }))
 }

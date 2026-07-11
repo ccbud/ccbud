@@ -46,7 +46,7 @@
     pluginAuthLogout: (id) => inv('plugin_auth_logout', { id }),
     pluginAction: (id, action, values) => inv('plugin_action', { id, action, values: values || {} }),
     pluginActionLoad: (id, action) => inv('plugin_action_load', { id, action }),
-    pluginInstall: () => inv('plugin_install'),
+    pluginInstall: (title) => inv('plugin_install', { title }),
     pluginUninstall: (id) => inv('plugin_uninstall', { id }),
     pluginOpenDir: () => inv('plugin_open_dir'),
     pluginInstallGit: (url) => inv('plugin_install_git', { url }),
