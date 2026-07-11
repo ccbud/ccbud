@@ -411,7 +411,14 @@ function createGateway({ getConfig }) {
     try {
       const base = new URL(provider.baseUrl);
       const basePath = base.pathname.replace(/\/+$/, '');
-      target = new URL(base.protocol + '//' + base.host + basePath + req.url);
+      // Collapse a repeated path prefix: base ".../v1" + inbound "/v1/responses" must
+      // not become ".../v1/v1/responses" (bites openai-* providers/sidecar plugins on
+      // same-protocol passthrough). Segment-aware so "/v1" won't eat "/v1beta".
+      let inbound = req.url; // path + query
+      if (basePath && basePath !== '/' && (reqPath === basePath || reqPath.startsWith(basePath + '/'))) {
+        inbound = req.url.slice(basePath.length);
+      }
+      target = new URL(base.protocol + '//' + base.host + basePath + inbound);
     } catch (e) {
       respondJson(res, 502, JSON.parse(errorBody('ccbud: invalid provider baseUrl: ' + provider.baseUrl, 'api_error')));
       return;

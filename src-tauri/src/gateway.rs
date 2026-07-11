@@ -568,8 +568,34 @@ fn build_target(base_url: &str, uri: &Uri) -> Option<String> {
         return None;
     }
     let base = base_url.trim_end_matches('/');
-    let pq = uri.path_and_query().map(|p| p.as_str()).unwrap_or("/");
-    Some(format!("{}{}", base, pq))
+    let path = uri.path();
+    let query = uri.query().map(|q| format!("?{}", q)).unwrap_or_default();
+    // If the provider baseUrl already carries a path prefix (e.g. ".../v1") and the
+    // inbound path repeats it (e.g. "/v1/responses"), collapse the overlap so we don't
+    // forward to ".../v1/v1/responses". This is what bites an openai-* provider whose
+    // baseUrl ends in /v1 (incl. the sidecar plugins) on same-protocol passthrough.
+    // Segment-aware so a "/v1" base won't eat a "/v1beta" path.
+    let base_path = base_url_path(base).trim_end_matches('/');
+    let path_out: &str = if base_path.is_empty() || base_path == "/" {
+        path
+    } else if path == base_path {
+        ""
+    } else {
+        match path.strip_prefix(base_path) {
+            Some(rest) if rest.starts_with('/') => rest,
+            _ => path,
+        }
+    };
+    Some(format!("{}{}{}", base, path_out, query))
+}
+
+/// The path component of a base URL (everything after scheme://authority), or "".
+fn base_url_path(base: &str) -> &str {
+    let after_scheme = base.split_once("://").map(|(_, rest)| rest).unwrap_or(base);
+    match after_scheme.find('/') {
+        Some(i) => &after_scheme[i..],
+        None => "",
+    }
 }
 
 fn error_response(status: StatusCode, msg: &str, etype: &str) -> Response {
@@ -1742,6 +1768,20 @@ mod tests {
         assert!(ids.contains(&"gpt-5.6-sol"));
         assert!(ids.contains(&"gpt-5.6-luna"));
         assert!(!ids.iter().any(|id| id.starts_with("claude-")));
+    }
+    #[test]
+    fn build_target_collapses_path_overlap() {
+        let u = |s: &str| s.parse::<Uri>().unwrap();
+        // openai-* provider / sidecar plugin: base ends in /v1 and the client path
+        // repeats /v1 → collapse (was ".../v1/v1/responses" → 404).
+        assert_eq!(build_target("http://127.0.0.1:57085/v1", &u("/v1/responses")).unwrap(), "http://127.0.0.1:57085/v1/responses");
+        assert_eq!(build_target("http://127.0.0.1:57085/v1", &u("/v1/models?x=1")).unwrap(), "http://127.0.0.1:57085/v1/models?x=1");
+        // non-overlapping prefix (anthropic providers) → plain concat, unchanged.
+        assert_eq!(build_target("https://api.deepseek.com/anthropic", &u("/v1/messages")).unwrap(), "https://api.deepseek.com/anthropic/v1/messages");
+        // base without a path → unchanged.
+        assert_eq!(build_target("http://127.0.0.1:9", &u("/v1/responses")).unwrap(), "http://127.0.0.1:9/v1/responses");
+        // segment-aware: a /v1 base must NOT eat a /v1beta path.
+        assert_eq!(build_target("http://h/v1", &u("/v1beta/x")).unwrap(), "http://h/v1/v1beta/x");
     }
     #[test]
     fn routing_classifies_by_family() {

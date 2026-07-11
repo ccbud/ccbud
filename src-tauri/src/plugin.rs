@@ -320,6 +320,21 @@ impl PluginManager {
         p
     }
 
+    /// A port we can actually bind for this plugin: the remembered one if it's free,
+    /// else a freshly assigned free port (persisted to runtime.json). Avoids colliding
+    /// with a stale sidecar squatting on the old port.
+    fn bindable_port(&self, id: &str) -> u16 {
+        let port = self.port_for(id);
+        if port_is_free(port) {
+            return port;
+        }
+        let fresh = free_port().unwrap_or(port);
+        let _ = std::fs::create_dir_all(self.plugin_dir(id));
+        let rt = self.plugin_dir(id).join("runtime.json");
+        let _ = std::fs::write(&rt, serde_json::to_vec(&json!({ "port": fresh })).unwrap_or_default());
+        fresh
+    }
+
     /// Enable a plugin: spawn it, health-gate, then upsert its provider.
     pub async fn start(&self, id: &str) -> Result<(), String> {
         let man = self.manifest(id).ok_or_else(|| format!("plugin '{}' not found", id))?;
@@ -336,7 +351,10 @@ impl PluginManager {
             return Err(format!("plugin binary missing: {}", exec.display()));
         }
 
-        let port = self.port_for(id);
+        // Use the remembered port, but if it's already taken (e.g. a stale sidecar from a
+        // previous run still holding it), grab a fresh free port instead — otherwise our
+        // child can't bind and we'd falsely health-gate against the squatter.
+        let port = self.bindable_port(id);
         let dir = self.plugin_dir(id);
         let _ = std::fs::create_dir_all(&dir);
         let home = dir.to_string_lossy().to_string();
@@ -364,6 +382,12 @@ impl PluginManager {
         if !self.wait_ready(port, &man.health_path, man.ready_timeout_ms).await {
             let _ = self.stop(id);
             return Err("plugin did not become ready (see plugin.log)".into());
+        }
+        // Guard against a false positive: if our child died during startup (e.g. it still
+        // failed to bind) even though something answered /healthz, don't register a dead
+        // provider — surface the failure so the UI doesn't flash "enabled" then revert.
+        if !self.is_running(id) {
+            return Err("plugin exited during startup (see plugin.log)".into());
         }
 
         self.ensure_provider(&man, port);
@@ -750,6 +774,11 @@ fn free_port() -> Option<u16> {
         .ok()
         .and_then(|l| l.local_addr().ok())
         .map(|a| a.port())
+}
+
+/// True if we can bind 127.0.0.1:port right now (i.e. nothing else is holding it).
+fn port_is_free(port: u16) -> bool {
+    port != 0 && std::net::TcpListener::bind(("127.0.0.1", port)).is_ok()
 }
 
 /// ccbud config home (~/.ccbud, overridable via CCBUD_HOME) — mirrors store.rs.
