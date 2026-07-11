@@ -44,13 +44,31 @@ function respondJson(res, status, obj) {
   }
 }
 
-/** Heuristic: is this model name a "small / fast" tier? */
-function looksSmall(name) {
-  return /haiku|small|fast|mini|air|flash|lite|nano|tiny|turbo/i.test(name || '');
+/** Default models advertised to Codex/OpenAI-family clients (mirror gateway.rs
+ *  CODEX_TIER_MODELS). -sol/-terra are the primary tier; the rest (e.g. -luna) fast. */
+const CODEX_TIER_MODELS = [{ name: 'gpt-5.6-sol' }, { name: 'gpt-5.6-terra' }, { name: 'gpt-5.6-luna' }];
+
+/** Which coding-agent family a model name belongs to: 'claude' | 'codex' | 'other'.
+ *  Claude Code sends claude-*, Codex sends gpt-*; each names its tiers differently. */
+function modelFamily(name) {
+  const n = (name || '').toLowerCase();
+  if (/^claude[-_]/.test(n)) return 'claude';
+  if (/^gpt[-_]/.test(n)) return 'codex';
+  return 'other';
 }
-/** Is this one of Claude's own default model names (the only names we auto-remap)? */
-function isClaudeDefault(name) {
-  return /^claude[-_]/i.test(name || '');
+/** Claude fast/light tier = haiku models; fable/opus/sonnet (and other claude-*) → primary. */
+function isClaudeFast(name) { return /haiku/i.test(name || ''); }
+/** Codex primary tier = any gpt-* with a sol/terra segment (gpt-5.6-sol, gpt-5.6-sol-pro); other gpt-* → fast. */
+function isCodexPrimary(name) {
+  return (name || '').toLowerCase().split(/[-_]/).some((s) => s === 'sol' || s === 'terra');
+}
+/** True if the request is from a Codex/OpenAI-family client — by client identity
+ *  (User-Agent, or Codex's `originator` header), not the auth scheme. */
+function clientIsCodex(headers) {
+  const h = headers || {};
+  const ua = String(h['user-agent'] || '').toLowerCase();
+  const orig = String(h['originator'] || '').toLowerCase();
+  return ua.includes('codex') || orig.includes('codex');
 }
 
 /**
@@ -124,8 +142,11 @@ function resolveRouting(requestedModel, config, knownModels) {
   // everything else unmatched (Claude small tiers + any foreign name) -> LIGHTWEIGHT.
   const big = primary || light;
   const small = light || primary;
+  // Classify by family: Claude and Codex name their primary vs fast tiers differently.
   let target;
-  if (isClaudeDefault(requestedModel)) target = looksSmall(requestedModel) ? small : big;
+  const fam = modelFamily(requestedModel);
+  if (fam === 'claude') target = isClaudeFast(requestedModel) ? small : big;
+  else if (fam === 'codex') target = isCodexPrimary(requestedModel) ? big : small;
   else target = small; // unknown foreign model -> route to the known-good lightweight model
   if (target) return { provider: active, outgoingModel: target, clientFacingModel: requestedModel };
 
@@ -192,18 +213,21 @@ function aliasModelEntries(config) {
 // also appear in /v1/models; the gateway tier-maps them onto the active provider. Harmless to other
 // clients (Claude Code routes by tier; these names aren't fed to provider routing — see recordModels,
 // which only learns from the provider's OWN /v1/models, not this synthesized list).
-function claudeTierEntries() { return CLAUDE_TIER_MODELS.map((m) => modelEntry(m.name)); }
-function mergeModels(upstream, config) {
+/** Default tier models for the requesting client's family (Codex → gpt, Claude → claude). */
+function tierEntries(isCodex) {
+  return (isCodex ? CODEX_TIER_MODELS : CLAUDE_TIER_MODELS).map((m) => modelEntry(m.name));
+}
+function mergeModels(upstream, config, isCodex) {
   const data = Array.isArray(upstream && upstream.data) ? upstream.data.slice() : [];
   const have = new Set(data.map((m) => m && m.id));
-  const adds = aliasModelEntries(config).concat(claudeTierEntries()).filter((a) => {
+  const adds = aliasModelEntries(config).concat(tierEntries(isCodex)).filter((a) => {
     if (have.has(a.id)) return false; have.add(a.id); return true;
   });
   const merged = Object.assign({}, upstream || {});
-  merged.data = adds.concat(data); // aliases + claude tiers first so they stand out
+  merged.data = adds.concat(data); // aliases + tier defaults first so they stand out
   return merged;
 }
-function synthesizeModels(config) {
+function synthesizeModels(config, isCodex) {
   let out = aliasModelEntries(config);
   if (!out.length) {
     // no aliases configured → fall back to the active provider's real models so it isn't empty
@@ -214,9 +238,9 @@ function synthesizeModels(config) {
       if (id && !seen.has(id)) { seen.add(id); out.push(modelEntry(id)); }
     }
   }
-  // Always advertise the standard claude-* tier names (for Claude Desktop's gateway picker).
+  // Advertise the requesting family's default tier names (Claude Desktop's picker, Codex).
   const have = new Set(out.map((m) => m.id));
-  for (const e of claudeTierEntries()) if (!have.has(e.id)) { have.add(e.id); out.push(e); }
+  for (const e of tierEntries(isCodex)) if (!have.has(e.id)) { have.add(e.id); out.push(e); }
   return { data: out, has_more: false, first_id: out[0] ? out[0].id : null, last_id: out.length ? out[out.length - 1].id : null };
 }
 
@@ -370,6 +394,9 @@ function createGateway({ getConfig }) {
     // or synthesize it from aliases when the provider has no (working) models endpoint.
     const reqPath = req.url.split('?')[0];
     const isModelsList = req.method === 'GET' && /\/v1\/models\/?$/.test(reqPath);
+    // Codex and Claude both GET /v1/models — tell them apart by client identity so each
+    // gets its own family's default model list.
+    const isCodex = clientIsCodex(req.headers);
     // Claude Desktop/Code probes the endpoint with `HEAD /` as a liveness check. Some
     // Anthropic-compatible upstreams don't implement it and answer 404, which makes the
     // client treat the endpoint as down. We still forward the probe honestly, but if it
@@ -383,7 +410,14 @@ function createGateway({ getConfig }) {
     try {
       const base = new URL(provider.baseUrl);
       const basePath = base.pathname.replace(/\/+$/, '');
-      target = new URL(base.protocol + '//' + base.host + basePath + req.url);
+      // Collapse a repeated path prefix: base ".../v1" + inbound "/v1/responses" must
+      // not become ".../v1/v1/responses" (bites openai-* providers/sidecar plugins on
+      // same-protocol passthrough). Segment-aware so "/v1" won't eat "/v1beta".
+      let inbound = req.url; // path + query
+      if (basePath && basePath !== '/' && (reqPath === basePath || reqPath.startsWith(basePath + '/'))) {
+        inbound = req.url.slice(basePath.length);
+      }
+      target = new URL(base.protocol + '//' + base.host + basePath + inbound);
     } catch (e) {
       respondJson(res, 502, JSON.parse(errorBody('ccbud: invalid provider baseUrl: ' + provider.baseUrl, 'api_error')));
       return;
@@ -574,7 +608,7 @@ function createGateway({ getConfig }) {
         pipeline(...stages, collector, (err) => {
           if (err) {
             if (isModelsList && !res.headersSent) {
-              const mbuf = Buffer.from(JSON.stringify(synthesizeModels(config)), 'utf8');
+              const mbuf = Buffer.from(JSON.stringify(synthesizeModels(config, isCodex)), 'utf8');
               outHeaders['content-type'] = 'application/json';
               outHeaders['content-length'] = Buffer.byteLength(mbuf);
               res.writeHead(200, outHeaders);
@@ -628,7 +662,7 @@ function createGateway({ getConfig }) {
               try { const o = JSON.parse(buf.toString('utf8')); if (o && Array.isArray(o.data)) upstreamObj = o; } catch (_) {}
             }
             if (upstreamObj) recordModels(provider.id, upstreamObj.data); // feed real-model routing
-            const result = upstreamObj ? mergeModels(upstreamObj, config) : synthesizeModels(config);
+            const result = upstreamObj ? mergeModels(upstreamObj, config, isCodex) : synthesizeModels(config, isCodex);
             buf = Buffer.from(JSON.stringify(result), 'utf8');
             outHeaders['content-type'] = 'application/json';
             outHeaders['content-length'] = Buffer.byteLength(buf);
@@ -662,7 +696,7 @@ function createGateway({ getConfig }) {
     upReq.on('error', (err) => {
       // Provider unreachable / no models endpoint → still answer /v1/models from the aliases.
       if (isModelsList && !res.headersSent) {
-        const mbuf = Buffer.from(JSON.stringify(synthesizeModels(config)), 'utf8');
+        const mbuf = Buffer.from(JSON.stringify(synthesizeModels(config, isCodex)), 'utf8');
         try {
           res.writeHead(200, { 'content-type': 'application/json', 'content-length': Buffer.byteLength(mbuf) });
           res.end(mbuf);

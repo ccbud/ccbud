@@ -89,9 +89,11 @@ pub fn connect(port: u16, token: &str, model: &str) {
     if cfg.get("codexBackup").map(|v| v.is_null()).unwrap_or(true) {
         let prior_model = doc.get("model").and_then(|v| v.as_str()).map(|s| s.to_string());
         let prior_provider = doc.get("model_provider").and_then(|v| v.as_str()).map(|s| s.to_string());
+        let prior_effort = doc.get("model_reasoning_effort").and_then(|v| v.as_str()).map(|s| s.to_string());
         let backup = json!({
             "model": prior_model.map(Value::String).unwrap_or(Value::Null),
             "model_provider": prior_provider.map(Value::String).unwrap_or(Value::Null),
+            "model_reasoning_effort": prior_effort.map(Value::String).unwrap_or(Value::Null),
         });
         let mut next = cfg.clone();
         next["codexBackup"] = backup;
@@ -103,6 +105,9 @@ pub fn connect(port: u16, token: &str, model: &str) {
     if !model.is_empty() {
         doc["model"] = value(model);
     }
+    // Default the thinking level to ultra; the gateway/plugin clamps it to what the
+    // active provider actually supports (e.g. grok caps at "high").
+    doc["model_reasoning_effort"] = value("ultra");
 
     // Ensure [model_providers] exists as a real table, then set our block.
     if !doc.contains_key("model_providers") {
@@ -149,6 +154,12 @@ pub fn disconnect() {
                 doc.as_table_mut().remove("model");
             }
         }
+        match backup.get("model_reasoning_effort").cloned().unwrap_or(Value::Null) {
+            Value::String(s) => doc["model_reasoning_effort"] = value(s),
+            _ => {
+                doc.as_table_mut().remove("model_reasoning_effort");
+            }
+        }
         let mut next = cfg.clone();
         next["codexBackup"] = Value::Null;
         store::write_config(next);
@@ -190,12 +201,14 @@ mod tests {
         assert!(raw.contains("experimental_bearer_token = \"ccbud-local\""));
         assert!(raw.contains("model_provider = \"ccbud\""));
         assert!(raw.contains("model = \"z-ai/glm-5.2\""));
+        assert!(raw.contains("model_reasoning_effort = \"ultra\""), "thinking level defaulted to ultra");
 
         disconnect();
         assert!(!is_connected(4321));
         let raw = fs::read_to_string(config_path()).unwrap();
         assert!(!raw.contains("ccbud"), "our block + pointer gone: {}", raw);
         assert!(raw.contains("model = \"gpt-5\""), "prior model restored");
+        assert!(!raw.contains("model_reasoning_effort"), "effort removed on disconnect (none prior)");
         assert!(raw.contains("model_provider = \"openai\""), "prior provider restored");
         assert!(raw.contains("approval_policy"), "unrelated setting still there");
 

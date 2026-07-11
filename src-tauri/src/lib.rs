@@ -13,6 +13,7 @@ mod counttokens;
 mod exporthtml;
 mod gateway;
 mod history;
+mod plugin;
 mod protocol;
 mod store;
 mod usage;
@@ -159,10 +160,125 @@ fn provider_delete(id: String) -> Value {
     store::write_config(cfg)
 }
 #[tauri::command]
-fn provider_set_active(id: String) -> Value {
+fn provider_set_active(pm: PluginState<'_>, id: String) -> Result<Value, String> {
+    let cfg = store::read_config();
+    // A plugin-backed service can only be activated while its plugin is running —
+    // otherwise the gateway would forward to a dead port. The UI localizes this code.
+    if let Some(p) = cfg
+        .get("providers")
+        .and_then(|v| v.as_array())
+        .and_then(|arr| arr.iter().find(|p| p.get("id").and_then(|v| v.as_str()) == Some(id.as_str())))
+    {
+        if p.get("backend").and_then(|v| v.as_str()) == Some("plugin") {
+            let plugin_id = p.get("pluginId").and_then(|v| v.as_str()).unwrap_or("");
+            if !pm.is_running(plugin_id) {
+                return Err("pluginNotRunning".into());
+            }
+        }
+    }
     let mut cfg = store::read_config();
     cfg["activeProviderId"] = json!(id);
-    store::write_config(cfg)
+    Ok(store::write_config(cfg))
+}
+
+// ---- plugins (sidecar coding-agent backends, see plugin.rs) ----
+type PluginState<'a> = tauri::State<'a, std::sync::Arc<plugin::PluginManager>>;
+
+/// List discovered plugins with running + auth status.
+#[tauri::command]
+async fn plugin_list(pm: PluginState<'_>) -> Result<Value, String> {
+    Ok(pm.list().await)
+}
+/// Single plugin status snapshot.
+#[tauri::command]
+async fn plugin_status(pm: PluginState<'_>, id: String) -> Result<Value, String> {
+    Ok(pm.status(&id).await)
+}
+/// Enable (spawn + health-gate + register provider) or disable (stop the process; the service stays until uninstalled) a plugin.
+#[tauri::command]
+async fn plugin_set_enabled(pm: PluginState<'_>, id: String, enabled: bool) -> Result<Value, String> {
+    if enabled {
+        pm.start(&id).await?;
+    } else {
+        pm.stop(&id)?;
+    }
+    Ok(pm.status(&id).await)
+}
+/// Run a plugin-declared UI action: forward form `values` to its control plane.
+#[tauri::command]
+async fn plugin_action(pm: PluginState<'_>, id: String, action: String, values: Value) -> Result<Value, String> {
+    pm.action(&id, &action, values).await
+}
+/// Prefill a plugin action form with the plugin's current values.
+#[tauri::command]
+async fn plugin_action_load(pm: PluginState<'_>, id: String, action: String) -> Result<Value, String> {
+    pm.action_load(&id, &action).await
+}
+/// Add a plugin: pick a local folder containing plugin.json and install it.
+/// `title` is the localized folder-picker title (supplied by the renderer).
+#[tauri::command]
+async fn plugin_install(pm: PluginState<'_>, title: Option<String>) -> Result<Value, String> {
+    let title = title.filter(|t| !t.trim().is_empty()).unwrap_or_else(|| "Select the plugin folder".into());
+    let picked = rfd::AsyncFileDialog::new()
+        .set_title(&title)
+        .pick_folder()
+        .await;
+    let dir = match picked {
+        Some(f) => f.path().to_path_buf(),
+        None => return Ok(json!({ "canceled": true })),
+    };
+    let id = pm.install(&dir)?;
+    Ok(json!({ "ok": true, "id": id }))
+}
+/// Remove a plugin (the renderer confirms first): stop it, drop its service, delete its files.
+#[tauri::command]
+async fn plugin_uninstall(pm: PluginState<'_>, id: String) -> Result<Value, String> {
+    // The confirmation is shown by the renderer (localized confirmDialog) before
+    // this is called, so we just do the work here.
+    pm.uninstall(&id)?;
+    Ok(json!({ "ok": true }))
+}
+/// Open the plugins folder in the OS file browser.
+#[tauri::command]
+fn plugin_open_dir() -> bool {
+    let dir = plugin::plugins_root();
+    let _ = std::fs::create_dir_all(&dir);
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open").arg(&dir).spawn().is_ok()
+    }
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("explorer").arg(&dir).spawn().is_ok()
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        std::process::Command::new("xdg-open").arg(&dir).spawn().is_ok()
+    }
+}
+/// Install a plugin from a git repository (clone + build + install). Runs the
+/// blocking git/build work off the async runtime.
+#[tauri::command]
+async fn plugin_install_git(pm: PluginState<'_>, url: String) -> Result<Value, String> {
+    let mgr = pm.inner().clone();
+    let id = tokio::task::spawn_blocking(move || mgr.install_from_git(&url))
+        .await
+        .map_err(|e| e.to_string())??;
+    Ok(json!({ "ok": true, "id": id }))
+}
+/// Check whether a plugin's git source has a newer version.
+#[tauri::command]
+async fn plugin_check_update(pm: PluginState<'_>, id: String) -> Result<Value, String> {
+    Ok(pm.check_update(&id).await)
+}
+/// Update a plugin from its recorded git source (re-clone + build + replace).
+#[tauri::command]
+async fn plugin_update(pm: PluginState<'_>, id: String) -> Result<Value, String> {
+    let mgr = pm.inner().clone();
+    let id = tokio::task::spawn_blocking(move || mgr.update(&id))
+        .await
+        .map_err(|e| e.to_string())??;
+    Ok(json!({ "ok": true, "id": id }))
 }
 /// Build the upstream `/v1/messages` URL from a provider baseUrl.
 /// Live connection test: POST a tiny ping to the provider, shaped for its declared wire protocol
@@ -287,12 +403,15 @@ fn connect_targets(cfg: &Value) -> Vec<String> {
     out
 }
 
-/// The model written into Codex's config: the fixed sentinel "gpt-5.5-ccbud". Codex derives its
-/// model family from the name — a foreign name (e.g. "z-ai/glm-5.2") makes it warn about an
-/// unknown/degraded model on every launch, while a gpt-5.5-prefixed one is accepted silently.
-/// The gateway routes any "*-ccbud" sentinel to the active provider's primary model.
+/// The model written into Codex's config: "gpt-5.6-sol-pro". Codex derives its model
+/// family from the name — a foreign name (e.g. "z-ai/glm-5.2") makes it warn about an
+/// unknown/degraded model on every launch, while a gpt-5.6-prefixed one is accepted
+/// silently. The gateway routes it to the active provider's PRIMARY model via its
+/// "sol" segment (see resolve_routing / is_codex_primary); the distinct "-pro" suffix
+/// marks it as the auto-connect model vs the plain gpt-5.6-sol advertised in /v1/models.
+/// (Legacy configs still using the "*-ccbud" sentinel keep routing to primary too.)
 fn codex_model(_cfg: &Value) -> String {
-    "gpt-5.5-ccbud".to_string()
+    "gpt-5.6-sol-pro".to_string()
 }
 
 /// Make each CLI's config file match the selected `connectTargets`: write the selected ones to
@@ -1260,7 +1379,7 @@ fn selfcheck_desktop() -> Value {
     json!({
         "hasBaseUrl": p.contains("http://localhost:18799"),
         "hasProvider": p.contains("inferenceProvider") && p.contains("gateway"),
-        "hasModels": p.contains("claude-sonnet-4-6") && p.contains("anthropicFamilyTier") && p.contains("isFamilyDefault"),
+        "hasModels": p.contains("claude-sonnet-5") && p.contains("anthropicFamilyTier") && p.contains("isFamilyDefault"),
         "hasBundleId": p.contains("com.anthropic.claudefordesktop"),
         "validXml": p.starts_with("<?xml") && p.contains("</plist>"),
     })
@@ -1506,14 +1625,40 @@ pub fn run() {
             // Start the localhost gateway on the configured port (proxy.js parity).
             let gw = gateway::GatewayState::new(app.handle().clone());
             app.manage(gw.clone());
+            // Sidecar plugin manager (see plugin.rs) — discovers, launches, and health-gates
+            // coding-agent plugins, surfacing each installed one as a backend:"plugin" provider.
+            let pm = plugin::PluginManager::new();
+            pm.sync_providers(); // reconcile services with installed plugins on boot
+            let pm_boot = pm.clone();
+            app.manage(pm);
             let startup_cfg = store::read_config();
             let port = startup_cfg.get("port").and_then(|v| v.as_u64()).unwrap_or(8788) as u16;
             let enabled = startup_cfg.get("gatewayEnabled").and_then(|v| v.as_bool()).unwrap_or(true);
+            // If the active service is plugin-backed, remember its plugin id so we can
+            // auto-start it on boot — otherwise the active service would be dead until
+            // the user re-enables the plugin.
+            let active_plugin_id = startup_cfg
+                .get("activeProviderId")
+                .and_then(|v| v.as_str())
+                .and_then(|aid| {
+                    startup_cfg
+                        .get("providers")
+                        .and_then(|v| v.as_array())
+                        .and_then(|arr| arr.iter().find(|p| p.get("id").and_then(|v| v.as_str()) == Some(aid)))
+                })
+                .filter(|p| p.get("backend").and_then(|v| v.as_str()) == Some("plugin"))
+                .and_then(|p| p.get("pluginId").and_then(|v| v.as_str()))
+                .map(|s| s.to_string());
             let app_for_tray = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 if enabled {
                     if let Err(e) = gw.start(port).await {
                         eprintln!("[ccbud] gateway start failed: {}", e);
+                    }
+                }
+                if let Some(pid) = active_plugin_id {
+                    if let Err(e) = pm_boot.start(&pid).await {
+                        eprintln!("[ccbud] active plugin '{}' start failed: {}", pid, e);
                     }
                 }
                 refresh_tray_menu(&app_for_tray);
@@ -1865,6 +2010,10 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             config_get, config_save, provider_upsert, provider_delete, provider_set_active, provider_test,
+            plugin_list, plugin_status, plugin_set_enabled,
+            plugin_action, plugin_action_load,
+            plugin_install, plugin_uninstall, plugin_open_dir,
+            plugin_install_git, plugin_check_update, plugin_update,
             claude_connect, claude_disconnect, set_connect_target, desktop_status, desktop_connect, desktop_disconnect, desktop_replay,
             server_status, gateway_set_enabled, usage_get, monitor_get, monitor_clear, logs_get, logs_clear,
             app_open_main, app_quit, window_settings_mode, window_view_min_width,

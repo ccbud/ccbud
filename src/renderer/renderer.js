@@ -409,6 +409,328 @@ function renderProviders() {
   }
 }
 
+/* ---------- plugins (sidecar coding-agent backends) ---------- */
+const PLUGIN_DOCS_URL = 'https://github.com/ccbud/ccbud/blob/main/docs/plugin-system.md';
+const pluginActionsById = {}; // pluginId -> declared actions (for the form modal)
+let pluginListWired = false;
+async function loadPlugins() {
+  const list = $('pluginList');
+  if (!list) return;
+  if (!pluginListWired) {
+    pluginListWired = true;
+    list.addEventListener('click', onPluginAction);
+    const bd = $('linkPluginDocs');
+    if (bd) bd.addEventListener('click', (e) => { e.preventDefault(); try { api.openExternal(PLUGIN_DOCS_URL); } catch (_) {} });
+    const bi = $('btnPluginInstall');
+    if (bi) bi.addEventListener('click', async () => {
+      try { const r = await api.pluginInstall(I18n.t('plugins.pickDir')); if (r && r.ok) showToast(I18n.t('plugins.added', { id: r.id }), 'ok'); }
+      catch (e) { showToast(I18n.t('plugins.addFailed', { msg: (e && e.message) || e }), 'err'); }
+      await loadPlugins();
+    });
+    const bo = $('btnPluginOpenDir');
+    if (bo) bo.addEventListener('click', () => { try { api.pluginOpenDir(); } catch (_) {} });
+    const bg = $('btnPluginGit');
+    if (bg) bg.addEventListener('click', openPluginGitModal);
+    const bgc = $('btnGitCancel');
+    if (bgc) bgc.addEventListener('click', closePluginGitModal);
+    const bgm = $('pluginGitModal');
+    if (bgm) bgm.addEventListener('click', (e) => { if (e.target === bgm) closePluginGitModal(); });
+    const bgo = $('btnPluginGitGo');
+    if (bgo) bgo.addEventListener('click', importFromGit);
+    const gu = $('pluginGitUrl');
+    if (gu) gu.addEventListener('keydown', (e) => { if (e.key === 'Enter') importFromGit(); });
+  }
+  let plugins = [];
+  try { plugins = await api.pluginList(); }
+  catch (e) { showToast(I18n.t('plugins.loadFailed', { msg: (e && e.message) || e }), 'err'); }
+  const arr = Array.isArray(plugins) ? plugins : [];
+  renderPlugins(arr);
+  for (const p of arr) { if (p.hasSource) checkPluginUpdate(p.id); }
+}
+async function checkPluginUpdate(id) {
+  let r;
+  try { r = await api.pluginCheckUpdate(id); } catch (_) { return; }
+  if (!r || !r.updateAvailable) return;
+  const sel = (window.CSS && CSS.escape) ? CSS.escape(id) : id;
+  const slot = document.querySelector('[data-update-slot="' + sel + '"]');
+  if (slot) slot.innerHTML = '<button class="text-[10.5px] font-semibold text-amber bg-amber-soft rounded-full px-1.75 py-0.25 border-none cursor-pointer hover:opacity-85" data-plugin-update="' + escapeHtml(id) + '" title="' + escapeHtml(I18n.t('plugins.updateTitle', { ver: r.latest || '' })) + '">↑ v' + escapeHtml(r.latest || '') + '</button>';
+}
+async function importFromGit() {
+  const u = $('pluginGitUrl');
+  const url = ((u && u.value) || '').trim();
+  if (!url) return;
+  closePluginGitModal();
+  showPluginBusy(I18n.t('plugins.importing'));
+  try {
+    const r = await api.pluginInstallGit(url);
+    hidePluginBusy();
+    if (r && r.ok) showToast(I18n.t('plugins.gitImported', { id: r.id }), 'ok');
+  } catch (e) {
+    hidePluginBusy();
+    showToast(I18n.t('plugins.gitFailed', { msg: (e && e.message) || e }), 'err');
+  }
+  await loadPlugins();
+}
+function renderPlugins(plugins) {
+  const list = $('pluginList');
+  if (!list) return;
+  const empty = $('emptyPlugins');
+  if (empty) empty.classList.toggle('hidden', plugins.length > 0);
+  list.innerHTML = '';
+  for (const p of plugins) {
+    const running = !!p.running;
+    const auth = p.auth || {};
+    const st = auth.state || '';
+    const authLabel = st === 'logged_in' ? (I18n.t('plugins.authLoggedIn') + (auth.account ? ' · ' + auth.account : ''))
+      : st === 'expired' ? I18n.t('plugins.authExpired')
+        : st === 'logged_out' ? I18n.t('plugins.authLoggedOut')
+          : running ? I18n.t('plugins.authUnknown') : I18n.t('plugins.authNotRunning');
+    const authColor = st === 'logged_in' ? 'text-green' : (st === 'expired' ? 'text-amber' : 'text-caption');
+    const iconData = renderProviderIcon(p.name, p.icon);
+    const dot = `<span class="inline-block w-1.5 h-1.5 rounded-full ${running ? 'bg-green' : 'bg-border-strong'} shrink-0"></span>`;
+    const toggleBtn = `<button class="btn btn-sm ${running ? 'bg-red-soft text-red border border-red/18' : 'bg-green-soft text-green border border-green/18'} rounded-md px-2.75 py-1.25 font-semibold text-[11px] leading-none cursor-pointer hover:opacity-90 active:scale-[0.985]" data-plugin-toggle="${escapeHtml(p.id)}" data-enabled="${running ? '1' : '0'}">${running ? escapeHtml(I18n.t('plugins.disable')) : escapeHtml(I18n.t('plugins.enable'))}</button>`;
+    const delBtn = `<button class="w-6.5 h-6.5 border-0 rounded-[6px] bg-transparent text-muted cursor-pointer flex items-center justify-center transition-all duration-100 hover:bg-red-soft hover:text-red" title="${escapeHtml(I18n.t('plugins.deleteTitle'))}" data-plugin-uninstall="${escapeHtml(p.id)}" data-plugin-name="${escapeHtml(p.name || p.id)}">${I.trash || '⌫'}</button>`;
+    // Plugin-declared actions (buttons/forms) — display driven entirely by the manifest.
+    const actionBtns = (Array.isArray(p.actions) ? p.actions : []).map((a) => {
+      if (!a || !a.id) return '';
+      // Links open in a browser and never touch the plugin, so they don't need it
+      // running; form/call actions default to requiring a running plugin.
+      const needsRun = a.kind === 'link' ? (a.requiresRunning === true) : (a.requiresRunning !== false);
+      const disabled = needsRun && !running;
+      const label = escapeHtml(a.label || a.id);
+      return `<button class="btn btn-sm bg-bg-elev text-fg border border-border-custom rounded-md px-2.5 py-1.25 font-medium text-[11px] leading-none cursor-pointer hover:bg-chip-bg hover:border-border-strong active:scale-[0.985] disabled:opacity-45 disabled:cursor-not-allowed" data-plugin-actionbtn="${escapeHtml(p.id)}" data-action-id="${escapeHtml(a.id)}" data-action-kind="${escapeHtml(a.kind || 'call')}"${a.url ? ` data-action-url="${escapeHtml(a.url)}"` : ''}${disabled ? ' disabled' : ''}>${label}</button>`;
+    }).join('');
+    pluginActionsById[p.id] = Array.isArray(p.actions) ? p.actions : [];
+    const el = document.createElement('div');
+    el.className = 'plugin group grid grid-cols-[36px_1fr_auto] items-center gap-3 p-2.5 pr-3.5 min-h-[60px] bg-bg-elev border border-border-custom rounded-[13px] shadow-card relative transition-all duration-150 hover:border-border-strong';
+    el.dataset.id = p.id;
+    el.innerHTML = `
+      <div class="prov-icon w-9 h-9 rounded-[9px] shrink-0 flex items-center justify-center text-white font-bold text-[13px] shadow-sm" style="${iconData.style}">${iconData.html}</div>
+      <div class="min-w-0">
+        <div class="flex items-center gap-1.5 font-semibold text-[14.5px] tracking-tight text-fg">${escapeHtml(p.name || p.id)} <span class="text-[10.5px] font-mono text-caption font-normal">v${escapeHtml(p.version || '')}</span>${p.official ? ' <span class="text-[10px] font-semibold text-brand bg-brand-soft rounded-full px-1.5 py-0.25 shrink-0" title="' + escapeHtml(I18n.t('plugins.trusted')) + '">' + escapeHtml(I18n.t('plugins.trusted')) + '</span>' : ''}<span data-update-slot="${escapeHtml(p.id)}"></span> <span class="proto-badge proto-badge-xlate">${escapeHtml(p.protocol || '')}</span></div>
+        <div class="mt-0.5 text-xs text-caption truncate">${escapeHtml(p.description || '')}</div>
+        <div class="mt-1 flex items-center gap-1.5 text-[11.5px] ${authColor}" data-plugin-status="${escapeHtml(p.id)}">${dot}<span>${running ? escapeHtml(I18n.t('plugins.running')) : escapeHtml(I18n.t('plugins.stopped'))} · ${escapeHtml(authLabel)}</span></div>
+      </div>
+      <div class="flex items-center gap-1.5 shrink-0">${actionBtns}${toggleBtn}${delBtn}</div>`;
+    list.appendChild(el);
+  }
+}
+async function onPluginAction(e) {
+  const actionBtn = e.target.closest('[data-plugin-actionbtn]');
+  if (actionBtn) { await runPluginDeclaredAction(actionBtn); return; }
+  const toggle = e.target.closest('[data-plugin-toggle]');
+  const uninstall = e.target.closest('[data-plugin-uninstall]');
+  const update = e.target.closest('[data-plugin-update]');
+  const btn = toggle || uninstall || update;
+  if (!btn) return;
+  btn.disabled = true;
+  try {
+    if (toggle) {
+      const enabling = toggle.dataset.enabled !== '1';
+      // Starting a sidecar spawns a process and health-gates it (can take a
+      // beat), so give the button an immediate spinner + "Starting…".
+      if (enabling) setPluginBtnBusy(toggle, I18n.t('plugins.starting'));
+      markPluginCardBusy(toggle);
+      await api.pluginSetEnabled(toggle.dataset.pluginToggle, enabling);
+      config = await api.getConfig();   // enabling adds a provider, disabling removes it
+      renderProviders();
+    } else if (uninstall) {
+      const ok = await confirmDialog({
+        title: I18n.t('plugins.deleteTitle'),
+        message: I18n.t('plugins.deleteConfirmMsg', { name: uninstall.dataset.pluginName || uninstall.dataset.pluginUninstall }),
+        confirmText: I18n.t('plugins.confirmDelete'),
+        danger: true,
+      });
+      if (!ok) { uninstall.disabled = false; return; }
+      const r = await api.pluginUninstall(uninstall.dataset.pluginUninstall);
+      if (!(r && r.canceled)) { config = await api.getConfig(); renderProviders(); }
+    } else if (update) {
+      update.disabled = true;
+      await api.pluginUpdate(update.dataset.pluginUpdate);
+      config = await api.getConfig(); renderProviders();
+    }
+  } catch (err) {
+    showToast(I18n.t('plugins.opFailed', { msg: (err && err.message) || err }), 'err');
+  }
+  await loadPlugins();
+}
+function openPluginGitModal() {
+  const m = $('pluginGitModal'); if (!m) return;
+  m.classList.remove('hidden');
+  const u = $('pluginGitUrl'); if (u) { u.value = ''; u.focus(); }
+}
+function closePluginGitModal() { const m = $('pluginGitModal'); if (m) m.classList.add('hidden'); }
+// Full-screen blocking overlay shown while a git clone/build runs — the user
+// cannot interact with the rest of the app until it finishes.
+function showPluginBusy(text) {
+  let ov = document.getElementById('pluginBusy');
+  if (!ov) {
+    ov = document.createElement('div');
+    ov.id = 'pluginBusy';
+    ov.className = 'overlay fixed inset-0 flex flex-col items-center justify-center z-[300] backdrop-blur-md';
+    ov.style.background = 'rgba(0,0,0,0.45)';
+    ov.innerHTML = '<div class="animate-spin" style="width:34px;height:34px;border:3px solid rgba(255,255,255,0.28);border-top-color:#fff;border-radius:50%"></div><p id="pluginBusyText" style="color:#fff;margin-top:14px;font-size:13px;font-weight:600"></p>';
+    document.body.appendChild(ov);
+  }
+  const t = ov.querySelector('#pluginBusyText'); if (t) t.textContent = text || '';
+  ov.style.display = 'flex';
+}
+function hidePluginBusy() { const ov = document.getElementById('pluginBusy'); if (ov) ov.style.display = 'none'; }
+
+// Small inline spinner used for per-button loading (enable/start).
+function pluginSpinner() {
+  return '<span class="animate-spin inline-block w-3 h-3 rounded-full border-[1.5px] border-current border-t-transparent align-[-2px]"></span>';
+}
+// Turn a button into a busy state: spinner + text, disabled. Reset happens on the
+// next renderPlugins() (loadPlugins re-renders the whole list from fresh status).
+function setPluginBtnBusy(btn, text) {
+  if (!btn) return;
+  btn.disabled = true;
+  btn.innerHTML = `<span class="inline-flex items-center gap-1.25">${pluginSpinner()}${escapeHtml(text || '')}</span>`;
+}
+// Dim the card and swap its status line to a "starting" spinner while the sidecar
+// spins up, so the whole row reads as in-progress (not just the button).
+function markPluginCardBusy(btn) {
+  const card = btn && btn.closest('.plugin');
+  if (!card) return;
+  card.classList.add('opacity-60', 'pointer-events-none');
+  const line = card.querySelector('[data-plugin-status]');
+  if (line) line.innerHTML = `${pluginSpinner()}<span>${escapeHtml(I18n.t('plugins.starting'))}</span>`;
+}
+
+// ---- plugin-declared actions: buttons/forms whose shape comes from the manifest ----
+async function runPluginDeclaredAction(btn) {
+  if (btn.disabled) return;
+  const pid = btn.dataset.pluginActionbtn;
+  const actionId = btn.dataset.actionId;
+  const kind = btn.dataset.actionKind || 'call';
+  if (kind === 'link') {
+    const url = btn.dataset.actionUrl;
+    if (url) { try { api.openExternal(url); } catch (_) {} }
+    return;
+  }
+  const action = (pluginActionsById[pid] || []).find((a) => a && a.id === actionId) || { id: actionId };
+  if (kind === 'form') { await openPluginActionForm(pid, action); return; }
+  // kind === 'call': fire-and-report, with an optional confirm gate
+  if (action.confirm && !window.confirm(action.confirm)) return;
+  btn.disabled = true;
+  try {
+    const r = await api.pluginAction(pid, actionId, {});
+    showToast((r && r.message) || I18n.t('plugins.actionDone'), 'ok');
+  } catch (err) {
+    showToast(I18n.t('plugins.actionFailed', { msg: (err && err.message) || err }), 'err');
+  }
+  btn.disabled = false;
+  await loadPlugins();
+}
+
+// Build one form control from a field spec. Recognized types: text (default),
+// number, password, textarea, select, checkbox.
+function pluginFieldControl(f, val) {
+  const key = escapeHtml(f.key);
+  const cls = 'bg-bg-input border border-border-custom rounded-[7px] px-2.75 py-2 text-fg text-[13px] w-full outline-none transition-colors duration-120 focus:border-primary';
+  const v = (val != null ? val : (f.default != null ? f.default : ''));
+  if (f.type === 'select') {
+    const opts = (Array.isArray(f.options) ? f.options : []).map((o) => {
+      const ov = (o && typeof o === 'object') ? o.value : o;
+      const ol = (o && typeof o === 'object') ? (o.label != null ? o.label : o.value) : o;
+      const sel = String(ov) === String(v) ? ' selected' : '';
+      return `<option value="${escapeHtml(String(ov))}"${sel}>${escapeHtml(String(ol))}</option>`;
+    }).join('');
+    return `<select data-field-key="${key}" class="${cls}">${opts}</select>`;
+  }
+  if (f.type === 'checkbox') {
+    const on = v === true || v === 1 || v === '1' || String(v).toLowerCase() === 'true';
+    return `<input type="checkbox" data-field-key="${key}" ${on ? 'checked' : ''} class="w-4 h-4 accent-brand self-start" />`;
+  }
+  if (f.type === 'textarea') {
+    return `<textarea data-field-key="${key}" rows="3" class="${cls}" placeholder="${escapeHtml(f.placeholder || '')}">${escapeHtml(String(v))}</textarea>`;
+  }
+  const type = (f.type === 'number' || f.type === 'password') ? f.type : 'text';
+  const mono = type === 'text' || type === 'number' ? ' font-mono' : '';
+  const minmax = f.type === 'number'
+    ? `${f.min != null ? ` min="${escapeHtml(String(f.min))}"` : ''}${f.max != null ? ` max="${escapeHtml(String(f.max))}"` : ''}`
+    : '';
+  return `<input type="${type}" data-field-key="${key}" value="${escapeHtml(String(v))}" placeholder="${escapeHtml(f.placeholder || '')}"${minmax} class="${cls}${mono}" />`;
+}
+
+// Read the form back into a values object, coercing/validating by field type.
+// Returns null (and focuses the offending control) if a required/number check fails.
+function collectPluginFormValues(root, fields) {
+  const out = {};
+  for (const f of fields) {
+    const sel = (window.CSS && CSS.escape) ? CSS.escape(f.key) : f.key;
+    const el = root.querySelector(`[data-field-key="${sel}"]`);
+    if (!el) continue;
+    let v = f.type === 'checkbox' ? !!el.checked : el.value;
+    if (f.type === 'number') {
+      if (v === '' || v == null) {
+        v = null;
+      } else {
+        const n = Number(v);
+        if (Number.isNaN(n)) { el.focus(); return null; }
+        v = n;
+      }
+    }
+    if (f.required && f.type !== 'checkbox' && (v === '' || v == null)) { el.focus(); return null; }
+    out[f.key] = v;
+  }
+  return out;
+}
+
+// Open a modal built from a plugin action's field specs; prefill from the plugin,
+// then POST the collected values back through the host.
+async function openPluginActionForm(pid, action) {
+  const fields = Array.isArray(action.fields) ? action.fields : [];
+  let values = {};
+  if (action.loadOnOpen !== false) {
+    try { const r = await api.pluginActionLoad(pid, action.id); if (r && r.values) values = r.values; }
+    catch (err) { showToast(I18n.t('plugins.actionLoadFailed', { msg: (err && err.message) || err }), 'err'); }
+  }
+  const prev = document.getElementById('pluginActionModal'); if (prev) prev.remove();
+  const ov = document.createElement('div');
+  ov.id = 'pluginActionModal';
+  ov.className = 'overlay fixed inset-0 bg-black/28 flex items-center justify-center z-[130] backdrop-blur-md';
+  const rows = fields.map((f) => `
+        <label class="field flex flex-col gap-1.25">
+          <span class="field-label text-[11px] font-semibold text-caption uppercase tracking-[0.03em]">${escapeHtml(f.label || f.key)}</span>
+          ${pluginFieldControl(f, values[f.key])}
+          ${f.help ? `<span class="text-[11px] text-caption leading-[1.4]">${escapeHtml(f.help)}</span>` : ''}
+        </label>`).join('');
+  ov.innerHTML = `
+    <div class="sheet w-[460px] max-w-[92vw] bg-bg-elev backdrop-blur-[40px] border border-window-border rounded-2xl shadow-[0_24px_64px_rgba(0,0,0,0.18)] flex flex-col">
+      <header class="flex items-center gap-2 p-[14px_18px] border-b border-border-custom">
+        <h3 class="text-[14px] font-semibold tracking-tight">${escapeHtml(action.label || action.id)}</h3>
+      </header>
+      <div class="p-[18px_20px] flex flex-col gap-3">
+        ${rows}
+        <div class="flex justify-end gap-2 mt-1">
+          <button data-act="cancel" class="btn bg-bg-elev text-muted border border-border-custom rounded-md px-3 py-2 font-medium text-[12px] leading-none cursor-pointer hover:bg-chip-bg hover:text-fg">${escapeHtml(I18n.t('plugins.cancel'))}</button>
+          <button data-act="submit" class="btn bg-brand text-white border-none rounded-md px-3.5 py-2 font-semibold text-[12px] leading-none cursor-pointer hover:opacity-90 active:scale-[0.985]">${escapeHtml(action.submitLabel || I18n.t('plugins.save'))}</button>
+        </div>
+      </div>
+    </div>`;
+  document.body.appendChild(ov);
+  const close = () => ov.remove();
+  ov.addEventListener('click', (e) => { if (e.target === ov) close(); });
+  ov.querySelector('[data-act="cancel"]').addEventListener('click', close);
+  ov.querySelector('[data-act="submit"]').addEventListener('click', async () => {
+    const vals = collectPluginFormValues(ov, fields);
+    if (vals == null) return;
+    const submitBtn = ov.querySelector('[data-act="submit"]');
+    submitBtn.disabled = true;
+    try {
+      const r = await api.pluginAction(pid, action.id, vals);
+      showToast((r && r.message) || I18n.t('plugins.actionDone'), 'ok');
+      close();
+      await loadPlugins();
+    } catch (err) {
+      submitBtn.disabled = false;
+      showToast(I18n.t('plugins.actionFailed', { msg: (err && err.message) || err }), 'err');
+    }
+  });
+}
+
 function renderMonitor() {
   $('mStatusText').textContent = status.connected ? I18n.t('status.connected') : status.running ? I18n.t('status.running') : I18n.t('status.disconnected');
   const dot = $('mStatus').querySelector('.pulse-dot, .live-dot');
@@ -1006,6 +1328,7 @@ function switchView(view) {
   // Smooth fade between views
   const viewIds = {
     providers: 'view-providers',
+    plugins: 'view-plugins',
     monitor: 'view-monitor',
     conversations: 'view-conversations',
     settings: 'view-settings',
@@ -1043,6 +1366,7 @@ function switchView(view) {
     }
 
     if (view === 'conversations' && window.ccbudConversations) window.ccbudConversations.onShow();
+    if (view === 'plugins') loadPlugins();
     if (view === 'monitor') refreshGatewayLog();
     if (view === 'settings') startDesktopPoll(); else stopDesktopPoll();
     // Lock the window to a fixed, non-resizable size on Settings; restore it elsewhere.
@@ -1320,7 +1644,7 @@ function bind() {
     if (card.dataset.id === config.activeProviderId) return; // already active — nothing to switch
     // While the gateway is running, switching is easy to mis-trigger and would re-point every new
     // Claude Code session — so confirm first.
-    if (status.connected) {
+    if (status.running) {
       const p = config.providers.find((pp) => pp.id === card.dataset.id);
       const ok = await confirmDialog({
         title: I18n.t('switch.confirmTitle', { name: p ? p.name : '' }),
@@ -1329,7 +1653,13 @@ function bind() {
       });
       if (!ok) return;
     }
-    config = await api.setActive(card.dataset.id);
+    try {
+      config = await api.setActive(card.dataset.id);
+    } catch (err) {
+      const msg = (err && err.message) || String(err);
+      showToast(msg.includes('pluginNotRunning') ? I18n.t('providers.pluginOff') : msg, 'err');
+      return;
+    }
     renderAll();
   });
   wireDrag();

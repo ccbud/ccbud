@@ -39,6 +39,18 @@
     setActive: (id) => inv('provider_set_active', { id }),
     testProvider: (p) => inv('provider_test', { p }),
 
+    pluginList: () => inv('plugin_list'),
+    pluginStatus: (id) => inv('plugin_status', { id }),
+    pluginSetEnabled: (id, enabled) => inv('plugin_set_enabled', { id, enabled }),
+    pluginAction: (id, action, values) => inv('plugin_action', { id, action, values: values || {} }),
+    pluginActionLoad: (id, action) => inv('plugin_action_load', { id, action }),
+    pluginInstall: (title) => inv('plugin_install', { title }),
+    pluginUninstall: (id) => inv('plugin_uninstall', { id }),
+    pluginOpenDir: () => inv('plugin_open_dir'),
+    pluginInstallGit: (url) => inv('plugin_install_git', { url }),
+    pluginCheckUpdate: (id) => inv('plugin_check_update', { id }),
+    pluginUpdate: (id) => inv('plugin_update', { id }),
+
     connect: () => inv('claude_connect'),
     disconnect: () => inv('claude_disconnect'),
     setConnectTarget: (target, on) => inv('set_connect_target', { target, on }),

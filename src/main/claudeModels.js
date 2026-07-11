@@ -11,11 +11,14 @@
  * model and drive the gateway with zero per-user setup — the actual upstream is the user's provider.
  *
  * Version numbers are cosmetic here: ccbud never forwards these names to Anthropic; it routes by tier.
+ * Keep this list in sync with gateway.rs CLAUDE_TIER_MODELS.
  */
 const CLAUDE_TIER_MODELS = [
-  { name: 'claude-opus-4-6', tier: 'opus' },
-  { name: 'claude-sonnet-4-6', tier: 'sonnet', familyDefault: true },
+  { name: 'claude-fable-5', tier: 'opus' },
+  { name: 'claude-opus-4-8', tier: 'opus' },
+  { name: 'claude-sonnet-5', tier: 'sonnet', familyDefault: true },
   { name: 'claude-haiku-4-5', tier: 'haiku' },
+  { name: 'claude-haiku-4-5-20251001', tier: 'haiku' },
 ];
 
 module.exports = { CLAUDE_TIER_MODELS };
