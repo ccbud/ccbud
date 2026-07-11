@@ -1622,7 +1622,7 @@ function bind() {
     if (card.dataset.id === config.activeProviderId) return; // already active — nothing to switch
     // While the gateway is running, switching is easy to mis-trigger and would re-point every new
     // Claude Code session — so confirm first.
-    if (status.connected) {
+    if (status.running) {
       const p = config.providers.find((pp) => pp.id === card.dataset.id);
       const ok = await confirmDialog({
         title: I18n.t('switch.confirmTitle', { name: p ? p.name : '' }),
