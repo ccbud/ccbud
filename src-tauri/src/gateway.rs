@@ -24,22 +24,54 @@ use tokio::sync::{oneshot, Mutex};
 
 use crate::store;
 
-/// Standard Claude tier names ccbud advertises to clients (claudeModels.js).
+/// Default Claude tier models ccbud advertises to Claude-family clients (Claude Code,
+/// Claude Desktop). Second field is the Claude Desktop `anthropicFamilyTier` keyword.
 pub const CLAUDE_TIER_MODELS: &[(&str, &str)] = &[
-    ("claude-opus-4-6", "opus"),
-    ("claude-sonnet-4-6", "sonnet"),
+    ("claude-fable-5", "opus"),
+    ("claude-opus-4-8", "opus"),
+    ("claude-sonnet-5", "sonnet"),
     ("claude-haiku-4-5", "haiku"),
+    ("claude-haiku-4-5-20251001", "haiku"),
 ];
 
-fn looks_small(name: &str) -> bool {
-    let n = name.to_ascii_lowercase();
-    ["haiku", "small", "fast", "mini", "air", "flash", "lite", "nano", "tiny", "turbo"]
-        .iter()
-        .any(|k| n.contains(k))
+/// Default models ccbud advertises to Codex/OpenAI-family clients. `-sol`/`-terra`
+/// are the primary tier; the rest (e.g. `-luna`) are the fast tier — see model_family.
+pub const CODEX_TIER_MODELS: &[&str] = &["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"];
+
+/// Which coding-agent family a model name belongs to. Claude Code sends `claude-*`,
+/// Codex sends `gpt-*`; each names its primary vs fast tier differently.
+enum ModelFamily {
+    Claude,
+    Codex,
+    Other,
 }
-fn is_claude_default(name: &str) -> bool {
+fn model_family(name: &str) -> ModelFamily {
     let n = name.to_ascii_lowercase();
-    n.starts_with("claude-") || n.starts_with("claude_")
+    if n.starts_with("claude-") || n.starts_with("claude_") {
+        ModelFamily::Claude
+    } else if n.starts_with("gpt-") || n.starts_with("gpt_") {
+        ModelFamily::Codex
+    } else {
+        ModelFamily::Other
+    }
+}
+/// Claude fast/light tier = the haiku models; fable/opus/sonnet (and any other
+/// claude-*) route to the primary model.
+fn is_claude_fast(name: &str) -> bool {
+    name.to_ascii_lowercase().contains("haiku")
+}
+/// Codex primary tier = `gpt-<ver>-sol` / `gpt-<ver>-terra` (trailing segment). Every
+/// other gpt-* (e.g. `-luna`, `-mini`) routes to the fast model.
+fn is_codex_primary(name: &str) -> bool {
+    let n = name.to_ascii_lowercase();
+    let last = n.rsplit('-').next().unwrap_or("");
+    last == "sol" || last == "terra"
+}
+/// True if the request comes from a Codex/OpenAI-family client (vs Claude), detected by
+/// the client's self-reported identity — User-Agent, or Codex's `originator` header.
+fn client_is_codex(h: &HeaderMap) -> bool {
+    let field = |k: &str| h.get(k).and_then(|v| v.to_str().ok()).unwrap_or("").to_ascii_lowercase();
+    field("user-agent").contains("codex") || field("originator").contains("codex")
 }
 
 #[derive(Debug, Clone)]
@@ -139,10 +171,13 @@ pub fn resolve_routing(
     }
     let big = if !primary.is_empty() { primary } else { light };
     let small = if !light.is_empty() { light } else { primary };
-    let target = if is_claude_default(requested) {
-        if looks_small(requested) { small } else { big }
-    } else {
-        small
+    // Claude and Codex name their primary vs fast tiers differently, so classify by
+    // family: claude-haiku* → fast, other claude-* → primary; gpt-*-sol / gpt-*-terra
+    // → primary, other gpt-* → fast; anything else → fast.
+    let target = match model_family(requested) {
+        ModelFamily::Claude => if is_claude_fast(requested) { small } else { big },
+        ModelFamily::Codex => if is_codex_primary(requested) { big } else { small },
+        ModelFamily::Other => small,
     };
     if !target.is_empty() {
         return Some(Routing {
@@ -571,17 +606,23 @@ fn alias_entries(config: &Value) -> Vec<Value> {
     }
     out
 }
-fn claude_tier_entries() -> Vec<Value> {
-    CLAUDE_TIER_MODELS.iter().map(|(n, _)| model_entry(n)).collect()
+/// Default tier models for the requesting client's family (Codex → gpt tiers,
+/// Claude → claude tiers).
+fn tier_entries(is_codex: bool) -> Vec<Value> {
+    if is_codex {
+        CODEX_TIER_MODELS.iter().map(|n| model_entry(n)).collect()
+    } else {
+        CLAUDE_TIER_MODELS.iter().map(|(n, _)| model_entry(n)).collect()
+    }
 }
-fn merge_models(upstream: &Value, config: &Value) -> Value {
+fn merge_models(upstream: &Value, config: &Value, is_codex: bool) -> Value {
     let data = upstream.get("data").and_then(|d| d.as_array()).cloned().unwrap_or_default();
     let mut have: HashSet<String> = data
         .iter()
         .filter_map(|m| m.get("id").and_then(|v| v.as_str()).map(|s| s.to_string()))
         .collect();
     let mut adds = vec![];
-    for a in alias_entries(config).into_iter().chain(claude_tier_entries()) {
+    for a in alias_entries(config).into_iter().chain(tier_entries(is_codex)) {
         let id = a.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
         if have.insert(id) {
             adds.push(a);
@@ -592,7 +633,7 @@ fn merge_models(upstream: &Value, config: &Value) -> Value {
     merged["data"] = json!(adds);
     merged
 }
-fn synthesize_models(config: &Value) -> Value {
+fn synthesize_models(config: &Value, is_codex: bool) -> Value {
     let mut out = alias_entries(config);
     if out.is_empty() {
         let ps = config.get("providers").and_then(|v| v.as_array()).cloned().unwrap_or_default();
@@ -616,7 +657,7 @@ fn synthesize_models(config: &Value) -> Value {
         .iter()
         .filter_map(|m| m.get("id").and_then(|v| v.as_str()).map(|s| s.to_string()))
         .collect();
-    for e in claude_tier_entries() {
+    for e in tier_entries(is_codex) {
         let id = e.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
         if have.insert(id) {
             out.push(e);
@@ -763,6 +804,9 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
         None => return error_response(StatusCode::BAD_GATEWAY, "ccbud: invalid provider baseUrl", "api_error"),
     };
     let is_models_list = method == Method::GET && (req_path.ends_with("/v1/models") || req_path.ends_with("/v1/models/"));
+    // Codex and Claude clients both GET /v1/models — tell them apart by client identity
+    // so each gets its own family's default model list.
+    let client_codex = client_is_codex(&in_headers);
     let is_head_root = method == Method::HEAD && req_path == "/";
     let is_count_tokens = method == Method::POST
         && (req_path.ends_with("/v1/messages/count_tokens") || req_path.ends_with("/v1/messages/count_tokens/"));
@@ -891,7 +935,7 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
             Err(e) => {
                 if is_models_list {
                     st.emit_request(ex_id, started, &method, &req_path, &provider_name, &routing, 200, None);
-                    return json_response(StatusCode::OK, &synthesize_models(&config));
+                    return json_response(StatusCode::OK, &synthesize_models(&config, client_codex));
                 }
                 if is_count_tokens {
                     let est = crate::counttokens::estimate_input_tokens(parsed.as_ref().unwrap_or(&Value::Null));
@@ -1161,11 +1205,11 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
                             st.known.lock().await.insert(pid.clone(), ids);
                         }
                     }
-                    merged = Some(merge_models(&o, &config));
+                    merged = Some(merge_models(&o, &config, client_codex));
                 }
             }
         }
-        let result = merged.unwrap_or_else(|| synthesize_models(&config));
+        let result = merged.unwrap_or_else(|| synthesize_models(&config, client_codex));
         let rbody = serde_json::to_vec(&result).unwrap_or_default();
         st.emit_request(ex_id, started, &method, &req_path, &provider_name, &routing, 200, None);
         st.record_exchange(json!({
@@ -1684,9 +1728,34 @@ mod tests {
     #[test]
     fn synthesize_models_includes_claude_tiers() {
         let cfg = json!({ "providers": [{ "id": "p", "defaultModel": "m", "smallFastModel": "m" }], "activeProviderId": "p" });
-        let s = synthesize_models(&cfg);
+        let s = synthesize_models(&cfg, false);
         let ids: Vec<&str> = s["data"].as_array().unwrap().iter().filter_map(|m| m["id"].as_str()).collect();
-        assert!(ids.contains(&"claude-sonnet-4-6"));
+        assert!(ids.contains(&"claude-sonnet-5"));
+        assert!(ids.contains(&"claude-fable-5"));
+        assert!(!ids.iter().any(|id| id.starts_with("gpt-")));
+    }
+    #[test]
+    fn synthesize_models_codex_returns_gpt_tiers() {
+        let cfg = json!({ "providers": [{ "id": "p", "defaultModel": "m", "smallFastModel": "m" }], "activeProviderId": "p" });
+        let s = synthesize_models(&cfg, true);
+        let ids: Vec<&str> = s["data"].as_array().unwrap().iter().filter_map(|m| m["id"].as_str()).collect();
+        assert!(ids.contains(&"gpt-5.6-sol"));
+        assert!(ids.contains(&"gpt-5.6-luna"));
+        assert!(!ids.iter().any(|id| id.starts_with("claude-")));
+    }
+    #[test]
+    fn routing_classifies_by_family() {
+        let cfg = json!({ "providers": [{ "id": "p", "baseUrl": "http://127.0.0.1:1", "authToken": "k",
+            "defaultModel": "big", "smallFastModel": "small", "mapDefaultModels": true, "models": [] }], "activeProviderId": "p" });
+        let out = |r: Option<Routing>| r.and_then(|x| x.outgoing_model);
+        // Claude: haiku → fast, fable/opus/sonnet → primary.
+        assert_eq!(out(resolve_routing(Some("claude-haiku-4-5"), &cfg, None)).as_deref(), Some("small"));
+        assert_eq!(out(resolve_routing(Some("claude-fable-5"), &cfg, None)).as_deref(), Some("big"));
+        assert_eq!(out(resolve_routing(Some("claude-opus-4-8"), &cfg, None)).as_deref(), Some("big"));
+        // Codex: -sol/-terra → primary, -luna (and others) → fast.
+        assert_eq!(out(resolve_routing(Some("gpt-5.6-sol"), &cfg, None)).as_deref(), Some("big"));
+        assert_eq!(out(resolve_routing(Some("gpt-5.6-terra"), &cfg, None)).as_deref(), Some("big"));
+        assert_eq!(out(resolve_routing(Some("gpt-5.6-luna"), &cfg, None)).as_deref(), Some("small"));
     }
     #[test]
     fn retry_delay_honors_seconds_and_backoff() {

@@ -1380,7 +1380,7 @@ fn selfcheck_desktop() -> Value {
     json!({
         "hasBaseUrl": p.contains("http://localhost:18799"),
         "hasProvider": p.contains("inferenceProvider") && p.contains("gateway"),
-        "hasModels": p.contains("claude-sonnet-4-6") && p.contains("anthropicFamilyTier") && p.contains("isFamilyDefault"),
+        "hasModels": p.contains("claude-sonnet-5") && p.contains("anthropicFamilyTier") && p.contains("isFamilyDefault"),
         "hasBundleId": p.contains("com.anthropic.claudefordesktop"),
         "validXml": p.starts_with("<?xml") && p.contains("</plist>"),
     })
