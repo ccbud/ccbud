@@ -513,7 +513,7 @@ function renderPlugins(plugins) {
       <div class="min-w-0">
         <div class="flex items-center gap-1.5 font-semibold text-[14.5px] tracking-tight text-fg">${escapeHtml(p.name || p.id)} <span class="text-[10.5px] font-mono text-caption font-normal">v${escapeHtml(p.version || '')}</span>${p.official ? ' <span class="text-[10px] font-semibold text-brand bg-brand-soft rounded-full px-1.5 py-0.25 shrink-0" title="' + escapeHtml(I18n.t('plugins.trusted')) + '">' + escapeHtml(I18n.t('plugins.trusted')) + '</span>' : ''}<span data-update-slot="${escapeHtml(p.id)}"></span> <span class="proto-badge proto-badge-xlate">${escapeHtml(p.protocol || '')}</span></div>
         <div class="mt-0.5 text-xs text-caption truncate">${escapeHtml(p.description || '')}</div>
-        <div class="mt-1 flex items-center gap-1.5 text-[11.5px] ${authColor}">${dot}<span>${running ? escapeHtml(I18n.t('plugins.running')) : escapeHtml(I18n.t('plugins.stopped'))} · ${escapeHtml(authLabel)}</span></div>
+        <div class="mt-1 flex items-center gap-1.5 text-[11.5px] ${authColor}" data-plugin-status="${escapeHtml(p.id)}">${dot}<span>${running ? escapeHtml(I18n.t('plugins.running')) : escapeHtml(I18n.t('plugins.stopped'))} · ${escapeHtml(authLabel)}</span></div>
       </div>
       <div class="flex items-center gap-1.5 shrink-0">${actionBtns}${loginBtn}${logoutBtn}${toggleBtn}${delBtn}</div>`;
     list.appendChild(el);
@@ -532,7 +532,12 @@ async function onPluginAction(e) {
   btn.disabled = true;
   try {
     if (toggle) {
-      await api.pluginSetEnabled(toggle.dataset.pluginToggle, toggle.dataset.enabled !== '1');
+      const enabling = toggle.dataset.enabled !== '1';
+      // Starting a sidecar spawns a process and health-gates it (can take a
+      // beat), so give the button an immediate spinner + "Starting…".
+      if (enabling) setPluginBtnBusy(toggle, I18n.t('plugins.starting'));
+      markPluginCardBusy(toggle);
+      await api.pluginSetEnabled(toggle.dataset.pluginToggle, enabling);
       config = await api.getConfig();   // enabling adds a provider, disabling removes it
       renderProviders();
     } else if (login) {
@@ -576,6 +581,27 @@ function showPluginBusy(text) {
   ov.style.display = 'flex';
 }
 function hidePluginBusy() { const ov = document.getElementById('pluginBusy'); if (ov) ov.style.display = 'none'; }
+
+// Small inline spinner used for per-button loading (enable/start).
+function pluginSpinner() {
+  return '<span class="animate-spin inline-block w-3 h-3 rounded-full border-[1.5px] border-current border-t-transparent align-[-2px]"></span>';
+}
+// Turn a button into a busy state: spinner + text, disabled. Reset happens on the
+// next renderPlugins() (loadPlugins re-renders the whole list from fresh status).
+function setPluginBtnBusy(btn, text) {
+  if (!btn) return;
+  btn.disabled = true;
+  btn.innerHTML = `<span class="inline-flex items-center gap-1.25">${pluginSpinner()}${escapeHtml(text || '')}</span>`;
+}
+// Dim the card and swap its status line to a "starting" spinner while the sidecar
+// spins up, so the whole row reads as in-progress (not just the button).
+function markPluginCardBusy(btn) {
+  const card = btn && btn.closest('.plugin');
+  if (!card) return;
+  card.classList.add('opacity-60', 'pointer-events-none');
+  const line = card.querySelector('[data-plugin-status]');
+  if (line) line.innerHTML = `${pluginSpinner()}<span>${escapeHtml(I18n.t('plugins.starting'))}</span>`;
+}
 
 // ---- plugin-declared actions: buttons/forms whose shape comes from the manifest ----
 async function runPluginDeclaredAction(btn) {

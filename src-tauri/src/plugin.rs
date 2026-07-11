@@ -388,8 +388,14 @@ impl PluginManager {
     async fn wait_ready(&self, port: u16, health_path: &str, timeout_ms: u64) -> bool {
         let url = format!("http://127.0.0.1:{}{}", port, health_path);
         let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+        // Ramp the poll interval: a local sidecar usually starts in well under a
+        // second, so probe aggressively at first (catch "ready" the instant it
+        // happens) and back off toward 150ms to keep the tail cheap. Connection-
+        // refused before the server binds returns immediately, so early probes
+        // don't stall.
+        let mut delay = Duration::from_millis(20);
         loop {
-            if let Ok(r) = self.client.get(&url).timeout(Duration::from_secs(2)).send().await {
+            if let Ok(r) = self.client.get(&url).timeout(Duration::from_millis(1500)).send().await {
                 if r.status().is_success() {
                     return true;
                 }
@@ -397,7 +403,8 @@ impl PluginManager {
             if Instant::now() >= deadline {
                 return false;
             }
-            tokio::time::sleep(Duration::from_millis(200)).await;
+            tokio::time::sleep(delay).await;
+            delay = (delay * 2).min(Duration::from_millis(150));
         }
     }
 
