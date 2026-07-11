@@ -55,6 +55,10 @@ pub struct Manifest {
     pub source_branch: String,
     /// source.build — shell command run in the clone to produce the binary.
     pub source_build: String,
+    /// ui.actions — plugin-declared buttons/forms. Raw objects: the renderer draws
+    /// them (label/kind/fields/url), the host reads submitPath/loadPath to forward
+    /// a click to the plugin's control plane. See docs/plugin-system.md.
+    pub actions: Vec<Value>,
 }
 
 impl Manifest {
@@ -102,6 +106,19 @@ impl Manifest {
             .and_then(|x| x.as_u64())
             .unwrap_or(8000);
 
+        // ui.actions: keep only well-formed objects that carry an id.
+        let actions = v
+            .get("ui")
+            .and_then(|u| u.get("actions"))
+            .and_then(|a| a.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter(|x| x.get("id").and_then(|i| i.as_str()).map(|s| !s.is_empty()).unwrap_or(false))
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default();
+
         Some(Manifest {
             dir,
             id,
@@ -127,7 +144,51 @@ impl Manifest {
                 if b.trim().is_empty() { "main".to_string() } else { b }
             },
             source_build: s(&["source", "build"], ""),
+            actions,
         })
+    }
+
+    /// Find a declared action by id.
+    fn action(&self, action_id: &str) -> Option<&Value> {
+        self.actions
+            .iter()
+            .find(|a| a.get("id").and_then(|x| x.as_str()) == Some(action_id))
+    }
+
+    /// Resolve (submitPath, loadPath) for an action, applying defaults.
+    /// submitPath defaults to `/v1/plugin/action/<id>`; loadPath defaults to submitPath.
+    fn action_paths(&self, action_id: &str) -> Option<(String, String)> {
+        let a = self.action(action_id)?;
+        let default_submit = format!("/v1/plugin/action/{}", action_id);
+        let submit = a
+            .get("submitPath")
+            .or_else(|| a.get("path"))
+            .and_then(|x| x.as_str())
+            .unwrap_or(default_submit.as_str())
+            .to_string();
+        let load = a
+            .get("loadPath")
+            .and_then(|x| x.as_str())
+            .unwrap_or(submit.as_str())
+            .to_string();
+        Some((submit, load))
+    }
+
+    /// Actions as sent to the renderer: host-internal wiring (submitPath/loadPath/
+    /// path) stripped, display fields (label/kind/url/fields/…) kept.
+    fn public_actions(&self) -> Vec<Value> {
+        self.actions
+            .iter()
+            .map(|a| {
+                let mut o = a.clone();
+                if let Some(m) = o.as_object_mut() {
+                    m.remove("submitPath");
+                    m.remove("loadPath");
+                    m.remove("path");
+                }
+                o
+            })
+            .collect()
     }
 
     /// Absolute path to the executable for the current platform, if declared.
@@ -409,6 +470,7 @@ impl PluginManager {
             "providerId": provider_id(id),
             "running": running,
             "auth": auth,
+            "actions": man.as_ref().map(|m| m.public_actions()).unwrap_or_default(),
         })
     }
 
@@ -444,6 +506,51 @@ impl PluginManager {
         let r = self
             .client
             .post(&url)
+            .timeout(Duration::from_secs(10))
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
+        r.json::<Value>().await.map_err(|e| e.to_string())
+    }
+
+    /// Run a declarative UI action: POST the form `values` to the action's control
+    /// plane endpoint and return the plugin's JSON response ({ ok, message }). A
+    /// non-2xx status surfaces the plugin's `message` as an error to the UI.
+    pub async fn action(&self, id: &str, action_id: &str, values: Value) -> Result<Value, String> {
+        let man = self.manifest(id).ok_or("plugin not found")?;
+        let (submit, _) = man.action_paths(action_id).ok_or("action not found")?;
+        let port = self.running_port(id).ok_or("plugin not running")?;
+        let url = format!("http://127.0.0.1:{}{}", port, submit);
+        let r = self
+            .client
+            .post(&url)
+            .json(&values)
+            .timeout(Duration::from_secs(30))
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
+        let ok = r.status().is_success();
+        let body = r.json::<Value>().await.unwrap_or_else(|_| json!({}));
+        if !ok {
+            let msg = body
+                .get("message")
+                .and_then(|x| x.as_str())
+                .unwrap_or("plugin returned an error");
+            return Err(msg.to_string());
+        }
+        Ok(body)
+    }
+
+    /// Fetch current values to prefill a declarative form (GET the action's
+    /// loadPath). Returns the plugin's JSON, typically `{ values: { ... } }`.
+    pub async fn action_load(&self, id: &str, action_id: &str) -> Result<Value, String> {
+        let man = self.manifest(id).ok_or("plugin not found")?;
+        let (_, load) = man.action_paths(action_id).ok_or("action not found")?;
+        let port = self.running_port(id).ok_or("plugin not running")?;
+        let url = format!("http://127.0.0.1:{}{}", port, load);
+        let r = self
+            .client
+            .get(&url)
             .timeout(Duration::from_secs(10))
             .send()
             .await

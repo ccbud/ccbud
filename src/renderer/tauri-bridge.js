@@ -44,6 +44,8 @@
     pluginSetEnabled: (id, enabled) => inv('plugin_set_enabled', { id, enabled }),
     pluginAuthLogin: (id) => inv('plugin_auth_login', { id }),
     pluginAuthLogout: (id) => inv('plugin_auth_logout', { id }),
+    pluginAction: (id, action, values) => inv('plugin_action', { id, action, values: values || {} }),
+    pluginActionLoad: (id, action) => inv('plugin_action_load', { id, action }),
     pluginInstall: () => inv('plugin_install'),
     pluginUninstall: (id) => inv('plugin_uninstall', { id }),
     pluginOpenDir: () => inv('plugin_open_dir'),

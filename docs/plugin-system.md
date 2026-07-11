@@ -210,9 +210,11 @@ let base_url = if provider["backend"] == "plugin" {
 | `plugin_auth_login` | 转发 `/v1/plugin/auth/login`；拿到 `auth_url` 用 Tauri opener 开浏览器 |
 | `plugin_auth_poll` | 转发 `/v1/plugin/auth/login/{session}` |
 | `plugin_auth_logout` | 转发 `/v1/plugin/auth/logout` |
+| `plugin_action` | 运行声明式动作：把表单 `values` 转发到动作的控制面端点（见 §9） |
+| `plugin_action_load` | 预填声明式表单：GET 动作的 `loadPath` 拿当前值 |
 
 前端 `src/renderer/tauri-bridge.js`（L33–102 的 `window.ccbud` 桥）加对应方法，
-`renderer.js` 加一个"插件"面板（复用 provider 卡片 UI）。
+`renderer.js` 加一个"插件"面板（复用 provider 卡片 UI），并按 §9 通用渲染插件声明的按钮/表单。
 
 ---
 
@@ -295,6 +297,86 @@ api:access`），推理走官方 `https://api.x.ai/v1/responses`（OpenAI Respon
 **没有 cookie、没有反爬签名**，唯一门槛是合法的 OAuth Bearer。第一个插件据此用纯标准库
 Go 独立实现（零第三方依赖），并进一步支持**直接读取本机 `~/.grok/auth.json`**——比
 CLIProxyAPI"自己走一遍 OAuth"更贴合桌面端"复用本机登录态"的诉求。
+
+---
+
+## 9. 声明式 UI 与动作（`ui.actions`）
+
+原则：**插件面板里的一切显示都来自"读协议"，一切按钮交互都走协议**。名称、版本、协议
+徽章、模型、运行/登录状态已经全部由 manifest + 控制面提供；`ui.actions` 把**按钮**也纳入
+同一套契约——插件声明自己的按钮，宿主**通用渲染**，点击时把交互**转发回插件控制面**。宿主
+不认识任何具体动作，也不为某个插件写死 UI。
+
+> 典型用途：插件自带一个「设置」按钮，点开是一个表单（如配置端口号 / 超时 / 默认推理档位），
+> 保存后写回插件自己的配置。宿主只负责画表单、收集值、转发，不理解字段含义。
+
+### 9.1 manifest 声明
+
+```jsonc
+{
+  "ui": {
+    "actions": [
+      {
+        "id": "settings",             // 必填，插件内唯一
+        "label": "设置",              // 按钮文案（插件自带多语言由插件负责）
+        "kind": "form",               // "form" | "call" | "link"
+        "requiresRunning": true,      // 默认 true：插件未运行则按钮禁用
+        "submitLabel": "保存",        // form 提交按钮文案（默认走宿主 plugins.save）
+        "submitPath": "/v1/plugin/action/settings",  // 可选，默认 /v1/plugin/action/<id>
+        "loadPath": "/v1/plugin/action/settings",    // 可选，默认同 submitPath
+        "loadOnOpen": true,           // 默认 true：打开表单时 GET loadPath 预填
+        "fields": [
+          { "key": "port", "label": "端口号", "type": "number",
+            "placeholder": "8899", "min": 1, "max": 65535, "required": true,
+            "help": "留空则由宿主自动分配" }
+        ]
+      },
+      { "id": "reset", "label": "重置", "kind": "call",
+        "confirm": "确定重置该插件的本地配置？", "submitPath": "/v1/plugin/action/reset" },
+      { "id": "help", "label": "文档", "kind": "link",
+        "url": "https://github.com/ccbud/cc-bud-grok-build-plugin#readme" }
+    ]
+  }
+}
+```
+
+**动作类型（`kind`）**
+
+| kind | 宿主行为 |
+|---|---|
+| `link` | 直接用系统浏览器打开 `url`，不经过插件（`requiresRunning` 对它无意义）。 |
+| `call` | 直接 `POST submitPath`（body `{}`）；有 `confirm` 则先弹确认。用于"重置/刷新"等无输入动作。 |
+| `form` | 打开由 `fields` 生成的表单；`loadOnOpen` 时先 GET 预填；提交时 `POST submitPath` 表单值。 |
+
+**字段（`fields[]`）** —— `type` 支持 `text`(默认)/`number`/`password`/`textarea`/`select`/
+`checkbox`；通用属性 `key`(必填) `label` `placeholder` `required` `default` `help`；
+`number` 额外支持 `min`/`max`；`select` 用 `options: [{ value, label }]` 或纯字符串数组。
+
+### 9.2 控制面端点（插件实现）
+
+- **`GET loadPath`**（form 预填，可选）→ `200 { "values": { "port": 8899 } }`。
+- **`POST submitPath`**（form/call 提交）body 是表单值对象（call 为 `{}`）→
+  成功 `200 { "ok": true, "message": "已保存，重启插件后生效" }`（`message` 可选，宿主
+  弹 toast；无则用宿主 `plugins.actionDone`）；失败返回非 2xx + `{ "message": "..." }`，
+  宿主把该 `message` 作为错误提示。
+
+宿主侧只认这套线协议：`submitPath`/`loadPath` 属于**宿主内部路由**，`plugin_status` 下发给
+前端的 `actions` 会**剥掉**这两个字段（只保留 `id/label/kind/url/fields/...` 等显示信息），
+前端永远不直接触碰插件端口——所有转发都经 `plugin_action` / `plugin_action_load`。
+
+### 9.3 数据流
+
+```
+插件面板按钮（宿主按 actions 渲染）
+  ├─ kind:link  ──▶ 系统浏览器打开 url
+  ├─ kind:call  ──▶ plugin_action(id, actionId, {})            ──▶ POST submitPath
+  └─ kind:form  ──▶ [loadOnOpen] plugin_action_load ──▶ GET loadPath  预填
+                    提交 ──▶ plugin_action(id, actionId, values) ──▶ POST submitPath
+                    ◀── { ok, message } ── toast
+```
+
+厂商差异、字段校验语义、写盘时机全部封装在插件里；宿主永远只是"画表单 + 转发"，与
+§0 的"运行中的插件 == 一个 localhost provider"一脉相承：**UI 也零厂商耦合**。
 
 ---
 

@@ -278,6 +278,9 @@
   .z-\[120\] {
     z-index: 120;
   }
+  .z-\[130\] {
+    z-index: 130;
+  }
   .z-\[200\] {
     z-index: 200;
   }
@@ -373,6 +376,9 @@
   }
   .ml-0\.5 {
     margin-left: calc(var(--spacing) * 0.5);
+  }
+  .ml-1 {
+    margin-left: var(--spacing);
   }
   .ml-auto {
     margin-left: auto;
@@ -1701,6 +1707,9 @@
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
   }
+  .accent-brand {
+    accent-color: var(--color-brand);
+  }
   .opacity-30 {
     opacity: 30%;
   }
@@ -2457,6 +2466,11 @@
   .disabled\:opacity-40 {
     &:disabled {
       opacity: 40%;
+    }
+  }
+  .disabled\:opacity-45 {
+    &:disabled {
+      opacity: 45%;
     }
   }
   .has-\[\#view-conversations\:not\(\.hidden\)\]\:flex {
