@@ -490,8 +490,6 @@ function renderPlugins(plugins) {
     const dot = `<span class="inline-block w-1.5 h-1.5 rounded-full ${running ? 'bg-green' : 'bg-border-strong'} shrink-0"></span>`;
     const loginBtn = running && st !== 'logged_in'
       ? `<button class="btn btn-sm bg-brand text-white border-none rounded-md px-2.5 py-1.25 font-medium text-[11px] leading-none cursor-pointer hover:opacity-90 active:scale-[0.985]" data-plugin-login="${escapeHtml(p.id)}">${escapeHtml(I18n.t('plugins.login'))}</button>` : '';
-    const logoutBtn = running && st === 'logged_in'
-      ? `<button class="btn btn-sm bg-bg-elev text-muted border border-border-custom rounded-md px-2.5 py-1.25 font-medium text-[11px] leading-none cursor-pointer hover:bg-chip-bg hover:text-fg active:scale-[0.985]" data-plugin-logout="${escapeHtml(p.id)}">${escapeHtml(I18n.t('plugins.logout'))}</button>` : '';
     const toggleBtn = `<button class="btn btn-sm ${running ? 'bg-red-soft text-red border border-red/18' : 'bg-green-soft text-green border border-green/18'} rounded-md px-2.75 py-1.25 font-semibold text-[11px] leading-none cursor-pointer hover:opacity-90 active:scale-[0.985]" data-plugin-toggle="${escapeHtml(p.id)}" data-enabled="${running ? '1' : '0'}">${running ? escapeHtml(I18n.t('plugins.disable')) : escapeHtml(I18n.t('plugins.enable'))}</button>`;
     const delBtn = `<button class="w-6.5 h-6.5 border-0 rounded-[6px] bg-transparent text-muted cursor-pointer flex items-center justify-center transition-all duration-100 hover:bg-red-soft hover:text-red" title="${escapeHtml(I18n.t('plugins.deleteTitle'))}" data-plugin-uninstall="${escapeHtml(p.id)}" data-plugin-name="${escapeHtml(p.name || p.id)}">${I.trash || '⌫'}</button>`;
     // Plugin-declared actions (buttons/forms) — display driven entirely by the manifest.
@@ -515,7 +513,7 @@ function renderPlugins(plugins) {
         <div class="mt-0.5 text-xs text-caption truncate">${escapeHtml(p.description || '')}</div>
         <div class="mt-1 flex items-center gap-1.5 text-[11.5px] ${authColor}" data-plugin-status="${escapeHtml(p.id)}">${dot}<span>${running ? escapeHtml(I18n.t('plugins.running')) : escapeHtml(I18n.t('plugins.stopped'))} · ${escapeHtml(authLabel)}</span></div>
       </div>
-      <div class="flex items-center gap-1.5 shrink-0">${actionBtns}${loginBtn}${logoutBtn}${toggleBtn}${delBtn}</div>`;
+      <div class="flex items-center gap-1.5 shrink-0">${actionBtns}${loginBtn}${toggleBtn}${delBtn}</div>`;
     list.appendChild(el);
   }
 }
@@ -524,10 +522,9 @@ async function onPluginAction(e) {
   if (actionBtn) { await runPluginDeclaredAction(actionBtn); return; }
   const toggle = e.target.closest('[data-plugin-toggle]');
   const login = e.target.closest('[data-plugin-login]');
-  const logout = e.target.closest('[data-plugin-logout]');
   const uninstall = e.target.closest('[data-plugin-uninstall]');
   const update = e.target.closest('[data-plugin-update]');
-  const btn = toggle || login || logout || uninstall || update;
+  const btn = toggle || login || uninstall || update;
   if (!btn) return;
   btn.disabled = true;
   try {
@@ -543,8 +540,6 @@ async function onPluginAction(e) {
     } else if (login) {
       const r = await api.pluginAuthLogin(login.dataset.pluginLogin);
       if (r && r.mode === 'browser') showToast(I18n.t('plugins.loginOpened'), 'ok');
-    } else if (logout) {
-      await api.pluginAuthLogout(logout.dataset.pluginLogout);
     } else if (uninstall) {
       const ok = await confirmDialog({
         title: I18n.t('plugins.deleteTitle'),

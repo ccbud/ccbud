@@ -49,7 +49,6 @@ pub struct Manifest {
     /// Control-plane auth paths.
     pub auth_status_path: String,
     pub auth_login_path: String,
-    pub auth_logout_path: String,
     /// source.git — upstream git repo used for install/update (optional).
     pub source_git: String,
     pub source_branch: String,
@@ -137,7 +136,6 @@ impl Manifest {
             light: s(&["modelMapping", "light"], ""),
             auth_status_path: s(&["auth", "statusPath"], "/v1/plugin/auth"),
             auth_login_path: s(&["auth", "loginPath"], "/v1/plugin/auth/login"),
-            auth_logout_path: s(&["auth", "logoutPath"], "/v1/plugin/auth/logout"),
             source_git: s(&["source", "git"], ""),
             source_branch: {
                 let b = s(&["source", "branch"], "");
@@ -560,21 +558,6 @@ impl PluginManager {
             .client
             .post(&url)
             .timeout(Duration::from_secs(15))
-            .send()
-            .await
-            .map_err(|e| e.to_string())?;
-        r.json::<Value>().await.map_err(|e| e.to_string())
-    }
-
-    /// Forward a logout request to the plugin's control plane.
-    pub async fn auth_logout(&self, id: &str) -> Result<Value, String> {
-        let man = self.manifest(id).ok_or("plugin not found")?;
-        let port = self.running_port(id).ok_or("plugin not running")?;
-        let url = format!("http://127.0.0.1:{}{}", port, man.auth_logout_path);
-        let r = self
-            .client
-            .post(&url)
-            .timeout(Duration::from_secs(10))
             .send()
             .await
             .map_err(|e| e.to_string())?;
