@@ -65,7 +65,7 @@ fn is_claude_fast(name: &str) -> bool {
 /// (e.g. `-luna`, `-mini`) route to the fast model.
 fn is_codex_primary(name: &str) -> bool {
     name.to_ascii_lowercase()
-        .split('-')
+        .split(|c| c == '-' || c == '_')
         .any(|seg| seg == "sol" || seg == "terra")
 }
 /// True if the request comes from a Codex/OpenAI-family client (vs Claude), detected by

@@ -8,7 +8,8 @@
 //
 // Key design choice: a running plugin is surfaced as an ordinary provider whose
 // baseUrl points at the plugin's localhost port. Enabling a plugin upserts a
-// `backend:"plugin"` provider (id = `plugin:<id>`); disabling removes it. The
+// `backend:"plugin"` provider (id = `plugin:<id>`); disabling only stops the process
+// (the service stays, removed on uninstall). The
 // gateway then routes to it with zero plugin-specific code.
 
 use std::collections::HashMap;
@@ -662,6 +663,26 @@ impl PluginManager {
                 return Err("仓库根目录没有有效的 plugin.json".into());
             }
         };
+
+        // The shallow clone above fetched the repo's default branch. If the manifest
+        // pins a different source branch, switch to it so update() installs the code
+        // that check_update() compared against (both use source.branch).
+        let mut man = man;
+        let branch = man.source_branch.trim().to_string();
+        if !branch.is_empty() && branch != "main" {
+            let fetched = Command::new("git")
+                .arg("-C").arg(&tmp)
+                .args(["fetch", "--depth", "1", "origin", &branch])
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false);
+            if fetched {
+                let _ = Command::new("git").arg("-C").arg(&tmp).args(["checkout", "FETCH_HEAD"]).output();
+                if let Some(m) = Manifest::load(tmp.clone()) {
+                    man = m; // re-read from the pinned branch
+                }
+            }
+        }
 
         if !man.source_build.trim().is_empty() {
             let built = Command::new("sh")

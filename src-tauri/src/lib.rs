@@ -194,7 +194,7 @@ async fn plugin_list(pm: PluginState<'_>) -> Result<Value, String> {
 async fn plugin_status(pm: PluginState<'_>, id: String) -> Result<Value, String> {
     Ok(pm.status(&id).await)
 }
-/// Enable (spawn + health-gate + register provider) or disable (stop + unregister) a plugin.
+/// Enable (spawn + health-gate + register provider) or disable (stop the process; the service stays until uninstalled) a plugin.
 #[tauri::command]
 async fn plugin_set_enabled(pm: PluginState<'_>, id: String, enabled: bool) -> Result<Value, String> {
     if enabled {

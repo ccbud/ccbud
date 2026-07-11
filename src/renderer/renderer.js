@@ -640,7 +640,8 @@ function pluginFieldControl(f, val) {
     return `<select data-field-key="${key}" class="${cls}">${opts}</select>`;
   }
   if (f.type === 'checkbox') {
-    return `<input type="checkbox" data-field-key="${key}" ${v ? 'checked' : ''} class="w-4 h-4 accent-brand self-start" />`;
+    const on = v === true || v === 1 || v === '1' || String(v).toLowerCase() === 'true';
+    return `<input type="checkbox" data-field-key="${key}" ${on ? 'checked' : ''} class="w-4 h-4 accent-brand self-start" />`;
   }
   if (f.type === 'textarea') {
     return `<textarea data-field-key="${key}" rows="3" class="${cls}" placeholder="${escapeHtml(f.placeholder || '')}">${escapeHtml(String(v))}</textarea>`;

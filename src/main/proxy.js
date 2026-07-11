@@ -60,7 +60,7 @@ function modelFamily(name) {
 function isClaudeFast(name) { return /haiku/i.test(name || ''); }
 /** Codex primary tier = any gpt-* with a sol/terra segment (gpt-5.6-sol, gpt-5.6-sol-pro); other gpt-* → fast. */
 function isCodexPrimary(name) {
-  return (name || '').toLowerCase().split('-').some((s) => s === 'sol' || s === 'terra');
+  return (name || '').toLowerCase().split(/[-_]/).some((s) => s === 'sol' || s === 'terra');
 }
 /** True if the request is from a Codex/OpenAI-family client — by client identity
  *  (User-Agent, or Codex's `originator` header), not the auth scheme. */
