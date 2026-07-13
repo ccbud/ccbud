@@ -82,6 +82,186 @@ pub struct Routing {
     pub client_facing_model: Option<String>,
 }
 
+// Claude Code rebuilds assistant tool_use history from its known fields and drops provider
+// metadata, so Gemini's signature cannot round-trip through the Anthropic wire. Keep a bounded,
+// session-scoped server-side copy and restore it before the next Google/OpenAI-compatible request.
+const THOUGHT_SIGNATURE_TTL_MS: i64 = 6 * 60 * 60 * 1000;
+const THOUGHT_SIGNATURE_CACHE_MAX: usize = 2048;
+const GEMINI_SIGNATURE_FALLBACK: &str = "skip_thought_signature_validator";
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct CachedToolCall {
+    call_id: String,
+    name: String,
+    arguments: String,
+    signature: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+struct ThoughtSignatureBatch {
+    calls: Vec<CachedToolCall>,
+    touched_at: i64,
+}
+
+#[derive(Default)]
+struct ThoughtSignatureCache {
+    batches: HashMap<(String, String), ThoughtSignatureBatch>,
+}
+
+fn canonical_tool_arguments(arguments: &str) -> String {
+    if arguments.trim().is_empty() {
+        return "{}".to_string();
+    }
+    serde_json::from_str::<Value>(arguments)
+        .map(|v| v.to_string())
+        .unwrap_or_else(|_| arguments.to_string())
+}
+
+fn current_tool_turn_start(request: &llm_connector::types::ChatRequest) -> usize {
+    request.messages.iter()
+        .rposition(|message| message.role == llm_connector::types::Role::User)
+        .map(|index| index + 1)
+        .unwrap_or(0)
+}
+
+impl ThoughtSignatureCache {
+    fn prune(&mut self, now: i64) {
+        self.batches.retain(|_, batch| {
+            now.saturating_sub(batch.touched_at) <= THOUGHT_SIGNATURE_TTL_MS
+        });
+    }
+
+    fn remember(
+        &mut self,
+        provider_id: &str,
+        session_id: Option<&str>,
+        captured_calls: &[crate::protocol::stream::CapturedToolCall],
+    ) {
+        let Some(session_id) = session_id else { return };
+        let now = now_ms();
+        self.prune(now);
+        let calls: Vec<CachedToolCall> = captured_calls.iter().map(|call| CachedToolCall {
+            call_id: call.call_id.clone(),
+            name: call.name.clone(),
+            arguments: canonical_tool_arguments(&call.arguments),
+            signature: call.thought_signature.as_deref()
+                .filter(|signature| !signature.is_empty())
+                .map(str::to_string),
+        }).collect();
+        let key = (provider_id.to_string(), session_id.to_string());
+        if !calls.iter().any(|call| call.signature.is_some()) {
+            if !calls.is_empty() {
+                self.batches.remove(&key);
+            }
+            return;
+        }
+
+        if self.batches.len() >= THOUGHT_SIGNATURE_CACHE_MAX && !self.batches.contains_key(&key) {
+            if let Some(oldest) = self.batches.iter()
+                .min_by_key(|(_, batch)| batch.touched_at)
+                .map(|(key, _)| key.clone())
+            {
+                self.batches.remove(&oldest);
+            }
+        }
+        // Replacing the latest batch also makes terminal/EOF observations idempotent.
+        self.batches.insert(key, ThoughtSignatureBatch {
+            calls,
+            touched_at: now,
+        });
+    }
+
+    fn restore(
+        &mut self,
+        provider_id: &str,
+        session_id: Option<&str>,
+        request: &mut llm_connector::types::ChatRequest,
+    ) -> usize {
+        let Some(session_id) = session_id else { return 0 };
+        let now = now_ms();
+        self.prune(now);
+        let current_turn = current_tool_turn_start(request);
+        let Some(message_index) = request.messages.iter()
+            .enumerate()
+            .skip(current_turn)
+            .rev()
+            .find_map(|(message_index, message)| {
+                message.tool_calls.as_ref()
+                    .filter(|calls| !calls.is_empty())
+                    .map(|_| message_index)
+            })
+            else { return 0 };
+        let Some(calls) = request.messages[message_index].tool_calls.as_mut() else { return 0 };
+        let key = (provider_id.to_string(), session_id.to_string());
+        let Some(batch) = self.batches.get_mut(&key) else { return 0 };
+        if batch.calls.len() != calls.len()
+            || !batch.calls.iter().zip(calls.iter()).all(|(cached, current)| {
+                cached.call_id == current.id
+                    && cached.name == current.function.name
+                    && cached.arguments == canonical_tool_arguments(&current.function.arguments)
+            })
+        {
+            return 0;
+        }
+        batch.touched_at = now;
+        let mut restored = 0usize;
+        for (call, cached) in calls.iter_mut().zip(&batch.calls) {
+            if crate::protocol::tool_call_thought_signature(call).is_none() {
+                if let Some(signature) = &cached.signature {
+                    call.thought_signature = Some(signature.clone());
+                    restored += 1;
+                }
+            }
+        }
+        restored
+    }
+}
+
+/// Google documents this sentinel for function-call history that did not originate from the
+/// current API response (transferred/synthetic history). We use it only when Claude stripped the
+/// real signature and the session cache cannot recover it. For parallel calls, only the first call
+/// in a model step gets a signature, matching Gemini's validation contract.
+fn apply_gemini_signature_fallback(request: &mut llm_connector::types::ChatRequest) -> usize {
+    let mut applied = 0usize;
+    // Gemini validates only the current turn: everything after the most recent ordinary user
+    // message. Tool results decode as Role::Tool, so sequential tool steps remain in this slice.
+    let current_turn = current_tool_turn_start(request);
+    for message in request.messages.iter_mut().skip(current_turn) {
+        let Some(calls) = message.tool_calls.as_mut() else { continue };
+        if calls.is_empty()
+            || crate::protocol::tool_call_thought_signature(&calls[0]).is_some()
+        {
+            continue;
+        }
+        calls[0].thought_signature = Some(GEMINI_SIGNATURE_FALLBACK.to_string());
+        applied += 1;
+    }
+    applied
+}
+
+fn request_session_id(body: &Value) -> Option<String> {
+    let raw = body.pointer("/metadata/user_id")?.as_str()?.trim();
+    let metadata = serde_json::from_str::<Value>(raw).ok()?;
+    metadata.get("session_id").and_then(Value::as_str)
+        .filter(|session| !session.is_empty())
+        .map(str::to_string)
+}
+
+fn response_tool_calls(
+    response: &llm_connector::types::ChatResponse,
+) -> Vec<crate::protocol::stream::CapturedToolCall> {
+    response.choices.first().and_then(|choice| choice.message.tool_calls.as_ref())
+        .map(|calls| calls.iter().map(|call| {
+            crate::protocol::stream::CapturedToolCall {
+                call_id: call.id.clone(),
+                name: call.function.name.clone(),
+                arguments: call.function.arguments.clone(),
+                thought_signature: crate::protocol::tool_call_thought_signature(call),
+            }
+        }).collect())
+        .unwrap_or_default()
+}
+
 /// Decide how to route a request and translate its model name. Mirrors proxy.js `resolveRouting`.
 pub fn resolve_routing(
     requested_model: Option<&str>,
@@ -195,6 +375,7 @@ pub fn resolve_routing(
 pub struct GatewayState {
     app: tauri::AppHandle,
     known: Mutex<HashMap<String, HashSet<String>>>,
+    thought_signatures: Mutex<ThoughtSignatureCache>,
     seq: AtomicU64,
     running: Mutex<Option<RunningServer>>,
     // Sync mirror of the bound port (0 = stopped) for callers that can't await (tray refresh).
@@ -224,6 +405,7 @@ impl GatewayState {
         Arc::new(Self {
             app,
             known: Mutex::new(HashMap::new()),
+            thought_signatures: Mutex::new(ThoughtSignatureCache::default()),
             seq: AtomicU64::new(0),
             running: Mutex::new(None),
             running_port: std::sync::atomic::AtomicU32::new(0),
@@ -849,6 +1031,9 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
     let client_wire = crate::protocol::Wire::from_request_path(&uri);
     let provider_wire =
         crate::protocol::Wire::from_provider(provider.get("protocol").and_then(|v| v.as_str()));
+    let request_session = parsed.as_ref().and_then(request_session_id);
+    let is_gemini_upstream = provider_wire == crate::protocol::Wire::OpenAiChat
+        && routing.outgoing_model.as_deref().unwrap_or("").to_ascii_lowercase().contains("gemini");
     // translate ctx: (client_wire, provider_wire, client_facing_model, client_wanted_stream, incremental)
     // `incremental` = we can transcode the upstream stream event-by-event to the client (true
     // token-by-token). Otherwise we force the upstream buffered and synthesize the client response.
@@ -860,9 +1045,21 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
                 && crate::protocol::can_transcode_stream(provider_wire, client_wire);
             let client_model = routing.client_facing_model.clone().unwrap_or_default();
             let outgoing = routing.outgoing_model.clone().unwrap_or_default();
-            match crate::protocol::decode_client_request(client_wire, p).and_then(|ir| {
-                crate::protocol::encode_upstream_request(provider_wire, &ir, &outgoing, incremental)
-            }) {
+            let translated_body = match crate::protocol::decode_client_request(client_wire, p) {
+                Ok(mut ir) => {
+                    if is_gemini_upstream && client_wire == crate::protocol::Wire::Anthropic {
+                        st.thought_signatures.lock().await.restore(
+                            &routing.provider_id,
+                            request_session.as_deref(),
+                            &mut ir,
+                        );
+                        apply_gemini_signature_fallback(&mut ir);
+                    }
+                    crate::protocol::encode_upstream_request(provider_wire, &ir, &outgoing, incremental)
+                }
+                Err(e) => Err(e),
+            };
+            match translated_body {
                 Ok(mut body) => {
                     // Ask OpenAI-family upstreams to include usage in the final stream chunk.
                     if incremental && provider_wire == crate::protocol::Wire::OpenAiChat {
@@ -1031,6 +1228,10 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
             })
         {
             let st2 = st.clone();
+            let signature_provider_id = routing.provider_id.clone();
+            let signature_session = request_session.clone();
+            let capture_thought_signatures = is_gemini_upstream
+                && client_wire == crate::protocol::Wire::Anthropic;
             let status_code = status.as_u16();
             let ex_id2 = ex_id;
             let started2 = started;
@@ -1070,6 +1271,14 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
                                 let line: String = buf.drain(..=idx).collect();
                                 out.push_str(&tc.push(&line));
                             }
+                            if capture_thought_signatures && tc.done() {
+                                let captured_calls = tc.captured_tool_calls();
+                                st2.thought_signatures.lock().await.remember(
+                                    &signature_provider_id,
+                                    signature_session.as_deref(),
+                                    &captured_calls,
+                                );
+                            }
                             // Keep the guard current BEFORE suspending: once the terminal event is
                             // out, Codex closes the socket and the generator is dropped mid-await.
                             guard.push_res(&out);
@@ -1087,6 +1296,14 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
                 let mut tail = String::new();
                 if !buf.is_empty() { tail.push_str(&tc.push(&buf)); }
                 tail.push_str(&tc.finish());
+                if capture_thought_signatures {
+                    let captured_calls = tc.captured_tool_calls();
+                    st2.thought_signatures.lock().await.remember(
+                        &signature_provider_id,
+                        signature_session.as_deref(),
+                        &captured_calls,
+                    );
+                }
                 if !tail.is_empty() {
                     guard.push_res(&tail);
                     yield Ok(Bytes::from(tail));
@@ -1278,6 +1495,14 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
                 return error_response(StatusCode::BAD_GATEWAY, &format!("ccbud response translation failed: {}", e), "api_error");
             }
         };
+        if is_gemini_upstream && client_wire == crate::protocol::Wire::Anthropic {
+            let captured_calls = response_tool_calls(&ir);
+            st.thought_signatures.lock().await.remember(
+                &routing.provider_id,
+                request_session.as_deref(),
+                &captured_calls,
+            );
+        }
         let mut usage = UsageAcc::default();
         if let Some(u) = ir.usage.as_ref() {
             usage.input = u.prompt_tokens as i64;
@@ -1809,5 +2034,62 @@ mod tests {
         assert_eq!(retry_delay(Some("Wed, 21 Oct 2015 07:28:00 GMT"), 3, 500), 0);
         // Unparseable Retry-After → exponential backoff (base * 2^attempt).
         assert_eq!(retry_delay(Some("soon"), 2, 500), 2000);
+    }
+    #[test]
+    fn extracts_claude_session_id_from_metadata() {
+        let nested = json!({ "metadata": { "user_id": "{\"session_id\":\"session-123\",\"account_id\":\"a\"}" } });
+        assert_eq!(request_session_id(&nested).as_deref(), Some("session-123"));
+        assert!(request_session_id(&json!({ "metadata": { "user_id": "user-123" } })).is_none());
+    }
+    #[test]
+    fn restores_latest_batch_and_falls_back_for_prior_steps() {
+        let call = |id: &str, name: &str, arguments: &str, signature: Option<&str>| {
+            crate::protocol::stream::CapturedToolCall {
+                call_id: id.to_string(),
+                name: name.to_string(),
+                arguments: arguments.to_string(),
+                thought_signature: signature.map(str::to_string),
+            }
+        };
+        let mut cache = ThoughtSignatureCache::default();
+        cache.remember("google", Some("session-1"), &[
+            call("default_api:Bash", "default_api:Bash", "{\"command\":\"pwd\"}", Some("sig-old")),
+        ]);
+        cache.remember("google", Some("session-1"), &[
+            call("call_paris", "weather", "{ \"city\": \"Paris\" }", Some("sig-latest")),
+            call("call_london", "weather", "{\"city\":\"London\"}", None),
+        ]);
+        let claude = json!({
+            "model": "claude-sonnet-5", "max_tokens": 1024,
+            "messages": [
+                { "role": "user", "content": "Run pwd, then check Paris and London" },
+                { "role": "assistant", "content": [{
+                    "type": "tool_use", "id": "default_api:Bash", "name": "default_api:Bash",
+                    "input": { "command": "pwd" }
+                }] },
+                { "role": "user", "content": [{
+                    "type": "tool_result", "tool_use_id": "default_api:Bash", "content": "/tmp"
+                }] },
+                { "role": "assistant", "content": [
+                    { "type": "tool_use", "id": "call_paris", "name": "weather",
+                        "input": { "city": "Paris" } },
+                    { "type": "tool_use", "id": "call_london", "name": "weather",
+                        "input": { "city": "London" } }
+                ] },
+                { "role": "user", "content": [
+                    { "type": "tool_result", "tool_use_id": "call_paris", "content": "15C" },
+                    { "type": "tool_result", "tool_use_id": "call_london", "content": "12C" }
+                ] }
+            ]
+        });
+        let mut ir = crate::protocol::decode_client_request(crate::protocol::Wire::Anthropic, &claude).unwrap();
+        assert_eq!(cache.restore("google", Some("session-1"), &mut ir), 1);
+        assert_eq!(apply_gemini_signature_fallback(&mut ir), 1);
+        let steps: Vec<_> = ir.messages.iter().filter_map(|message| message.tool_calls.as_ref()).collect();
+        assert_eq!(crate::protocol::tool_call_thought_signature(&steps[0][0]).as_deref(),
+            Some(GEMINI_SIGNATURE_FALLBACK));
+        assert_eq!(crate::protocol::tool_call_thought_signature(&steps[1][0]).as_deref(),
+            Some("sig-latest"));
+        assert!(crate::protocol::tool_call_thought_signature(&steps[1][1]).is_none());
     }
 }

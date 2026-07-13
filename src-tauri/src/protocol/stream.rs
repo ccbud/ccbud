@@ -8,6 +8,14 @@
 use super::Wire;
 use serde_json::{json, Value};
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CapturedToolCall {
+    pub call_id: String,
+    pub name: String,
+    pub arguments: String,
+    pub thought_signature: Option<String>,
+}
+
 fn ev(event: &str, data: Value) -> String {
     format!("event: {}\ndata: {}\n\n", event, serde_json::to_string(&data).unwrap_or_default())
 }
@@ -74,6 +82,13 @@ impl Transcoder {
         }
     }
 
+    pub fn captured_tool_calls(&self) -> Vec<CapturedToolCall> {
+        match self {
+            Self::ChatToAnthropic(t) => t.captured_tool_calls(),
+            _ => vec![],
+        }
+    }
+
     /// True once the terminal client event (`message_stop` / `response.completed` /
     /// `response.failed`) has been emitted: the turn is semantically complete even though the
     /// upstream socket may not have hit EOF yet — Responses clients (Codex) hang up exactly at
@@ -123,6 +138,10 @@ struct ToolSlot {
     oa_index: u64,
     an_index: usize,
     open: bool,
+    id: String,
+    name: String,
+    thought_signature: Option<String>,
+    arguments: String,
 }
 
 impl ChatToAnthropic {
@@ -169,6 +188,17 @@ impl ChatToAnthropic {
         self.text_index = Some(idx);
         out.push_str(&ev("content_block_start", json!({ "type": "content_block_start", "index": idx, "content_block": { "type": "text", "text": "" } })));
         idx
+    }
+
+    fn captured_tool_calls(&self) -> Vec<CapturedToolCall> {
+        self.tools.iter().map(|slot| {
+            CapturedToolCall {
+                call_id: slot.id.clone(),
+                name: slot.name.clone(),
+                arguments: slot.arguments.clone(),
+                thought_signature: slot.thought_signature.clone(),
+            }
+        }).collect()
     }
 
     /// Feed one raw upstream SSE line (e.g. "data: {...}\n" or "data: [DONE]\n"). Returns the
@@ -219,33 +249,58 @@ impl ChatToAnthropic {
 
         // tool_call deltas (streamed in fragments, keyed by their OpenAI index)
         if let Some(tcs) = delta.get("tool_calls").and_then(|v| v.as_array()) {
-            for tc in tcs {
-                let oa_index = tc.get("index").and_then(|v| v.as_u64()).unwrap_or(0);
-                let name = tc.get("function").and_then(|f| f.get("name")).and_then(|v| v.as_str());
-                let id = tc.get("id").and_then(|v| v.as_str());
+            // A no-index Gemini chunk can contain multiple parallel calls. Even if a provider
+            // repeats the same id, each array item in this delta must claim a distinct slot.
+            let mut claimed_slots: Vec<usize> = vec![];
+            for (fallback_index, tc) in tcs.iter().enumerate() {
+                let explicit_index = tc.get("index").and_then(|v| v.as_u64());
+                let oa_index = explicit_index.unwrap_or(fallback_index as u64);
+                let name = tc.get("function").and_then(|f| f.get("name")).and_then(|v| v.as_str()).unwrap_or("");
+                let id = tc.get("id").and_then(|v| v.as_str()).unwrap_or("");
                 let args = tc.get("function").and_then(|f| f.get("arguments")).and_then(|v| v.as_str()).unwrap_or("");
+                let thought_signature = super::json_thought_signature(tc);
 
-                // find or create the slot for this OpenAI tool index
-                let pos = self.tools.iter().position(|s| s.oa_index == oa_index);
+                // Standard OpenAI chunks carry `index`; Gemini-compatible streams may omit it.
+                // In that case prefer the stable call id, then the call's position in this delta.
+                let pos = explicit_index
+                    .and_then(|_| self.tools.iter().enumerate()
+                        .find(|(index, slot)| slot.oa_index == oa_index && !claimed_slots.contains(index))
+                        .map(|(index, _)| index))
+                    .or_else(|| (!id.is_empty()).then(|| self.tools.iter().enumerate()
+                        .find(|(index, slot)| slot.id == id && !claimed_slots.contains(index))
+                        .map(|(index, _)| index)).flatten())
+                    .or_else(|| self.tools.iter().enumerate()
+                        .find(|(index, slot)| slot.oa_index == oa_index && !claimed_slots.contains(index))
+                        .map(|(index, _)| index));
                 let slot_idx = match pos {
                     Some(i) => i,
                     None => {
                         let an_index = self.next_index;
                         self.next_index += 1;
-                        self.tools.push(ToolSlot { oa_index, an_index, open: false });
+                        self.tools.push(ToolSlot { oa_index, an_index, open: false, id: String::new(),
+                            name: String::new(), thought_signature: None, arguments: String::new() });
                         self.tools.len() - 1
                     }
                 };
-                // open the block once we know its id+name (first fragment carries them)
-                if !self.tools[slot_idx].open {
-                    let an_index = self.tools[slot_idx].an_index;
-                    out.push_str(&ev("content_block_start", json!({ "type": "content_block_start", "index": an_index, "content_block": {
-                        "type": "tool_use", "id": id.unwrap_or(""), "name": name.unwrap_or(""), "input": {} } })));
-                    self.tools[slot_idx].open = true;
+                claimed_slots.push(slot_idx);
+                let (an_index, should_open, open_id, open_name) = {
+                    let slot = &mut self.tools[slot_idx];
+                    if !id.is_empty() { slot.id = id.to_string(); }
+                    if !name.is_empty() { slot.name = name.to_string(); }
+                    if thought_signature.is_some() { slot.thought_signature = thought_signature; }
+                    if !args.is_empty() { slot.arguments.push_str(args); }
+                    let should_open = !slot.open;
+                    if should_open { slot.open = true; }
+                    (slot.an_index, should_open, slot.id.clone(), slot.name.clone())
+                };
+                if should_open {
+                    out.push_str(&ev("content_block_start", json!({ "type": "content_block_start",
+                        "index": an_index, "content_block": { "type": "tool_use",
+                            "id": open_id, "name": open_name, "input": {} } })));
                 }
                 if !args.is_empty() {
-                    let an_index = self.tools[slot_idx].an_index;
-                    out.push_str(&ev("content_block_delta", json!({ "type": "content_block_delta", "index": an_index, "delta": { "type": "input_json_delta", "partial_json": args } })));
+                    out.push_str(&ev("content_block_delta", json!({ "type": "content_block_delta",
+                        "index": an_index, "delta": { "type": "input_json_delta", "partial_json": args } })));
                 }
             }
         }
@@ -949,7 +1004,7 @@ mod tests {
         out.push_str(&tc.push("data: {\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"}}]}"));
         out.push_str(&tc.push("data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Let me \"}}]}"));
         out.push_str(&tc.push("data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"check.\"}}]}"));
-        out.push_str(&tc.push("data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"read_file\",\"arguments\":\"{\\\"pa\"}}]}}]}"));
+        out.push_str(&tc.push("data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"read_file\",\"arguments\":\"{\\\"pa\"},\"extra_content\":{\"google\":{\"thought_signature\":\"sig-stream-abc\"}}}]}}]}"));
         out.push_str(&tc.push("data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"th\\\":\\\"a.txt\\\"}\"}}]}}]}"));
         out.push_str(&tc.push("data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":20,\"completion_tokens\":9}}"));
         out.push_str(&tc.push("data: [DONE]"));
@@ -975,6 +1030,29 @@ mod tests {
         assert!(out.contains(r#""output_tokens":9"#));
         assert!(out.contains("event: message_stop"));
         assert_eq!(tc.input_tokens(), 20);
+        let captured = tc.captured_tool_calls();
+        assert_eq!(captured.len(), 1);
+        assert_eq!(captured[0].call_id, "call_1");
+        assert_eq!(captured[0].arguments, r#"{"path":"a.txt"}"#);
+        assert_eq!(captured[0].thought_signature.as_deref(), Some("sig-stream-abc"));
+    }
+
+    #[test]
+    fn keeps_no_index_parallel_calls_with_the_same_id_distinct() {
+        let mut tc = ChatToAnthropic::new("claude-x");
+        let mut out = String::new();
+        out.push_str(&tc.push("data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"id\":\"same-call\",\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"arguments\":\"{\\\"query\\\":\\\"same\\\"}\"},\"extra_content\":{\"google\":{\"thought_signature\":\"sig-same-id\"}}},{\"id\":\"same-call\",\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"arguments\":\"{\\\"query\\\":\\\"same\\\"}\"}}]}}]}\n"));
+        out.push_str(&tc.push("data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n"));
+        out.push_str(&tc.push("data: [DONE]\n"));
+
+        let captured = tc.captured_tool_calls();
+        assert_eq!(captured.len(), 2);
+        assert_eq!(captured[0].arguments, r#"{"query":"same"}"#);
+        assert_eq!(captured[1].arguments, r#"{"query":"same"}"#);
+        assert_eq!(captured[0].thought_signature.as_deref(), Some("sig-same-id"));
+        assert!(captured[1].thought_signature.is_none());
+        assert!(out.contains(r#""index":0,"type":"content_block_start""#));
+        assert!(out.contains(r#""index":1,"type":"content_block_start""#));
     }
 
     #[test]
