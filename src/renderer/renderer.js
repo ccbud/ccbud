@@ -612,7 +612,15 @@ async function runPluginDeclaredAction(btn) {
   const action = (pluginActionsById[pid] || []).find((a) => a && a.id === actionId) || { id: actionId };
   if (kind === 'form') { await openPluginActionForm(pid, action); return; }
   // kind === 'call': fire-and-report, with an optional confirm gate
-  if (action.confirm && !window.confirm(action.confirm)) return;
+  // (confirmDialog, not window.confirm — the Tauri webview never shows the latter)
+  if (action.confirm) {
+    const ok = await confirmDialog({
+      title: action.label || action.id,
+      message: action.confirm,
+      confirmText: action.label || action.id,
+    });
+    if (!ok) return;
+  }
   btn.disabled = true;
   try {
     const r = await api.pluginAction(pid, actionId, {});
@@ -1626,7 +1634,17 @@ function bind() {
     // Resolve the actual button (the click may land on the inner SVG icon).
     const btn = e.target.closest('button');
     if (btn && btn.dataset.edit) { openModal(config.providers.find((p) => p.id === btn.dataset.edit)); return; }
-    if (btn && btn.dataset.del) { if (confirm(I18n.t('providers.confirmDelete'))) { config = await api.deleteProvider(btn.dataset.del); renderAll(); } return; }
+    if (btn && btn.dataset.del) {
+      // Not window.confirm: the Tauri webview never shows it (silent no-op on macOS).
+      const ok = await confirmDialog({
+        title: I18n.t('providers.delete'),
+        message: I18n.t('providers.confirmDelete'),
+        confirmText: I18n.t('providers.delete'),
+        danger: true,
+      });
+      if (ok) { config = await api.deleteProvider(btn.dataset.del); renderAll(); }
+      return;
+    }
     if (btn && btn.dataset.test) {
       const p = config.providers.find((pp) => pp.id === btn.dataset.test);
       const orig = btn.innerHTML; // preserve the SVG icon, restore it after
