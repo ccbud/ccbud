@@ -689,6 +689,7 @@ impl PluginManager {
                 .arg("-c")
                 .arg(man.source_build.trim())
                 .current_dir(&tmp)
+                .env("PATH", build_env_path())
                 .output();
             match built {
                 Ok(o) if o.status.success() => {}
@@ -875,6 +876,59 @@ fn parse_ver(v: &str) -> Vec<u64> {
         .map(|s| s.parse::<u64>().unwrap_or(0))
         .collect()
 }
+/// PATH for `source.build` commands. A GUI app launched from Finder/the Dock
+/// inherits launchd's minimal PATH (no Homebrew, no /usr/local/go/bin, …), so
+/// builds die with e.g. "go: command not found" even though the toolchain works
+/// fine in the user's terminal. Merge the inherited PATH with the login shell's
+/// PATH plus well-known toolchain dirs.
+fn build_env_path() -> std::ffi::OsString {
+    let mut dirs: Vec<PathBuf> = std::env::var_os("PATH")
+        .map(|p| std::env::split_paths(&p).collect())
+        .unwrap_or_default();
+    if let Some(p) = login_shell_path() {
+        for d in std::env::split_paths(&p) {
+            if !dirs.contains(&d) {
+                dirs.push(d);
+            }
+        }
+    }
+    // Cover toolchains even when the login shell probe fails (or exports them
+    // only for interactive shells): Homebrew, the official Go installer, and
+    // per-user go/cargo/pip bin dirs.
+    let mut extras: Vec<PathBuf> =
+        ["/usr/local/bin", "/opt/homebrew/bin", "/usr/local/go/bin"].iter().map(PathBuf::from).collect();
+    if let Some(home) = std::env::var_os("HOME") {
+        let home = PathBuf::from(home);
+        extras.extend(["go/bin", ".cargo/bin", ".local/bin"].iter().map(|d| home.join(d)));
+    }
+    for d in extras {
+        if d.is_dir() && !dirs.contains(&d) {
+            dirs.push(d);
+        }
+    }
+    std::env::join_paths(dirs).unwrap_or_else(|_| std::env::var_os("PATH").unwrap_or_default())
+}
+
+/// Ask the user's login shell for its PATH (profiles are where Homebrew, Go,
+/// cargo, … register themselves). Best-effort: any failure returns None.
+fn login_shell_path() -> Option<String> {
+    let shell = std::env::var("SHELL").ok().filter(|s| !s.trim().is_empty())?;
+    let out = Command::new(shell)
+        .args(["-l", "-c", "env"])
+        .stdin(Stdio::null())
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    // Profile scripts may print noise before `env` runs; take the last PATH= line.
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .rev()
+        .find_map(|l| l.strip_prefix("PATH=").map(|v| v.to_string()))
+        .filter(|p| !p.trim().is_empty())
+}
+
 /// A process-unique-ish suffix for temporary import directories.
 fn unique_suffix() -> String {
     let nanos = std::time::SystemTime::now()
