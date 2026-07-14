@@ -28,11 +28,12 @@ const PRESETS = {
   kimi: { name: 'Kimi', baseUrl: 'https://api.kimi.com/coding', defaultModel: 'kimi-for-coding', smallFastModel: 'kimi-for-coding', protocol: 'anthropic' },
   minimax: { name: 'MiniMax', baseUrl: 'https://api.minimax.io/anthropic', defaultModel: 'MiniMax-M3', smallFastModel: 'MiniMax-M3', protocol: 'anthropic' },
   nvidia: { name: 'NVIDIA', baseUrl: 'https://integrate.api.nvidia.com/v1', defaultModel: 'z-ai/glm-5.2', smallFastModel: 'z-ai/glm-5.2', protocol: 'openai-chat' },
+  google: { name: 'Google AI Studio', baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai', defaultModel: 'gemini-3.5-flash', smallFastModel: 'gemini-3.1-flash-lite', protocol: 'openai-chat' },
   openai: { name: 'OpenAI', baseUrl: 'https://api.openai.com/v1', defaultModel: 'gpt-5.2', smallFastModel: 'gpt-5.2-mini', protocol: 'openai-responses' },
   openrouter: { name: 'OpenRouter', baseUrl: 'https://openrouter.ai/api/v1', defaultModel: '', smallFastModel: '', protocol: 'openai-chat' },
   custom: { name: '', baseUrl: '', defaultModel: '', smallFastModel: '', protocol: 'anthropic' },
 };
-const PRESET_LABELS = { glm: 'GLM', deepseek: 'DeepSeek', mimo: 'MiMo', kimi: 'Kimi', minimax: 'MiniMax', nvidia: 'NVIDIA', openai: 'OpenAI', openrouter: 'OpenRouter', custom: '自定义' };
+const PRESET_LABELS = { glm: 'GLM', deepseek: 'DeepSeek', mimo: 'MiMo', kimi: 'Kimi', minimax: 'MiniMax', nvidia: 'NVIDIA', google: 'Google AI Studio', openai: 'OpenAI', openrouter: 'OpenRouter', custom: '自定义' };
 
 /* ---------- helpers ---------- */
 function escapeHtml(s) {
@@ -86,10 +87,11 @@ function renderProviderIcon(name, icon) {
     return emojiIcon(icon, name); // a chosen emoji
   }
   const n = (name || '').trim().toLowerCase();
-  const brand = { kimi: ['kimi', 'moonshot', '月之'], deepseek: ['deepseek'], zhipu: ['glm', '智谱', 'bigmodel'], xiaomi: ['mimo', '小米', 'xiaomi'], zenmux: ['zenmux'], minimax: ['minimax', 'mini max', '海螺'], nvidia: ['nvidia'] };
+  const brand = { google: ['google ai studio', 'gemini', 'generativelanguage'], kimi: ['kimi', 'moonshot', '月之'], deepseek: ['deepseek'], zhipu: ['glm', '智谱', 'bigmodel'], xiaomi: ['mimo', '小米', 'xiaomi'], zenmux: ['zenmux'], minimax: ['minimax', 'mini max', '海螺'], nvidia: ['nvidia'] };
   for (const file in brand) {
     // object-fit:contain keeps non-square logos from being stretched into the square icon slot.
-    if (brand[file].some((k) => n.includes(k))) return { style: 'background: transparent; box-shadow: none;', html: `<img src="assets/${file}.svg" class="prov-svg" alt="" style="width:100%;height:100%;display:block;object-fit:contain" />` };
+    const asset = file === 'google' ? 'google-ai-studio.png' : `${file}.svg`;
+    if (brand[file].some((k) => n.includes(k))) return { style: 'background: transparent; box-shadow: none;', html: `<img src="assets/${asset}" class="prov-svg" alt="" style="width:100%;height:100%;display:block;object-fit:contain" />` };
   }
   if (n.includes('claude') || n.includes('anthropic')) {
     const h = hashHue(name || '?');

@@ -73,9 +73,8 @@ impl Wire {
     }
 
     /// Full upstream URL for a translated request, joining the provider baseUrl with this
-    /// protocol's endpoint WITHOUT doubling the version prefix — a baseUrl that already ends in
-    /// `/v1` (OpenAI/NVIDIA convention) gets the bare `/chat/completions`, one without gets the
-    /// full `/v1/chat/completions`.
+    /// protocol's endpoint WITHOUT doubling the version prefix — OpenAI-style roots that already
+    /// end in `/v1`, or Google's compatibility root ending in `/openai`, get the bare endpoint.
     pub fn upstream_url(self, base_url: &str) -> String {
         let base = base_url.trim_end_matches('/');
         let bare = match self {
@@ -83,7 +82,7 @@ impl Wire {
             Wire::OpenAiChat => "/chat/completions",
             Wire::OpenAiResponses => "/responses",
         };
-        if base.ends_with("/v1") {
+        if base.ends_with("/v1") || (self == Wire::OpenAiChat && base.ends_with("/openai")) {
             format!("{}{}", base, bare)
         } else {
             format!("{}{}", base, self.upstream_path())
@@ -278,6 +277,14 @@ pub fn encode_client_response_sse(client: Wire, ir: &ChatResponse, client_model:
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn google_openai_root_gets_the_bare_chat_endpoint() {
+        assert_eq!(
+            Wire::OpenAiChat.upstream_url("https://generativelanguage.googleapis.com/v1beta/openai"),
+            "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+        );
+    }
 
     #[test]
     fn gemini_thought_signature_maps_between_openai_wire_and_ir() {
