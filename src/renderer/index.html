@@ -31,7 +31,7 @@
           </button>
           <button class="nav-item flex items-center gap-[9px] px-3 py-2.5 border-none rounded-[10px] bg-transparent text-muted font-medium text-[13.5px] leading-[1.2] cursor-pointer text-left transition-all duration-180 ease-[cubic-bezier(0.23,1,0.32,1)] hover:bg-chip-bg hover:text-fg active:scale-[0.98] [&.active]:bg-brand-soft [&.active]:text-brand [&.active]:font-semibold group-[.collapsed]/sidebar:justify-center group-[.collapsed]/sidebar:px-0" data-view="conversations">
             <span class="nav-icon w-4 h-4 flex items-center justify-center opacity-85 [.active_&]:opacity-100" data-icon="conversations"></span>
-            <span class="nav-label group-[.collapsed]/sidebar:hidden" data-i18n="nav.conversations">对话</span>
+            <span class="nav-label group-[.collapsed]/sidebar:hidden" data-i18n="nav.conversations">会话</span>
           </button>
           <button class="nav-item flex items-center gap-[9px] px-3 py-2.5 border-none rounded-[10px] bg-transparent text-muted font-medium text-[13.5px] leading-[1.2] cursor-pointer text-left transition-all duration-180 ease-[cubic-bezier(0.23,1,0.32,1)] hover:bg-chip-bg hover:text-fg active:scale-[0.98] [&.active]:bg-brand-soft [&.active]:text-brand [&.active]:font-semibold group-[.collapsed]/sidebar:justify-center group-[.collapsed]/sidebar:px-0" data-view="monitor">
             <span class="nav-icon w-4 h-4 flex items-center justify-center opacity-85 [.active_&]:opacity-100" data-icon="monitor"></span>
@@ -308,7 +308,7 @@
                 <h3 class="settings-card-title text-[13px] font-semibold text-fg" data-i18n="settings.histDir">工作目录</h3>
                 <button class="btn btn-sm btn-primary bg-primary text-white border-none rounded-md px-2.25 py-1.25 font-semibold text-[11px] leading-none cursor-pointer transition-all duration-140 hover:bg-primary-hover active:scale-[0.985]" id="btnPickHistDir" type="button" data-i18n="settings.pickDir">选择目录…</button>
               </div>
-              <p class="caption text-[12px] text-caption" data-i18n="settings.histDirDesc">对话与用量统计的数据来源 —— Claude Code 的配置目录（含 projects/）。默认 ~/.claude；若用 CLAUDE_CONFIG_DIR / claude --config 指定了其他目录，在此添加，可在「对话」页切换查看。</p>
+              <p class="caption text-[12px] text-caption" data-i18n="settings.histDirDesc">会话与用量统计的数据来源 —— Claude Code 的配置目录（含 projects/）。默认 ~/.claude；若用 CLAUDE_CONFIG_DIR / claude --config 指定了其他目录，在此添加，可在「会话」页切换查看。</p>
               <div id="histDirList" class="hist-dir-list" data-clarity-mask="true"></div>
             </div>
             </div>
@@ -404,7 +404,7 @@
           </details>
         </section>
 
-        <!-- 对话 -->
+        <!-- 会话 -->
         <section id="view-conversations" data-clarity-mask="true" class="panel-full hidden flex-grow min-h-0 w-full overflow-hidden flex animate-[panelIn_0.28s_ease-[cubic-bezier(0.23,1,0.32,1)]]">
           <div class="conv-layout flex w-full h-full overflow-hidden">
             <aside class="conv-sidebar group/conv-sidebar border-r border-border-custom flex flex-col shrink-0 overflow-hidden [&.collapsed]:overflow-visible">
