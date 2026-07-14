@@ -137,9 +137,9 @@ impl ThoughtSignatureCache {
         session_id: Option<&str>,
         captured_calls: &[crate::protocol::stream::CapturedToolCall],
     ) {
-        let Some(session_id) = session_id else { return };
         let now = now_ms();
         self.prune(now);
+        let Some(session_id) = session_id else { return };
         let calls: Vec<CachedToolCall> = captured_calls.iter().map(|call| CachedToolCall {
             call_id: call.call_id.clone(),
             name: call.name.clone(),
@@ -177,9 +177,9 @@ impl ThoughtSignatureCache {
         session_id: Option<&str>,
         request: &mut llm_connector::types::ChatRequest,
     ) -> usize {
-        let Some(session_id) = session_id else { return 0 };
         let now = now_ms();
         self.prune(now);
+        let Some(session_id) = session_id else { return 0 };
         let current_turn = current_tool_turn_start(request);
         let Some(message_index) = request.messages.iter()
             .enumerate()
@@ -2101,6 +2101,16 @@ mod tests {
             endpoint_targets("https://example.com/v1", &u("/v1/responses")),
             Some(("https://example.com/v1/responses".to_string(), None))
         );
+        assert_eq!(
+            endpoint_targets(
+                "https://generativelanguage.googleapis.com/v1beta/openai",
+                &u("/v1/chat/completions"),
+            ),
+            Some((
+                "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions".to_string(),
+                None,
+            ))
+        );
         assert_eq!(endpoint_targets("https://example.com/api", &u("/v1/models")), None);
         assert_eq!(endpoint_targets("https://example.com/api", &u("/v1/messages/count_tokens")), None);
     }
@@ -2186,5 +2196,30 @@ mod tests {
         assert_eq!(crate::protocol::tool_call_thought_signature(&steps[1][0]).as_deref(),
             Some("sig-latest"));
         assert!(crate::protocol::tool_call_thought_signature(&steps[1][1]).is_none());
+    }
+
+    #[test]
+    fn sessionless_cache_access_prunes_expired_batches() {
+        let stale = ThoughtSignatureBatch {
+            calls: vec![],
+            touched_at: now_ms().saturating_sub(THOUGHT_SIGNATURE_TTL_MS + 1),
+        };
+        let mut cache = ThoughtSignatureCache::default();
+        cache.batches.insert(("google".into(), "stale".into()), stale.clone());
+        cache.remember("google", None, &[]);
+        assert!(cache.batches.is_empty());
+
+        cache.batches.insert(("google".into(), "stale".into()), stale);
+        let body = json!({
+            "model": "claude-sonnet-5",
+            "max_tokens": 1,
+            "messages": [{ "role": "user", "content": "ping" }]
+        });
+        let mut request = crate::protocol::decode_client_request(
+            crate::protocol::Wire::Anthropic,
+            &body,
+        ).unwrap();
+        assert_eq!(cache.restore("google", None, &mut request), 0);
+        assert!(cache.batches.is_empty());
     }
 }

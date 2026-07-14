@@ -379,16 +379,17 @@ async fn provider_test(app: tauri::AppHandle, p: Value) -> Value {
                     .and_then(|j| j.get("model"))
                     .and_then(|v| v.as_str())
                     .unwrap_or(&model);
-                if let (Some(id), Some(next_base)) = (
-                    p.get("id").and_then(Value::as_str),
-                    migrated_base_url.as_deref(),
-                ) {
-                    if let Some(saved) = store::migrate_provider_base_url_to_v1(id, base) {
-                        let _ = app.emit("config:changed", saved);
+                if let Some(next_base) = migrated_base_url.as_deref() {
+                    if let Some(id) = p.get("id").and_then(Value::as_str) {
+                        if let Some(saved) = store::migrate_provider_base_url_to_v1(id, base) {
+                            let _ = app.emit("config:changed", saved);
+                            return json!({ "ok": true, "status": status, "model": m, "baseUrl": next_base });
+                        }
+                    } else {
+                        return json!({ "ok": true, "status": status, "model": m, "baseUrl": next_base });
                     }
-                    return json!({ "ok": true, "status": status, "model": m, "baseUrl": next_base });
                 }
-                return json!({ "ok": true, "status": status, "model": m, "baseUrl": migrated_base_url });
+                return json!({ "ok": true, "status": status, "model": m });
             }
             let msg = parsed
                 .as_ref()

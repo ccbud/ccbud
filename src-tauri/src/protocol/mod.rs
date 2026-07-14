@@ -79,13 +79,15 @@ impl Wire {
     }
 
     /// Compatibility URL for configurations created when ccbud implicitly inserted `/v1`.
-    /// A baseUrl whose final path segment is already versioned (`v1`, `v4`, `v1beta`, …) must
-    /// never receive another version segment.
+    /// A versioned baseUrl (`v1`, `v4`, `v1beta`, …), or Google's `/openai` compatibility root,
+    /// must never receive another version segment.
     pub fn v1_fallback_url(self, base_url: &str) -> Option<String> {
-        if base_url_has_version_suffix(base_url) {
+        let base = base_url.trim_end_matches('/');
+        if base_url_has_version_suffix(base_url)
+            || (self == Wire::OpenAiChat && base.ends_with("/openai"))
+        {
             return None;
         }
-        let base = base_url.trim_end_matches('/');
         Some(format!("{}/v1{}", base, self.endpoint_path()))
     }
 
@@ -346,6 +348,7 @@ mod tests {
             "https://example.com/v4/",
             "https://example.com/v1beta",
             "https://example.com/V2alpha",
+            "https://generativelanguage.googleapis.com/v1beta/openai",
         ] {
             assert_eq!(Wire::OpenAiChat.v1_fallback_url(base), None, "{base}");
         }
