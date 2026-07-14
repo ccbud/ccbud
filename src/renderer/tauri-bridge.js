@@ -33,6 +33,7 @@
   window.ccbud = {
     getConfig: () => inv('config_get'),
     saveConfig: (cfg) => inv('config_save', { cfg }),
+    onConfigChanged: (cb) => on('config:changed', cb),
 
     upsertProvider: (p) => inv('provider_upsert', { p }),
     deleteProvider: (id) => inv('provider_delete', { id }),

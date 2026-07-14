@@ -1709,7 +1709,11 @@ function bind() {
     // Surface the result as a floating toast — the in-modal alert sits at the bottom of a
     // scrollable sheet and was easily hidden, leaving users unsure whether the test ran.
     const pending = showToast(I18n.t('modal.testing'), 'pending');
-    const res = await api.testProvider(collectProvider());
+    const testedProvider = collectProvider();
+    const res = await api.testProvider(testedProvider);
+    if (res.ok && res.baseUrl && $('fBaseUrl').value.trim() === testedProvider.baseUrl) {
+      $('fBaseUrl').value = res.baseUrl;
+    }
     let msg;
     if (res.reason === 'baseUrlEmpty') msg = I18n.t('err.baseUrlEmpty');
     else if (res.reason === 'baseUrlInvalid') msg = I18n.t('err.baseUrlInvalid');
@@ -1784,6 +1788,18 @@ function bind() {
   api.onRequest((r) => pushStreamRow(r));
   api.onLog((l) => pushRawLog(l));
   api.onStatus((s) => { status = s; renderAll(); });
+  if (api.onConfigChanged) api.onConfigChanged(async (next) => {
+    const previous = config;
+    const previousProvider = editingId && previous.providers.find((p) => p.id === editingId);
+    const baseUrlInput = editingId ? $('fBaseUrl') : null;
+    const baseUrlWasUnchanged = !!(previousProvider && baseUrlInput && baseUrlInput.value === (previousProvider.baseUrl || ''));
+    config = next && Array.isArray(next.providers) ? next : await api.getConfig();
+    if (baseUrlWasUnchanged) {
+      const updatedProvider = config.providers.find((p) => p.id === editingId);
+      if (updatedProvider) baseUrlInput.value = updatedProvider.baseUrl || '';
+    }
+    renderAll();
+  });
 
   // ----- in-app updates -----
   const bUpdCheck = $('btnUpdateCheck');

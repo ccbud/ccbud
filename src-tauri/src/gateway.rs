@@ -772,6 +772,26 @@ fn build_target(base_url: &str, uri: &Uri) -> Option<String> {
     Some(format!("{}{}{}", base, path_out, query))
 }
 
+/// Resolve one of the three primary API endpoints against the configured base URL. The base is
+/// authoritative: an inbound `/v1/...` path does not cause ccbud to insert `/v1` upstream.
+fn endpoint_targets(base_url: &str, uri: &Uri) -> Option<(String, Option<String>)> {
+    if base_url.trim().is_empty() {
+        return None;
+    }
+    let wire = crate::protocol::Wire::from_request_endpoint(uri.path())?;
+    let with_query = |mut url: String| {
+        if let Some(query) = uri.query() {
+            url.push('?');
+            url.push_str(query);
+        }
+        url
+    };
+    Some((
+        with_query(wire.upstream_url(base_url)),
+        wire.v1_fallback_url(base_url).map(with_query),
+    ))
+}
+
 /// The path component of a base URL (everything after scheme://authority), or "".
 fn base_url_path(base: &str) -> &str {
     let after_scheme = base.split_once("://").map(|(_, rest)| rest).unwrap_or(base);
@@ -1008,9 +1028,17 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
         }
     }
 
-    let mut target = match build_target(base_url, &uri) {
-        Some(t) => t,
-        None => return error_response(StatusCode::BAD_GATEWAY, "ccbud: invalid provider baseUrl", "api_error"),
+    let endpoint_pair = if method == Method::POST {
+        endpoint_targets(base_url, &uri)
+    } else {
+        None
+    };
+    let (mut target, mut v1_fallback_target) = match endpoint_pair {
+        Some(pair) => pair,
+        None => match build_target(base_url, &uri) {
+            Some(t) => (t, None),
+            None => return error_response(StatusCode::BAD_GATEWAY, "ccbud: invalid provider baseUrl", "api_error"),
+        },
     };
     let is_models_list = method == Method::GET && (req_path.ends_with("/v1/models") || req_path.ends_with("/v1/models/"));
     // Codex and Claude clients both GET /v1/models — tell them apart by client identity
@@ -1070,6 +1098,7 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
                     }
                     // Send to the provider protocol's endpoint (drop the inbound path/query).
                     target = provider_wire.upstream_url(base_url);
+                    v1_fallback_target = provider_wire.v1_fallback_url(base_url);
                     translate = Some((client_wire, provider_wire, client_model, wanted_stream, incremental));
                 }
                 Err(e) => {
@@ -1109,7 +1138,8 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
     let ex_id = st.next_id();
     let ex_req_headers = redact_headers(&up_headers);
     let ex_req_body = cap_text(&out_body, 4 * 1024 * 1024);
-    let ex_url = target.clone();
+    let original_target = target.clone();
+    let mut ex_url = target.clone();
     // Client-side view of the exchange — what the gateway RECEIVED, before any translation — so
     // the monitor can show a protocol translation's exact before/after (inbound URL/headers/body
     // vs. the upstream URL/headers/body above). The body is duplicated only when a translation
@@ -1135,8 +1165,13 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
     let retry_max = rc.get("max").and_then(|v| v.as_i64()).unwrap_or(3);
     let retry_base = rc.get("baseMs").and_then(|v| v.as_i64()).unwrap_or(500);
 
-    // forward with 429 retry
+    // Forward with the existing 429 retry plus one compatibility attempt at `/v1`. The first
+    // response is retained until the fallback succeeds, so a failed fallback never masks the
+    // upstream's original error.
     let mut attempt = 0i64;
+    let mut tried_v1_fallback = false;
+    let mut used_v1_fallback = false;
+    let mut first_path_error: Option<reqwest::Response> = None;
     let resp = loop {
         let r = client
             .request(method.clone(), &target)
@@ -1146,7 +1181,11 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
             .await;
         match r {
             Ok(resp) => {
-                if retry_enabled && resp.status().as_u16() == 429 && attempt < retry_max {
+                if !tried_v1_fallback
+                    && retry_enabled
+                    && resp.status().as_u16() == 429
+                    && attempt < retry_max
+                {
                     let ra = resp.headers().get("retry-after").and_then(|v| v.to_str().ok()).map(|s| s.to_string());
                     let delay = retry_delay(ra.as_deref(), attempt, retry_base);
                     st.log("warn", format!("upstream 429 — retry {}/{} in {}ms ({})", attempt + 1, retry_max, delay, provider_name));
@@ -1154,9 +1193,37 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
                     attempt += 1;
                     continue;
                 }
+                if !tried_v1_fallback
+                    && crate::protocol::should_try_v1_fallback(resp.status().as_u16())
+                {
+                    if let Some(fallback) = v1_fallback_target.take() {
+                        first_path_error = Some(resp);
+                        target = fallback;
+                        ex_url = target.clone();
+                        tried_v1_fallback = true;
+                        attempt = 0;
+                        continue;
+                    }
+                }
+                if tried_v1_fallback {
+                    if resp.status().is_success() {
+                        used_v1_fallback = true;
+                        ex_url = target.clone();
+                        break resp;
+                    }
+                    ex_url = original_target.clone();
+                    break first_path_error.take().expect("v1 fallback keeps the first response");
+                }
                 break resp;
             }
             Err(e) => {
+                if tried_v1_fallback {
+                    if let Some(first) = first_path_error.take() {
+                        ex_url = original_target.clone();
+                        st.log("info", format!("/v1 compatibility retry failed: {} ({})", e, provider_name));
+                        break first;
+                    }
+                }
                 if is_models_list {
                     st.emit_request(ex_id, started, &method, &req_path, &provider_name, &routing, 200, None);
                     return json_response(StatusCode::OK, &synthesize_models(&config, client_codex));
@@ -1178,6 +1245,13 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
             }
         }
     };
+
+    if used_v1_fallback {
+        if let Some(saved) = store::migrate_provider_base_url_to_v1(&routing.provider_id, base_url) {
+            st.log("info", format!("provider base URL updated with /v1 ({})", provider_name));
+            st.emit("config:changed", saved);
+        }
+    }
 
     let status = resp.status();
     let ct = resp.headers().get("content-type").and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
@@ -2008,6 +2082,27 @@ mod tests {
         assert_eq!(build_target("http://127.0.0.1:9", &u("/v1/responses")).unwrap(), "http://127.0.0.1:9/v1/responses");
         // segment-aware: a /v1 base must NOT eat a /v1beta path.
         assert_eq!(build_target("http://h/v1", &u("/v1beta/x")).unwrap(), "http://h/v1/v1beta/x");
+    }
+    #[test]
+    fn primary_endpoints_use_the_configured_base_and_offer_one_v1_fallback() {
+        let u = |s: &str| s.parse::<Uri>().unwrap();
+        assert_eq!(
+            endpoint_targets("https://example.com/api", &u("/v1/messages?x=1")),
+            Some((
+                "https://example.com/api/messages?x=1".to_string(),
+                Some("https://example.com/api/v1/messages?x=1".to_string()),
+            ))
+        );
+        assert_eq!(
+            endpoint_targets("https://example.com/v4", &u("/v1/chat/completions")),
+            Some(("https://example.com/v4/chat/completions".to_string(), None))
+        );
+        assert_eq!(
+            endpoint_targets("https://example.com/v1", &u("/v1/responses")),
+            Some(("https://example.com/v1/responses".to_string(), None))
+        );
+        assert_eq!(endpoint_targets("https://example.com/api", &u("/v1/models")), None);
+        assert_eq!(endpoint_targets("https://example.com/api", &u("/v1/messages/count_tokens")), None);
     }
     #[test]
     fn routing_classifies_by_family() {

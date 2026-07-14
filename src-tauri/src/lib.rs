@@ -280,12 +280,28 @@ async fn plugin_update(pm: PluginState<'_>, id: String) -> Result<Value, String>
         .map_err(|e| e.to_string())??;
     Ok(json!({ "ok": true, "id": id }))
 }
-/// Build the upstream `/v1/messages` URL from a provider baseUrl.
+async fn send_provider_probe(
+    client: &reqwest::Client,
+    url: &str,
+    wire: crate::protocol::Wire,
+    token: &str,
+    body: &Value,
+) -> Result<reqwest::Response, reqwest::Error> {
+    let mut request = client
+        .post(url)
+        .header("content-type", "application/json")
+        .header("authorization", format!("Bearer {}", token));
+    if wire == crate::protocol::Wire::Anthropic {
+        request = request.header("anthropic-version", "2023-06-01");
+    }
+    request.json(body).send().await
+}
+
 /// Live connection test: POST a tiny ping to the provider, shaped for its declared wire protocol
-/// (Anthropic /v1/messages, OpenAI /chat/completions, or /responses), and report ok/error/timeout.
+/// (Anthropic /messages, OpenAI /chat/completions, or /responses), and report ok/error/timeout.
 /// The renderer localizes the result message.
 #[tauri::command]
-async fn provider_test(p: Value) -> Value {
+async fn provider_test(app: tauri::AppHandle, p: Value) -> Value {
     let base = p.get("baseUrl").and_then(|v| v.as_str()).unwrap_or("").trim();
     if base.is_empty() {
         return json!({ "ok": false, "reason": "baseUrlEmpty" });
@@ -332,16 +348,20 @@ async fn provider_test(p: Value) -> Value {
     };
     // Auth via Authorization: Bearer only. Sending both authorization and x-api-key trips
     // providers that reject having the two auth headers present at once.
-    let mut rb = client
-        .post(&url)
-        .header("content-type", "application/json")
-        .header("authorization", format!("Bearer {}", token));
-    if wire == crate::protocol::Wire::Anthropic {
-        rb = rb.header("anthropic-version", "2023-06-01");
-    }
-    let resp = rb.json(&body).send().await;
-    match resp {
-        Ok(r) => {
+    let first = send_provider_probe(&client, &url, wire, &token, &body).await;
+    match first {
+        Ok(mut r) => {
+            let mut migrated_base_url: Option<String> = None;
+            if crate::protocol::should_try_v1_fallback(r.status().as_u16()) {
+                if let Some(fallback_url) = wire.v1_fallback_url(base) {
+                    if let Ok(candidate) = send_provider_probe(&client, &fallback_url, wire, &token, &body).await {
+                        if candidate.status().is_success() {
+                            r = candidate;
+                            migrated_base_url = Some(format!("{}/v1", base.trim_end_matches('/')));
+                        }
+                    }
+                }
+            }
             let status = r.status().as_u16();
             let text = r.text().await.unwrap_or_default();
             let parsed: Option<Value> = serde_json::from_str(&text).ok();
@@ -359,7 +379,16 @@ async fn provider_test(p: Value) -> Value {
                     .and_then(|j| j.get("model"))
                     .and_then(|v| v.as_str())
                     .unwrap_or(&model);
-                return json!({ "ok": true, "status": status, "model": m });
+                if let (Some(id), Some(next_base)) = (
+                    p.get("id").and_then(Value::as_str),
+                    migrated_base_url.as_deref(),
+                ) {
+                    if let Some(saved) = store::migrate_provider_base_url_to_v1(id, base) {
+                        let _ = app.emit("config:changed", saved);
+                    }
+                    return json!({ "ok": true, "status": status, "model": m, "baseUrl": next_base });
+                }
+                return json!({ "ok": true, "status": status, "model": m, "baseUrl": migrated_base_url });
             }
             let msg = parsed
                 .as_ref()

@@ -63,31 +63,69 @@ impl Wire {
         }
     }
 
-    /// The upstream path segment for this provider protocol, appended to the provider baseUrl.
-    pub fn upstream_path(self) -> &'static str {
+    /// The bare endpoint appended to the provider's configured baseUrl.
+    pub fn endpoint_path(self) -> &'static str {
         match self {
-            Wire::Anthropic => "/v1/messages",
-            Wire::OpenAiChat => "/v1/chat/completions",
-            Wire::OpenAiResponses => "/v1/responses",
-        }
-    }
-
-    /// Full upstream URL for a translated request, joining the provider baseUrl with this
-    /// protocol's endpoint WITHOUT doubling the version prefix — OpenAI-style roots that already
-    /// end in `/v1`, or Google's compatibility root ending in `/openai`, get the bare endpoint.
-    pub fn upstream_url(self, base_url: &str) -> String {
-        let base = base_url.trim_end_matches('/');
-        let bare = match self {
             Wire::Anthropic => "/messages",
             Wire::OpenAiChat => "/chat/completions",
             Wire::OpenAiResponses => "/responses",
-        };
-        if base.ends_with("/v1") || (self == Wire::OpenAiChat && base.ends_with("/openai")) {
-            format!("{}{}", base, bare)
-        } else {
-            format!("{}{}", base, self.upstream_path())
         }
     }
+
+    /// Full upstream URL, treating the configured baseUrl as authoritative.
+    pub fn upstream_url(self, base_url: &str) -> String {
+        let base = base_url.trim_end_matches('/');
+        format!("{}{}", base, self.endpoint_path())
+    }
+
+    /// Compatibility URL for configurations created when ccbud implicitly inserted `/v1`.
+    /// A baseUrl whose final path segment is already versioned (`v1`, `v4`, `v1beta`, …) must
+    /// never receive another version segment.
+    pub fn v1_fallback_url(self, base_url: &str) -> Option<String> {
+        if base_url_has_version_suffix(base_url) {
+            return None;
+        }
+        let base = base_url.trim_end_matches('/');
+        Some(format!("{}/v1{}", base, self.endpoint_path()))
+    }
+
+    /// Match only the three request endpoints that may be safely rebased onto a provider URL.
+    /// Models, count_tokens, HEAD, and unknown routes keep the generic passthrough path.
+    pub fn from_request_endpoint(path: &str) -> Option<Wire> {
+        match path.trim_end_matches('/') {
+            "/messages" | "/v1/messages" => Some(Wire::Anthropic),
+            "/chat/completions" | "/v1/chat/completions" => Some(Wire::OpenAiChat),
+            "/responses" | "/v1/responses" => Some(Wire::OpenAiResponses),
+            _ => None,
+        }
+    }
+}
+
+fn base_url_has_version_suffix(base_url: &str) -> bool {
+    let clean = base_url
+        .split(['?', '#'])
+        .next()
+        .unwrap_or(base_url)
+        .trim_end_matches('/');
+    let after_authority = clean
+        .split_once("://")
+        .map(|(_, rest)| rest)
+        .unwrap_or(clean);
+    let Some((_, path)) = after_authority.split_once('/') else {
+        return false;
+    };
+    let Some(segment) = path.rsplit('/').find(|segment| !segment.is_empty()) else {
+        return false;
+    };
+    let mut chars = segment.chars();
+    matches!(chars.next(), Some('v' | 'V'))
+        && matches!(chars.next(), Some(c) if c.is_ascii_digit())
+}
+
+/// Statuses commonly used by upstreams for an unrecognized or unsupported endpoint path.
+/// Authentication, validation, payload-size, and rate-limit errors intentionally do not qualify.
+pub fn should_try_v1_fallback(status: u16) -> bool {
+    matches!(status, 400 | 404 | 405)
 }
 
 use llm_connector::core::Protocol;
@@ -279,11 +317,57 @@ mod tests {
     use super::*;
 
     #[test]
-    fn google_openai_root_gets_the_bare_chat_endpoint() {
+    fn upstream_urls_respect_the_configured_base() {
+        let cases = [
+            (Wire::Anthropic, "/messages"),
+            (Wire::OpenAiChat, "/chat/completions"),
+            (Wire::OpenAiResponses, "/responses"),
+        ];
+        for (wire, endpoint) in cases {
+            for base in [
+                "https://example.com",
+                "https://example.com/v1",
+                "https://example.com/v4",
+                "https://generativelanguage.googleapis.com/v1beta/openai",
+            ] {
+                assert_eq!(wire.upstream_url(base), format!("{}{}", base, endpoint));
+            }
+        }
+    }
+
+    #[test]
+    fn v1_fallback_is_only_offered_for_unversioned_bases() {
         assert_eq!(
-            Wire::OpenAiChat.upstream_url("https://generativelanguage.googleapis.com/v1beta/openai"),
-            "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+            Wire::OpenAiChat.v1_fallback_url("https://example.com/api"),
+            Some("https://example.com/api/v1/chat/completions".to_string())
         );
+        for base in [
+            "https://example.com/v1",
+            "https://example.com/v4/",
+            "https://example.com/v1beta",
+            "https://example.com/V2alpha",
+        ] {
+            assert_eq!(Wire::OpenAiChat.v1_fallback_url(base), None, "{base}");
+        }
+    }
+
+    #[test]
+    fn canonical_request_endpoints_exclude_auxiliary_routes() {
+        assert_eq!(Wire::from_request_endpoint("/v1/messages"), Some(Wire::Anthropic));
+        assert_eq!(Wire::from_request_endpoint("/v1/chat/completions"), Some(Wire::OpenAiChat));
+        assert_eq!(Wire::from_request_endpoint("/v1/responses"), Some(Wire::OpenAiResponses));
+        assert_eq!(Wire::from_request_endpoint("/v1/messages/count_tokens"), None);
+        assert_eq!(Wire::from_request_endpoint("/v1/models"), None);
+    }
+
+    #[test]
+    fn v1_fallback_statuses_exclude_non_path_errors() {
+        for status in [400, 404, 405] {
+            assert!(should_try_v1_fallback(status));
+        }
+        for status in [401, 403, 413, 415, 422, 429, 500] {
+            assert!(!should_try_v1_fallback(status));
+        }
     }
 
     #[test]

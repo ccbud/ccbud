@@ -7,6 +7,7 @@
 use serde_json::{json, Value};
 use std::fs;
 use std::path::PathBuf;
+use std::sync::{Mutex, MutexGuard, OnceLock};
 
 pub fn ccbud_home() -> PathBuf {
     if let Ok(d) = std::env::var("CCBUD_HOME") {
@@ -20,6 +21,13 @@ pub fn ccbud_home() -> PathBuf {
 
 fn config_file() -> PathBuf {
     ccbud_home().join("config.json")
+}
+
+fn config_lock() -> MutexGuard<'static, ()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 pub fn default_config() -> Value {
@@ -251,7 +259,7 @@ pub fn normalize(input: Value) -> Value {
     c
 }
 
-pub fn read_config() -> Value {
+fn read_config_unlocked() -> Value {
     match fs::read_to_string(config_file()) {
         Ok(s) => match serde_json::from_str::<Value>(&s) {
             Ok(v) => normalize(v),
@@ -261,20 +269,81 @@ pub fn read_config() -> Value {
     }
 }
 
-pub fn write_config(next: Value) -> Value {
+pub fn read_config() -> Value {
+    let _guard = config_lock();
+    read_config_unlocked()
+}
+
+fn write_config_unlocked(next: Value) -> (Value, bool) {
     let normalized = normalize(next);
     let dir = ccbud_home();
-    let _ = fs::create_dir_all(&dir);
+    if fs::create_dir_all(&dir).is_err() {
+        return (normalized, false);
+    }
     let file = config_file();
     let tmp = dir.join("config.json.tmp");
     if let Ok(bytes) = serde_json::to_vec_pretty(&normalized) {
         if fs::write(&tmp, &bytes).is_ok() {
             set_0600(&tmp);
-            let _ = fs::rename(&tmp, &file);
-            set_0600(&file);
+            if fs::rename(&tmp, &file).is_ok() {
+                set_0600(&file);
+                return (normalized, true);
+            }
         }
     }
-    normalized
+    let _ = fs::remove_file(tmp);
+    (normalized, false)
+}
+
+pub fn write_config(next: Value) -> Value {
+    let _guard = config_lock();
+    write_config_unlocked(next).0
+}
+
+fn update_provider_base_url_to_v1(
+    config: &mut Value,
+    provider_id: &str,
+    expected_base_url: &str,
+) -> bool {
+    let Some(provider) = config
+        .get_mut("providers")
+        .and_then(Value::as_array_mut)
+        .and_then(|providers| {
+            providers
+                .iter_mut()
+                .find(|provider| provider.get("id").and_then(Value::as_str) == Some(provider_id))
+        })
+    else {
+        return false;
+    };
+    if provider.get("backend").and_then(Value::as_str) == Some("plugin")
+        || provider.get("baseUrl").and_then(Value::as_str) != Some(expected_base_url)
+    {
+        return false;
+    }
+    let Some(provider) = provider.as_object_mut() else {
+        return false;
+    };
+    provider.insert(
+        "baseUrl".into(),
+        json!(format!("{}/v1", expected_base_url.trim_end_matches('/'))),
+    );
+    true
+}
+
+/// Atomically migrate one HTTP provider's base URL after a successful `/v1` fallback.
+/// The expected URL is a compare-and-swap guard against overwriting a concurrent user edit.
+pub fn migrate_provider_base_url_to_v1(
+    provider_id: &str,
+    expected_base_url: &str,
+) -> Option<Value> {
+    let _guard = config_lock();
+    let mut config = read_config_unlocked();
+    if !update_provider_base_url_to_v1(&mut config, provider_id, expected_base_url) {
+        return None;
+    }
+    let (saved, persisted) = write_config_unlocked(config);
+    persisted.then_some(saved)
 }
 
 /// One-time startup migration: when a Codex install exists (its sessions tree is on disk),
@@ -394,6 +463,90 @@ mod tests {
         assert_eq!(normalize(json!({ "historyActive": "__trash__" }))["historyActive"], "__trash__");
         assert_eq!(normalize(json!({ "historyActive": "__imported__" }))["historyActive"], "__imported__");
         assert_eq!(normalize(json!({ "historyActive": "bogus-dir" }))["historyActive"], "all");
+    }
+
+    #[test]
+    fn provider_base_url_v1_migration_updates_only_the_matching_url() {
+        let mut config = json!({
+            "port": 9000,
+            "customSetting": { "keep": true },
+            "providers": [
+                {
+                    "id": "target",
+                    "name": "Target",
+                    "backend": "http",
+                    "baseUrl": "https://example.com/api/",
+                    "authToken": "secret",
+                    "defaultModel": "model-a",
+                    "models": [{ "alias": "fast", "upstream": "model-b" }]
+                },
+                {
+                    "id": "other",
+                    "backend": "http",
+                    "baseUrl": "https://other.example/api",
+                    "authToken": "other-secret"
+                }
+            ]
+        });
+        let before_other = config["providers"][1].clone();
+        let before_settings = config["customSetting"].clone();
+
+        assert!(update_provider_base_url_to_v1(
+            &mut config,
+            "target",
+            "https://example.com/api/"
+        ));
+        assert_eq!(
+            config["providers"][0]["baseUrl"],
+            "https://example.com/api/v1"
+        );
+        assert_eq!(config["providers"][0]["authToken"], "secret");
+        assert_eq!(config["providers"][0]["defaultModel"], "model-a");
+        assert_eq!(
+            config["providers"][0]["models"],
+            json!([{ "alias": "fast", "upstream": "model-b" }])
+        );
+        assert_eq!(config["providers"][1], before_other);
+        assert_eq!(config["customSetting"], before_settings);
+        assert_eq!(config["port"], 9000);
+    }
+
+    #[test]
+    fn provider_base_url_v1_migration_requires_expected_old_url() {
+        let mut config = json!({
+            "providers": [{
+                "id": "target",
+                "backend": "http",
+                "baseUrl": "https://example.com/user-edit"
+            }]
+        });
+        let before = config.clone();
+
+        assert!(!update_provider_base_url_to_v1(
+            &mut config,
+            "target",
+            "https://example.com/old"
+        ));
+        assert_eq!(config, before);
+    }
+
+    #[test]
+    fn provider_base_url_v1_migration_skips_plugins() {
+        let mut config = json!({
+            "providers": [{
+                "id": "target",
+                "backend": "plugin",
+                "baseUrl": "http://127.0.0.1:12345"
+            }]
+        });
+        let before = config.clone();
+
+        assert!(!update_provider_base_url_to_v1(
+            &mut config,
+            "target",
+            "http://127.0.0.1:12345"
+        ));
+        assert_eq!(config, before);
     }
 }
 
