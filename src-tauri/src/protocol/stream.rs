@@ -85,6 +85,7 @@ impl Transcoder {
     pub fn captured_tool_calls(&self) -> Vec<CapturedToolCall> {
         match self {
             Self::ChatToAnthropic(t) => t.captured_tool_calls(),
+            Self::ChatToResponses(t) => t.captured_tool_calls(),
             _ => vec![],
         }
     }
@@ -390,8 +391,9 @@ fn resp_completed(id: &str, model: &str, output: Vec<Value>, input: i64, cached:
 /// Stateful OpenAI-Chat-stream → OpenAI-Responses-stream transcoder (Codex client, chat upstream).
 /// Text deltas stream through as `response.output_text.delta`; provider reasoning deltas
 /// (`reasoning_content` / `reasoning`) as `response.reasoning_summary_text.delta`; tool-call
-/// fragments accumulate per OpenAI index and surface whole in `response.output_item.done` — the
-/// only place Codex materializes items from.
+/// fragments accumulate per OpenAI index (with the same no-index Gemini slot handling as
+/// ChatToAnthropic, including thought-signature capture) and surface whole in
+/// `response.output_item.done` — the only place Codex materializes items from.
 pub struct ChatToResponses {
     client_model: String,
     resp_id: String,
@@ -419,6 +421,7 @@ struct RespToolAcc {
     call_id: String,
     name: String,
     args: String,
+    thought_signature: Option<String>,
 }
 
 impl ChatToResponses {
@@ -440,6 +443,20 @@ impl ChatToResponses {
 
     fn rid(&self) -> String {
         if self.resp_id.is_empty() { "resp_ccbud".to_string() } else { self.resp_id.clone() }
+    }
+
+    /// The turn's tool calls (with any Gemini thought signatures sniffed from the chat stream),
+    /// keyed by the call_id the Responses client will echo back — feeds the gateway's
+    /// session-scoped signature cache exactly like ChatToAnthropic.
+    pub fn captured_tool_calls(&self) -> Vec<CapturedToolCall> {
+        self.tools.iter().map(|slot| {
+            CapturedToolCall {
+                call_id: slot.call_id.clone(),
+                name: slot.name.clone(),
+                arguments: slot.args.clone(),
+                thought_signature: slot.thought_signature.clone(),
+            }
+        }).collect()
     }
 
     fn ensure_created(&mut self, out: &mut String) {
@@ -569,13 +586,31 @@ impl ChatToResponses {
             if !tcs.is_empty() {
                 self.close_reasoning(&mut out);
             }
-            for tc in tcs {
-                let oa_index = tc.get("index").and_then(|v| v.as_u64()).unwrap_or(0);
+            // A no-index Gemini chunk can contain multiple parallel calls. Even if a provider
+            // repeats the same id, each array item in this delta must claim a distinct slot
+            // (mirrors ChatToAnthropic).
+            let mut claimed_slots: Vec<usize> = vec![];
+            for (fallback_index, tc) in tcs.iter().enumerate() {
+                let explicit_index = tc.get("index").and_then(|v| v.as_u64());
+                let oa_index = explicit_index.unwrap_or(fallback_index as u64);
                 let frag_id = tc.get("id").and_then(|v| v.as_str()).unwrap_or("");
                 let frag_name = tc.get("function").and_then(|f| f.get("name")).and_then(|v| v.as_str()).unwrap_or("");
                 let args = tc.get("function").and_then(|f| f.get("arguments")).and_then(|v| v.as_str()).unwrap_or("");
+                let thought_signature = super::json_thought_signature(tc);
 
-                let pos = match self.tools.iter().position(|s| s.oa_index == oa_index) {
+                // Standard OpenAI chunks carry `index`; Gemini-compatible streams may omit it.
+                // In that case prefer the stable call id, then the call's position in this delta.
+                let pos = explicit_index
+                    .and_then(|_| self.tools.iter().enumerate()
+                        .find(|(index, slot)| slot.oa_index == oa_index && !claimed_slots.contains(index))
+                        .map(|(index, _)| index))
+                    .or_else(|| (!frag_id.is_empty()).then(|| self.tools.iter().enumerate()
+                        .find(|(index, slot)| slot.call_id == frag_id && !claimed_slots.contains(index))
+                        .map(|(index, _)| index)).flatten())
+                    .or_else(|| self.tools.iter().enumerate()
+                        .find(|(index, slot)| slot.oa_index == oa_index && !claimed_slots.contains(index))
+                        .map(|(index, _)| index));
+                let pos = match pos {
                     Some(p) => p,
                     None => {
                         let index = self.next_index;
@@ -587,6 +622,7 @@ impl ChatToResponses {
                             call_id: if frag_id.is_empty() { format!("call_{}", index) } else { frag_id.to_string() },
                             name: frag_name.to_string(),
                             args: String::new(),
+                            thought_signature: None,
                         };
                         out.push_str(&ev(
                             "response.output_item.added",
@@ -598,12 +634,16 @@ impl ChatToResponses {
                         self.tools.len() - 1
                     }
                 };
+                claimed_slots.push(pos);
                 // stray late fragments may carry the id/name the opener lacked; the done item wins
                 if !frag_id.is_empty() {
                     self.tools[pos].call_id = frag_id.to_string();
                 }
                 if !frag_name.is_empty() && self.tools[pos].name.is_empty() {
                     self.tools[pos].name = frag_name.to_string();
+                }
+                if thought_signature.is_some() {
+                    self.tools[pos].thought_signature = thought_signature;
                 }
                 if !args.is_empty() {
                     let s = &mut self.tools[pos];
@@ -1118,8 +1158,37 @@ mod tests {
         assert!(out.contains(r#""input_tokens":20"#) && out.contains(r#""output_tokens":9"#));
         assert_eq!(tc.input_tokens(), 20);
         assert_eq!(tc.output_tokens(), 9);
+        // captured for the gateway's signature cache, keyed by the call_id Codex echoes back
+        let captured = tc.captured_tool_calls();
+        assert_eq!(captured.len(), 1);
+        assert_eq!(captured[0].call_id, "call_1");
+        assert_eq!(captured[0].arguments, r#"{"command":["ls"]}"#);
         // finish is idempotent — [DONE] already closed the stream
         assert_eq!(tc.finish(), "");
+    }
+
+    // Gemini's OpenAI-compatible stream omits `index` and can repeat ids across parallel calls;
+    // before the fix every no-index fragment collapsed into slot 0 (one garbled call), so Codex
+    // never received usable tool calls from a Gemini chat upstream.
+    #[test]
+    fn chat_to_responses_keeps_no_index_parallel_calls_distinct() {
+        let mut tc = ChatToResponses::new("alias-x");
+        let mut out = String::new();
+        out.push_str(&tc.push("data: {\"id\":\"chatcmpl-2\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"id\":\"same-call\",\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"arguments\":\"{\\\"query\\\":\\\"a\\\"}\"},\"extra_content\":{\"google\":{\"thought_signature\":\"sig-parallel\"}}},{\"id\":\"same-call\",\"type\":\"function\",\"function\":{\"name\":\"lookup\",\"arguments\":\"{\\\"query\\\":\\\"b\\\"}\"}}]}}]}\n"));
+        out.push_str(&tc.push("data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n"));
+        out.push_str(&tc.push("data: [DONE]\n"));
+
+        // two distinct function_call items, each with its own arguments
+        assert!(out.contains(r#""output_index":0"#) && out.contains(r#""output_index":1"#));
+        assert!(out.contains(r#""arguments":"{\"query\":\"a\"}""#));
+        assert!(out.contains(r#""arguments":"{\"query\":\"b\"}""#));
+        let captured = tc.captured_tool_calls();
+        assert_eq!(captured.len(), 2);
+        assert_eq!(captured[0].arguments, r#"{"query":"a"}"#);
+        assert_eq!(captured[1].arguments, r#"{"query":"b"}"#);
+        // the Gemini thought signature is captured for the session cache (restore next turn)
+        assert_eq!(captured[0].thought_signature.as_deref(), Some("sig-parallel"));
+        assert!(captured[1].thought_signature.is_none());
     }
 
     #[test]

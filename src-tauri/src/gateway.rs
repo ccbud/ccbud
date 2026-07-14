@@ -240,9 +240,19 @@ fn apply_gemini_signature_fallback(request: &mut llm_connector::types::ChatReque
 }
 
 fn request_session_id(body: &Value) -> Option<String> {
-    let raw = body.pointer("/metadata/user_id")?.as_str()?.trim();
-    let metadata = serde_json::from_str::<Value>(raw).ok()?;
-    metadata.get("session_id").and_then(Value::as_str)
+    // Claude Code: metadata.user_id is a JSON string carrying session_id.
+    if let Some(raw) = body.pointer("/metadata/user_id").and_then(Value::as_str) {
+        if let Ok(metadata) = serde_json::from_str::<Value>(raw.trim()) {
+            if let Some(session) = metadata.get("session_id").and_then(Value::as_str)
+                .filter(|session| !session.is_empty())
+            {
+                return Some(session.to_string());
+            }
+        }
+    }
+    // Codex (Responses client): prompt_cache_key carries the conversation id.
+    body.get("prompt_cache_key").and_then(Value::as_str)
+        .map(str::trim)
         .filter(|session| !session.is_empty())
         .map(str::to_string)
 }
@@ -1075,7 +1085,11 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
             let outgoing = routing.outgoing_model.clone().unwrap_or_default();
             let translated_body = match crate::protocol::decode_client_request(client_wire, p) {
                 Ok(mut ir) => {
-                    if is_gemini_upstream && client_wire == crate::protocol::Wire::Anthropic {
+                    // Neither the Anthropic nor the Responses client wire round-trips Gemini's
+                    // thought signature, so every translated client (Claude Code AND Codex) needs
+                    // the session-cache restore + documented fallback sentinel — Gemini 3 rejects
+                    // current-turn function calls without a signature (400).
+                    if is_gemini_upstream {
                         st.thought_signatures.lock().await.restore(
                             &routing.provider_id,
                             request_session.as_deref(),
@@ -1304,8 +1318,9 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
             let st2 = st.clone();
             let signature_provider_id = routing.provider_id.clone();
             let signature_session = request_session.clone();
-            let capture_thought_signatures = is_gemini_upstream
-                && client_wire == crate::protocol::Wire::Anthropic;
+            // Any Gemini-backed transcoded stream (Claude Code or Codex client) feeds the
+            // signature cache; transcoders that don't track calls return an empty capture.
+            let capture_thought_signatures = is_gemini_upstream;
             let status_code = status.as_u16();
             let ex_id2 = ex_id;
             let started2 = started;
@@ -1569,7 +1584,7 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
                 return error_response(StatusCode::BAD_GATEWAY, &format!("ccbud response translation failed: {}", e), "api_error");
             }
         };
-        if is_gemini_upstream && client_wire == crate::protocol::Wire::Anthropic {
+        if is_gemini_upstream {
             let captured_calls = response_tool_calls(&ir);
             st.thought_signatures.lock().await.remember(
                 &routing.provider_id,
@@ -2145,6 +2160,59 @@ mod tests {
         let nested = json!({ "metadata": { "user_id": "{\"session_id\":\"session-123\",\"account_id\":\"a\"}" } });
         assert_eq!(request_session_id(&nested).as_deref(), Some("session-123"));
         assert!(request_session_id(&json!({ "metadata": { "user_id": "user-123" } })).is_none());
+        // Codex (Responses client) identifies its conversation via prompt_cache_key.
+        assert_eq!(
+            request_session_id(&json!({ "prompt_cache_key": "conv-42" })).as_deref(),
+            Some("conv-42")
+        );
+        assert!(request_session_id(&json!({ "prompt_cache_key": "  " })).is_none());
+    }
+
+    // The full Codex ⇄ Gemini(chat) signature round-trip: what ChatToResponses captured last turn
+    // is restored onto the function_call history Codex echoes back, and earlier steps get the
+    // documented fallback sentinel — without it Gemini 3 rejects the request with a 400.
+    #[test]
+    fn restores_signatures_for_codex_responses_requests() {
+        let mut cache = ThoughtSignatureCache::default();
+        cache.remember("google", Some("conv-42"), &[
+            crate::protocol::stream::CapturedToolCall {
+                call_id: "call_9".to_string(),
+                name: "shell".to_string(),
+                arguments: "{\"command\":[\"ls\"]}".to_string(),
+                thought_signature: Some("sig-codex".to_string()),
+            },
+        ]);
+        let codex = json!({
+            "model": "gpt-5.5-ccbud",
+            "instructions": "You are Codex.",
+            "prompt_cache_key": "conv-42",
+            "input": [
+                { "type": "message", "role": "user", "content": [{ "type": "input_text", "text": "list, then read" }] },
+                { "type": "function_call", "call_id": "call_1", "name": "shell", "arguments": "{\"command\":[\"pwd\"]}" },
+                { "type": "function_call_output", "call_id": "call_1", "output": "/tmp" },
+                { "type": "function_call", "call_id": "call_9", "name": "shell", "arguments": "{ \"command\": [\"ls\"] }" },
+                { "type": "function_call_output", "call_id": "call_9", "output": "a.txt" }
+            ],
+            "store": false, "stream": true
+        });
+        let mut ir = crate::protocol::decode_client_request(crate::protocol::Wire::OpenAiResponses, &codex).unwrap();
+        assert_eq!(request_session_id(&codex).as_deref(), Some("conv-42"));
+        assert_eq!(cache.restore("google", Some("conv-42"), &mut ir), 1);
+        assert_eq!(apply_gemini_signature_fallback(&mut ir), 1);
+        let steps: Vec<_> = ir.messages.iter().filter_map(|message| message.tool_calls.as_ref()).collect();
+        assert_eq!(crate::protocol::tool_call_thought_signature(&steps[0][0]).as_deref(),
+            Some(GEMINI_SIGNATURE_FALLBACK));
+        assert_eq!(crate::protocol::tool_call_thought_signature(&steps[1][0]).as_deref(),
+            Some("sig-codex"));
+        // …and the encoded Gemini chat body carries them where Gemini validates them.
+        let body = crate::protocol::encode_upstream_request(
+            crate::protocol::Wire::OpenAiChat, &ir, "gemini-3-flash-preview", true,
+        ).unwrap();
+        let signatures: Vec<_> = body["messages"].as_array().unwrap().iter()
+            .filter(|message| message["role"] == "assistant")
+            .map(|message| message["tool_calls"][0]["extra_content"]["google"]["thought_signature"].clone())
+            .collect();
+        assert_eq!(signatures, vec![json!(GEMINI_SIGNATURE_FALLBACK), json!("sig-codex")]);
     }
     #[test]
     fn restores_latest_batch_and_falls_back_for_prior_steps() {
