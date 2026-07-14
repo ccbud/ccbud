@@ -16,6 +16,7 @@
 #![allow(dead_code)]
 
 pub mod anthropic;
+pub mod codex_history;
 pub mod openai_chat_client;
 pub mod openai_responses;
 pub mod stream;
@@ -44,8 +45,8 @@ impl Wire {
     /// The client's protocol, inferred from the inbound request path. Claude Code hits
     /// `/v1/messages`; an OpenAI/Codex client hits `/v1/chat/completions` or `/v1/responses`.
     pub fn from_request_path(uri: &Uri) -> Wire {
-        let p = uri.path();
-        if p.ends_with("/responses") || p.ends_with("/responses/") {
+        let p = uri.path().trim_end_matches('/');
+        if p.ends_with("/responses") || p.ends_with("/responses/compact") {
             Wire::OpenAiResponses
         } else if p.contains("/chat/completions") {
             Wire::OpenAiChat
@@ -97,9 +98,40 @@ impl Wire {
         match path.trim_end_matches('/') {
             "/messages" | "/v1/messages" => Some(Wire::Anthropic),
             "/chat/completions" | "/v1/chat/completions" => Some(Wire::OpenAiChat),
-            "/responses" | "/v1/responses" => Some(Wire::OpenAiResponses),
+            "/responses" | "/v1/responses" | "/responses/compact" | "/v1/responses/compact" => {
+                Some(Wire::OpenAiResponses)
+            }
             _ => None,
         }
+    }
+
+    pub fn request_endpoint_path(self, inbound_path: &str) -> &'static str {
+        if self == Wire::OpenAiResponses
+            && inbound_path.trim_end_matches('/').ends_with("/responses/compact")
+        {
+            "/responses/compact"
+        } else {
+            self.endpoint_path()
+        }
+    }
+
+    pub fn upstream_url_for_request(self, base_url: &str, inbound_path: &str) -> String {
+        let base = base_url.trim_end_matches('/');
+        format!("{}{}", base, self.request_endpoint_path(inbound_path))
+    }
+
+    pub fn v1_fallback_url_for_request(
+        self,
+        base_url: &str,
+        inbound_path: &str,
+    ) -> Option<String> {
+        let base = base_url.trim_end_matches('/');
+        if base_url_has_version_suffix(base_url)
+            || (self == Wire::OpenAiChat && base.ends_with("/openai"))
+        {
+            return None;
+        }
+        Some(format!("{}/v1{}", base, self.request_endpoint_path(inbound_path)))
     }
 }
 
@@ -216,7 +248,7 @@ fn ensure_chat_tool_call_reasoning_content(body: &mut Value) {
         let missing = message
             .get("reasoning_content")
             .and_then(Value::as_str)
-            .is_none_or(|s| s.trim().is_empty());
+            .map_or(true, |s| s.trim().is_empty());
         if missing {
             message["reasoning_content"] = json!("tool call");
         }
@@ -272,8 +304,19 @@ pub fn encode_upstream_request(
             let mut body = OpenAIProtocol::new("")
                 .build_chat_request_body(&ir)
                 .map_err(|e| e.to_string())?;
-            if outgoing_model.to_ascii_lowercase().contains("gemini") {
+            let lower_model = outgoing_model.to_ascii_lowercase();
+            if lower_model.contains("gemini") {
                 normalize_openai_request_thought_signatures(&mut body);
+            }
+            // GLM's OpenAI-compatible coding endpoint uses its native `thinking` switch rather
+            // than the OpenAI `reasoning_effort` field emitted by the generic connector.
+            if lower_model.contains("glm") || lower_model.contains("zhipu") || lower_model.contains("z-ai") {
+                if let Some(object) = body.as_object_mut() {
+                    object.remove("reasoning_effort");
+                }
+                if ir.enable_thinking == Some(true) {
+                    body["thinking"] = json!({ "type": "enabled" });
+                }
             }
             ensure_chat_tool_call_reasoning_content(&mut body);
             Ok(body)
@@ -384,6 +427,17 @@ mod tests {
         assert_eq!(Wire::from_request_endpoint("/v1/messages"), Some(Wire::Anthropic));
         assert_eq!(Wire::from_request_endpoint("/v1/chat/completions"), Some(Wire::OpenAiChat));
         assert_eq!(Wire::from_request_endpoint("/v1/responses"), Some(Wire::OpenAiResponses));
+        assert_eq!(
+            Wire::from_request_endpoint("/v1/responses/compact"),
+            Some(Wire::OpenAiResponses)
+        );
+        assert_eq!(
+            Wire::OpenAiResponses.upstream_url_for_request(
+                "https://example.com/v1",
+                "/v1/responses/compact",
+            ),
+            "https://example.com/v1/responses/compact"
+        );
         assert_eq!(Wire::from_request_endpoint("/v1/messages/count_tokens"), None);
         assert_eq!(Wire::from_request_endpoint("/v1/models"), None);
     }
@@ -422,6 +476,23 @@ mod tests {
         // step 1 lost its reasoning → placeholder; step 2's bridged reasoning is preserved
         assert_eq!(assistants[0]["reasoning_content"], "tool call");
         assert_eq!(assistants[1]["reasoning_content"], "real thoughts");
+    }
+
+    #[test]
+    fn glm_chat_uses_native_thinking_switch() {
+        let codex = json!({
+            "model": "gpt-5.4",
+            "input": [{
+                "type": "message",
+                "role": "user",
+                "content": [{ "type": "input_text", "text": "inspect" }]
+            }],
+            "reasoning": { "effort": "ultra" }
+        });
+        let ir = decode_client_request(Wire::OpenAiResponses, &codex).unwrap();
+        let body = encode_upstream_request(Wire::OpenAiChat, &ir, "glm-5.2", true).unwrap();
+        assert_eq!(body["thinking"]["type"], "enabled");
+        assert!(body.get("reasoning_effort").is_none());
     }
 
     #[test]

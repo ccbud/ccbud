@@ -44,9 +44,8 @@ function respondJson(res, status, obj) {
   }
 }
 
-/** Default models advertised to Codex/OpenAI-family clients (mirror gateway.rs
- *  CODEX_TIER_MODELS). -sol/-terra are the primary tier; the rest (e.g. -luna) fast. */
-const CODEX_TIER_MODELS = [{ name: 'gpt-5.6-sol' }, { name: 'gpt-5.6-terra' }, { name: 'gpt-5.6-luna' }];
+/** Stable Codex identities advertised to OpenAI-family clients (mirror gateway.rs). */
+const CODEX_TIER_MODELS = [{ name: 'gpt-5.4' }, { name: 'gpt-5.4-mini' }];
 
 /** Which coding-agent family a model name belongs to: 'claude' | 'codex' | 'other'.
  *  Claude Code sends claude-*, Codex sends gpt-*; each names its tiers differently. */
@@ -58,9 +57,13 @@ function modelFamily(name) {
 }
 /** Claude fast/light tier = haiku models; fable/opus/sonnet (and other claude-*) → primary. */
 function isClaudeFast(name) { return /haiku/i.test(name || ''); }
-/** Codex primary tier = any gpt-* with a sol/terra segment (gpt-5.6-sol, gpt-5.6-sol-pro); other gpt-* → fast. */
+/** Stable gpt-5.4 and legacy sol/terra aliases → primary; other foreign gpt-* keep the fast fallback. */
 function isCodexPrimary(name) {
-  return (name || '').toLowerCase().split(/[-_]/).some((s) => s === 'sol' || s === 'terra');
+  const lower = (name || '').toLowerCase();
+  if (lower === 'gpt-5.4') return true;
+  const segments = lower.split(/[-_]/);
+  return !segments.some((s) => ['mini', 'nano', 'luna', 'spark'].includes(s))
+    && segments.some((s) => s === 'sol' || s === 'terra');
 }
 /** True if the request is from a Codex/OpenAI-family client — by client identity
  *  (User-Agent, or Codex's `originator` header), not the auth scheme. */
@@ -345,7 +348,7 @@ function createGateway({ getConfig }) {
       const auth = req.headers['authorization'] || '';
       const presented = auth.replace(/^Bearer\s+/i, '') || req.headers['x-api-key'] || '';
       if (presented !== config.gatewayToken) {
-        respondJson(res, 401, JSON.parse(errorBody('ccbud: invalid gateway token', 'authentication_error')));
+        respondJson(res, 401, JSON.parse(errorBody('CCBuddy: invalid gateway token', 'authentication_error')));
         return;
       }
     }
@@ -370,7 +373,7 @@ function createGateway({ getConfig }) {
 
     const routing = resolveRouting(requestedModel, config, knownModels);
     if (!routing || !routing.provider) {
-      respondJson(res, 502, JSON.parse(errorBody('ccbud: no provider configured. Add one in the app.', 'api_error')));
+      respondJson(res, 502, JSON.parse(errorBody('CCBuddy: no provider configured. Add one in the app.', 'api_error')));
       log('warn', 'request rejected: no provider configured');
       return;
     }
@@ -419,7 +422,7 @@ function createGateway({ getConfig }) {
       }
       target = new URL(base.protocol + '//' + base.host + basePath + inbound);
     } catch (e) {
-      respondJson(res, 502, JSON.parse(errorBody('ccbud: invalid provider baseUrl: ' + provider.baseUrl, 'api_error')));
+      respondJson(res, 502, JSON.parse(errorBody('CCBuddy: invalid provider baseUrl: ' + provider.baseUrl, 'api_error')));
       return;
     }
 
@@ -617,7 +620,7 @@ function createGateway({ getConfig }) {
               finishLog();
               return;
             }
-            if (!res.headersSent) respondJson(res, 502, JSON.parse(errorBody('ccbud upstream stream error: ' + err.message, 'api_error')));
+            if (!res.headersSent) respondJson(res, 502, JSON.parse(errorBody('CCBuddy upstream stream error: ' + err.message, 'api_error')));
             else { try { res.destroy(); } catch (_) {} }
             emitExchange(upRes.statusCode, outHeaders, capText(Buffer.concat(cs), RES_CAP), err.message);
             finishLog(err.message);
@@ -727,7 +730,7 @@ function createGateway({ getConfig }) {
         return;
       }
       if (!res.headersSent) {
-        respondJson(res, 502, JSON.parse(errorBody('ccbud upstream error: ' + err.message, 'api_error')));
+        respondJson(res, 502, JSON.parse(errorBody('CCBuddy upstream error: ' + err.message, 'api_error')));
       } else {
         try {
           res.destroy();
@@ -769,7 +772,7 @@ function createGateway({ getConfig }) {
         .then(() => handle(req, res, startedAt))
         .catch((e) => {
           try {
-            if (!res.headersSent) respondJson(res, 500, JSON.parse(errorBody('ccbud internal error: ' + (e && e.message ? e.message : e), 'api_error')));
+            if (!res.headersSent) respondJson(res, 500, JSON.parse(errorBody('CCBuddy internal error: ' + (e && e.message ? e.message : e), 'api_error')));
             else res.destroy();
           } catch (_) {}
         });

@@ -13,6 +13,8 @@ const { createGateway } = require('../src/main/proxy');
 const GLM = {
   id: 'glm',
   name: 'BigModel GLM',
+  // The legacy JS proxy appends the inbound `/v1/messages` path itself. The Tauri preset stores
+  // the fully versioned base because its protocol router appends only `/messages`.
   baseUrl: process.env.CCBUD_TEST_BASEURL || 'https://open.bigmodel.cn/api/anthropic',
   authToken: process.env.CCBUD_TEST_TOKEN || '', // never commit a real key — set via env to run live tests
   defaultModel: 'glm-5.1',

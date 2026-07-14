@@ -8,7 +8,7 @@
  *
  * Usage:
  *   node scripts/update-cask.js [dmgDir] [outFile]
- *     dmgDir  : directory holding ccbud-<version>-mac-arm64.dmg / -x64.dmg (default: dist)
+ *     dmgDir  : directory holding CCBuddy_<version>_aarch64.dmg / _x64.dmg (default: dist)
  *     outFile : cask path to write (default: homebrew/Casks/ccbud.rb)
  *
  * In CI this runs after the release is published, then the cask is pushed to the tap repo.
@@ -30,9 +30,9 @@ function sha256Of(file) {
   catch (_) { return null; }
 }
 
-// Tauri (tauri-action) names the dmgs ccbud_<version>_<arch>.dmg with arch aarch64 / x64.
-const arm = sha256Of(path.join(dmgDir, `ccbud_${version}_aarch64.dmg`));
-const intel = sha256Of(path.join(dmgDir, `ccbud_${version}_x64.dmg`));
+// Tauri (tauri-action) names the dmgs CCBuddy_<version>_<arch>.dmg with arch aarch64 / x64.
+const arm = sha256Of(path.join(dmgDir, `CCBuddy_${version}_aarch64.dmg`));
+const intel = sha256Of(path.join(dmgDir, `CCBuddy_${version}_x64.dmg`));
 
 let shaStanza;
 if (arm && intel) {
@@ -49,17 +49,17 @@ const cask = `cask "ccbud" do
   version "${version}"
 ${shaStanza}
 
-  url "https://github.com/ccbud/ccbud/releases/download/v#{version}/ccbud_#{version}_#{arch}.dmg",
+  url "https://github.com/ccbud/ccbud/releases/download/v#{version}/CCBuddy_#{version}_#{arch}.dmg",
       verified: "github.com/ccbud/ccbud/"
-  name "ccbud"
-  desc "Coding CLI buddy — Claude Code gateway plus Claude Code/Codex session browser"
+  name "CCBuddy"
+  desc "CCBuddy — Claude Code gateway plus Claude Code/Codex session browser"
   homepage "https://github.com/ccbud/ccbud"
 
-  # ccbud can update itself in-app; Homebrew handles normal cask upgrades.
+  # CCBuddy can update itself in-app; Homebrew handles normal cask upgrades.
   auto_updates true
   depends_on macos: :big_sur
 
-  app "ccbud.app"
+  app "CCBuddy.app"
 
   zap trash: [
     "~/Library/Application Support/ccbud",

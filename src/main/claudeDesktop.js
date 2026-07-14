@@ -86,18 +86,18 @@ function buildProfile(port, token) {
       <key>PayloadVersion</key>
       <integer>1</integer>
       <key>PayloadDisplayName</key>
-      <string>Claude Desktop Third-Party Inference (ccbud)</string>
+      <string>Claude Desktop Third-Party Inference (CCBuddy)</string>
 ${body}
     </dict>
   </array>
   <key>PayloadDisplayName</key>
-  <string>ccbud · Claude Desktop 第三方推理</string>
+  <string>CCBuddy · Claude Desktop 第三方推理</string>
   <key>PayloadDescription</key>
-  <string>将 Claude 桌面版的模型推理指向本地 ccbud 网关（${endpoint(port)}）。可随时移除以还原为官方推理。</string>
+  <string>将 Claude 桌面版的模型推理指向本地 CCBuddy 网关（${endpoint(port)}）。可随时移除以还原为官方推理。</string>
   <key>PayloadIdentifier</key>
   <string>${PROFILE_IDENTIFIER}</string>
   <key>PayloadOrganization</key>
-  <string>ccbud</string>
+  <string>CCBuddy</string>
   <key>PayloadRemovalDisallowed</key>
   <false/>
   <key>PayloadScope</key>

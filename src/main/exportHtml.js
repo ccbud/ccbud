@@ -258,7 +258,7 @@ function htmlFromData(data) {
   return '<!doctype html><html lang="zh" data-theme="light"><head><meta charset="utf-8">'
     + '<meta http-equiv="Content-Security-Policy" content="' + csp + '">'
     + '<meta name="viewport" content="width=device-width,initial-scale=1">'
-    + '<title>' + title + ' · ccbud</title>'
+    + '<title>' + title + ' · CCBuddy</title>'
     + '<style>' + skin + '\n' + hljsCss + '</style>'
     + '</head><body><div id="app" data-clarity-mask="true"></div>'
     + '<script nonce="ccbudexport">' + marked + '</script>'

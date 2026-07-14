@@ -433,15 +433,58 @@ fn connect_targets(cfg: &Value) -> Vec<String> {
     out
 }
 
-/// The model written into Codex's config: "gpt-5.6-sol-pro". Codex derives its model
-/// family from the name — a foreign name (e.g. "z-ai/glm-5.2") makes it warn about an
-/// unknown/degraded model on every launch, while a gpt-5.6-prefixed one is accepted
-/// silently. The gateway routes it to the active provider's PRIMARY model via its
-/// "sol" segment (see resolve_routing / is_codex_primary); the distinct "-pro" suffix
-/// marks it as the auto-connect model vs the plain gpt-5.6-sol advertised in /v1/models.
-/// (Legacy configs still using the "*-ccbud" sentinel keep routing to primary too.)
+/// Plan the safe subset of connections to repair on startup. Older releases could persist the
+/// then-default `["claude"]` without the user ever connecting, so selection alone is insufficient:
+/// a target's compatibility backup is the proof that CCBuddy previously took ownership of it.
+fn startup_reconcile_targets(cfg: &Value) -> Vec<String> {
+    connect_targets(cfg)
+        .into_iter()
+        .filter(|target| {
+            let backup_key = if target == "claude" {
+                "claudeBackup"
+            } else {
+                "codexBackup"
+            };
+            cfg.get(backup_key).map(Value::is_object).unwrap_or(false)
+        })
+        .collect()
+}
+
+/// Repair only previously managed, still-selected targets. This intentionally has no disconnect
+/// branch: startup must not restore/consume an unselected target's compatibility backup. Since each
+/// connect call is gated on an existing object backup, it also cannot create a first-time backup.
+fn reconcile_connections_on_startup(cfg: &Value) {
+    let selected = startup_reconcile_targets(cfg);
+    if selected.is_empty() {
+        return;
+    }
+    let port = cfg.get("port").and_then(|v| v.as_u64()).unwrap_or(8788) as u16;
+    let token = claude::current_token(cfg);
+    if selected.iter().any(|target| target == "claude") {
+        claude::connect(port, &token);
+    }
+    if selected.iter().any(|target| target == "codex") {
+        codexconnect::connect(port, &token, &codex_model(cfg));
+    }
+}
+
+/// The legacy one-click Connect command still has a useful default even though startup does not:
+/// when no target is selected, choose Claude and persist that now-explicit selection.
+fn ensure_hero_connect_target(cfg: &mut Value) -> bool {
+    if connect_targets(cfg).is_empty() {
+        cfg["connectTargets"] = json!(["claude"]);
+        true
+    } else {
+        false
+    }
+}
+
+/// The model written into Codex's config. `gpt-5.4` is a stable model identity understood by the
+/// current CLI and enables its normal function/custom tool registry for custom providers. The
+/// synthetic `gpt-5.6-sol-pro` identity previously used here selected code-mode metadata and made
+/// Codex send an empty Responses `tools` array, so the gateway could never drive an agent turn.
 fn codex_model(_cfg: &Value) -> String {
-    "gpt-5.6-sol-pro".to_string()
+    "gpt-5.4".to_string()
 }
 
 /// Make each CLI's config file match the selected `connectTargets`: write the selected ones to
@@ -477,8 +520,7 @@ async fn claude_connect(
     }
     // Hero "一键接入" with nothing selected connects Claude Code by default (and persists it, so the
     // toggle reflects it).
-    if connect_targets(&cfg).is_empty() {
-        cfg["connectTargets"] = json!(["claude"]);
+    if ensure_hero_connect_target(&mut cfg) {
         cfg = store::write_config(cfg);
     }
     apply_connections(&cfg);
@@ -701,7 +743,56 @@ fn format_tokens(n: i64) -> String {
 
 #[cfg(test)]
 mod fmt_tests {
-    use super::format_tokens;
+    use super::{ensure_hero_connect_target, format_tokens, startup_reconcile_targets};
+    use serde_json::json;
+
+    #[test]
+    fn startup_reconciliation_requires_the_targets_own_backup() {
+        assert!(startup_reconcile_targets(&json!({})).is_empty());
+        assert!(startup_reconcile_targets(&json!({
+            "connectTargets": ["claude"],
+            "claudeBackup": null
+        }))
+        .is_empty());
+        assert!(startup_reconcile_targets(&json!({
+            "connectTargets": ["codex"],
+            "codexBackup": "not-a-backup"
+        }))
+        .is_empty());
+
+        assert_eq!(
+            startup_reconcile_targets(&json!({
+                "connectTargets": ["claude", "codex"],
+                "claudeBackup": { "model": null, "env": {} },
+                "codexBackup": null
+            })),
+            vec!["claude"]
+        );
+        assert_eq!(
+            startup_reconcile_targets(&json!({
+                "connectTargets": ["claude", "codex"],
+                "claudeBackup": null,
+                "codexBackup": {
+                    "model": "gpt-5",
+                    "model_provider": "openai",
+                    "model_reasoning_effort": null
+                }
+            })),
+            vec!["codex"]
+        );
+    }
+
+    #[test]
+    fn hero_connect_defaults_to_claude_without_overriding_a_selection() {
+        let mut fresh = json!({ "connectTargets": [] });
+        assert!(ensure_hero_connect_target(&mut fresh));
+        assert_eq!(fresh["connectTargets"], json!(["claude"]));
+
+        let mut selected = json!({ "connectTargets": ["codex"] });
+        assert!(!ensure_hero_connect_target(&mut selected));
+        assert_eq!(selected["connectTargets"], json!(["codex"]));
+    }
+
     #[test]
     fn matches_js_format_tokens() {
         assert_eq!(format_tokens(0), "0");
@@ -757,11 +848,11 @@ struct TrayLabels {
 fn tray_labels(lang: &str) -> TrayLabels {
     match lang {
         // config.language stores "zh" (store.rs normalize) — accept both spellings.
-        "zh" | "zh-CN" => TrayLabels { running_with: "● 网关运行中 · {name}", stopped: "○ 网关已停止", open_main: "打开主界面", stop_gw: "停止网关服务", start_gw: "启动网关服务", quit: "退出 ccbud", check_updates: "检查更新…" },
-        "zh-TW" => TrayLabels { running_with: "● 閘道執行中 · {name}", stopped: "○ 閘道已停止", open_main: "開啟主視窗", stop_gw: "停止閘道服務", start_gw: "啟動閘道服務", quit: "結束 ccbud", check_updates: "檢查更新…" },
-        "ja" => TrayLabels { running_with: "● ゲートウェイ稼働中 · {name}", stopped: "○ ゲートウェイ停止中", open_main: "メインウィンドウを開く", stop_gw: "ゲートウェイを停止", start_gw: "ゲートウェイを起動", quit: "ccbud を終了", check_updates: "更新を確認…" },
-        "ko" => TrayLabels { running_with: "● 게이트웨이 실행 중 · {name}", stopped: "○ 게이트웨이 중지됨", open_main: "메인 창 열기", stop_gw: "게이트웨이 중지", start_gw: "게이트웨이 시작", quit: "ccbud 종료", check_updates: "업데이트 확인…" },
-        _ => TrayLabels { running_with: "● Gateway running · {name}", stopped: "○ Gateway stopped", open_main: "Open main window", stop_gw: "Stop gateway service", start_gw: "Start gateway service", quit: "Quit ccbud", check_updates: "Check for updates…" },
+        "zh" | "zh-CN" => TrayLabels { running_with: "● 网关运行中 · {name}", stopped: "○ 网关已停止", open_main: "打开主界面", stop_gw: "停止网关服务", start_gw: "启动网关服务", quit: "退出 CCBuddy", check_updates: "检查更新…" },
+        "zh-TW" => TrayLabels { running_with: "● 閘道執行中 · {name}", stopped: "○ 閘道已停止", open_main: "開啟主視窗", stop_gw: "停止閘道服務", start_gw: "啟動閘道服務", quit: "結束 CCBuddy", check_updates: "檢查更新…" },
+        "ja" => TrayLabels { running_with: "● ゲートウェイ稼働中 · {name}", stopped: "○ ゲートウェイ停止中", open_main: "メインウィンドウを開く", stop_gw: "ゲートウェイを停止", start_gw: "ゲートウェイを起動", quit: "CCBuddy を終了", check_updates: "更新を確認…" },
+        "ko" => TrayLabels { running_with: "● 게이트웨이 실행 중 · {name}", stopped: "○ 게이트웨이 중지됨", open_main: "메인 창 열기", stop_gw: "게이트웨이 중지", start_gw: "게이트웨이 시작", quit: "CCBuddy 종료", check_updates: "업데이트 확인…" },
+        _ => TrayLabels { running_with: "● Gateway running · {name}", stopped: "○ Gateway stopped", open_main: "Open main window", stop_gw: "Stop gateway service", start_gw: "Start gateway service", quit: "Quit CCBuddy", check_updates: "Check for updates…" },
     }
 }
 fn config_lang(config: &Value) -> String {
@@ -792,7 +883,7 @@ fn build_tray_menu(
     use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
     let l = tray_labels(lang);
     let status_txt = if running {
-        let name = if provider.is_empty() { "ccbud" } else { provider };
+        let name = if provider.is_empty() { "CCBuddy" } else { provider };
         l.running_with.replace("{name}", name)
     } else {
         l.stopped.to_string()
@@ -1662,6 +1753,10 @@ pub fn run() {
             let pm_boot = pm.clone();
             app.manage(pm);
             let startup_cfg = store::read_config();
+            // Repair previously managed targets that remain selected. A compatibility backup is
+            // required per target because old defaults could persist `["claude"]` without any
+            // connection action; startup never connects a first-time target or disconnects one.
+            reconcile_connections_on_startup(&startup_cfg);
             let port = startup_cfg.get("port").and_then(|v| v.as_u64()).unwrap_or(8788) as u16;
             let enabled = startup_cfg.get("gatewayEnabled").and_then(|v| v.as_bool()).unwrap_or(true);
             // If the active service is plugin-backed, remember its plugin id so we can
@@ -1706,7 +1801,7 @@ pub fn run() {
                 let _ = TrayIconBuilder::with_id("main")
                     .icon(tray_img)
                     .icon_as_template(true)
-                    .tooltip("ccbud")
+                    .tooltip("CCBuddy")
                     .menu(&menu)
                     .show_menu_on_left_click(false)
                     .on_menu_event(|app, event| match event.id.as_ref() {

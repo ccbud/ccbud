@@ -22,6 +22,7 @@ use std::sync::Arc;
 use tauri::Emitter;
 use tokio::sync::{oneshot, Mutex};
 
+use crate::protocol::codex_history::{HistoryResolution, ResponseOrigin};
 use crate::store;
 
 /// Default Claude tier models ccbud advertises to Claude-family clients (Claude Code,
@@ -34,9 +35,11 @@ pub const CLAUDE_TIER_MODELS: &[(&str, &str)] = &[
     ("claude-haiku-4-5-20251001", "haiku"),
 ];
 
-/// Default models ccbud advertises to Codex/OpenAI-family clients. `-sol`/`-terra`
-/// are the primary tier; the rest (e.g. `-luna`) are the fast tier — see model_family.
-pub const CODEX_TIER_MODELS: &[&str] = &["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"];
+/// Stable Codex model identities advertised by the gateway. These names are understood by the
+/// current Codex CLI and keep its ordinary function/custom tool registry enabled; synthetic
+/// `gpt-5.6-sol*` identities select Codex's code-mode metadata and produce an empty Responses
+/// `tools` array against a generic custom provider.
+pub const CODEX_TIER_MODELS: &[&str] = &["gpt-5.4", "gpt-5.4-mini"];
 
 /// Which coding-agent family a model name belongs to. Claude Code sends `claude-*`,
 /// Codex sends `gpt-*`; each names its primary vs fast tier differently.
@@ -60,13 +63,21 @@ fn model_family(name: &str) -> ModelFamily {
 fn is_claude_fast(name: &str) -> bool {
     name.to_ascii_lowercase().contains("haiku")
 }
-/// Codex primary tier = any gpt-* whose name has a `sol` / `terra` segment. Matches
-/// gpt-5.6-sol, gpt-5.6-terra, and the auto-connect gpt-5.6-sol-pro; other gpt-*
-/// (e.g. `-luna`, `-mini`) route to the fast model.
+/// The stable auto-connect identity and legacy `sol` / `terra` aliases route to primary. Explicit
+/// small-model identities route to fast; other foreign `gpt-*` names retain the historical fast
+/// fallback instead of unexpectedly consuming the primary provider model.
 fn is_codex_primary(name: &str) -> bool {
-    name.to_ascii_lowercase()
+    let lower = name.to_ascii_lowercase();
+    if lower == "gpt-5.4" {
+        return true;
+    }
+    let segments = lower
         .split(|c| c == '-' || c == '_')
-        .any(|seg| seg == "sol" || seg == "terra")
+        .collect::<Vec<_>>();
+    !segments
+        .iter()
+        .any(|seg| matches!(*seg, "mini" | "nano" | "luna" | "spark"))
+        && segments.iter().any(|seg| matches!(*seg, "sol" | "terra"))
 }
 /// True if the request comes from a Codex/OpenAI-family client (vs Claude), detected by
 /// the client's self-reported identity — User-Agent, or Codex's `originator` header.
@@ -257,6 +268,10 @@ fn request_session_id(body: &Value) -> Option<String> {
         .map(str::to_string)
 }
 
+fn codex_history_scope_for_session(request_session: Option<&str>) -> String {
+    request_session.unwrap_or("").to_string()
+}
+
 fn response_tool_calls(
     response: &llm_connector::types::ChatResponse,
 ) -> Vec<crate::protocol::stream::CapturedToolCall> {
@@ -270,6 +285,29 @@ fn response_tool_calls(
             }
         }).collect())
         .unwrap_or_default()
+}
+
+fn response_tool_calls_with_client_ids(
+    response: &llm_connector::types::ChatResponse,
+    encoded_response: &Value,
+) -> Vec<crate::protocol::stream::CapturedToolCall> {
+    let mut captured = response_tool_calls(response);
+    let client_ids = encoded_response
+        .get("output")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|item| {
+            matches!(
+                item.get("type").and_then(Value::as_str),
+                Some("function_call" | "custom_tool_call" | "tool_search_call")
+            )
+        })
+        .filter_map(|item| item.get("call_id").and_then(Value::as_str));
+    for (call, client_id) in captured.iter_mut().zip(client_ids) {
+        call.call_id = client_id.to_string();
+    }
+    captured
 }
 
 /// Decide how to route a request and translate its model name. Mirrors proxy.js `resolveRouting`.
@@ -386,6 +424,7 @@ pub struct GatewayState {
     app: tauri::AppHandle,
     known: Mutex<HashMap<String, HashSet<String>>>,
     thought_signatures: Mutex<ThoughtSignatureCache>,
+    codex_history: crate::protocol::codex_history::CodexHistoryStore,
     seq: AtomicU64,
     running: Mutex<Option<RunningServer>>,
     // Sync mirror of the bound port (0 = stopped) for callers that can't await (tray refresh).
@@ -416,6 +455,7 @@ impl GatewayState {
             app,
             known: Mutex::new(HashMap::new()),
             thought_signatures: Mutex::new(ThoughtSignatureCache::default()),
+            codex_history: crate::protocol::codex_history::CodexHistoryStore::default(),
             seq: AtomicU64::new(0),
             running: Mutex::new(None),
             running_port: std::sync::atomic::AtomicU32::new(0),
@@ -571,6 +611,105 @@ struct UsageAcc {
     cache_read: i64,
     cache_creation: i64,
     saw: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ResponsesForwardMode {
+    Original,
+    Materialized,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ResponsesHistoryDecision {
+    forward: ResponsesForwardMode,
+    descendant_materializable: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ResponsesHistoryError {
+    Unavailable,
+}
+
+#[derive(Clone)]
+struct NativeResponsesHistoryContext {
+    scope: String,
+    request: Value,
+    provider_id: String,
+    materializable: bool,
+}
+
+fn decide_responses_history(
+    provider_wire: crate::protocol::Wire,
+    provider_id: &str,
+    resolution: &HistoryResolution,
+) -> Result<ResponsesHistoryDecision, ResponsesHistoryError> {
+    if !resolution.had_previous_response_id {
+        return Ok(ResponsesHistoryDecision {
+            forward: if resolution.changed > 0 {
+                ResponsesForwardMode::Materialized
+            } else {
+                ResponsesForwardMode::Original
+            },
+            descendant_materializable: true,
+        });
+    }
+
+    if provider_wire != crate::protocol::Wire::OpenAiResponses {
+        return (resolution.previous_found && resolution.previous_materialized)
+            .then_some(ResponsesHistoryDecision {
+                forward: ResponsesForwardMode::Materialized,
+                descendant_materializable: true,
+            })
+            .ok_or(ResponsesHistoryError::Unavailable);
+    }
+
+    if !resolution.previous_found {
+        // Restart compatibility: the selected native provider may still own this id even though
+        // the gateway cache does not. Keep the id intact, but do not make descendants portable.
+        return Ok(ResponsesHistoryDecision {
+            forward: ResponsesForwardMode::Original,
+            descendant_materializable: false,
+        });
+    }
+
+    let same_native_owner = matches!(
+        resolution.previous_origin.as_ref(),
+        Some(ResponseOrigin::Native(owner)) if owner == provider_id
+    );
+    if same_native_owner {
+        return Ok(ResponsesHistoryDecision {
+            forward: ResponsesForwardMode::Original,
+            descendant_materializable: resolution.previous_materialized,
+        });
+    }
+
+    resolution
+        .previous_materialized
+        .then_some(ResponsesHistoryDecision {
+            forward: ResponsesForwardMode::Materialized,
+            descendant_materializable: true,
+        })
+        .ok_or(ResponsesHistoryError::Unavailable)
+}
+
+fn decide_responses_compact_history(
+    provider_id: &str,
+    resolution: &HistoryResolution,
+) -> Result<ResponsesForwardMode, ResponsesHistoryError> {
+    decide_responses_history(
+        crate::protocol::Wire::OpenAiResponses,
+        provider_id,
+        resolution,
+    )
+    .map(|decision| decision.forward)
+}
+
+fn request_body_with_model(request: &Value, outgoing_model: Option<&str>) -> Option<Bytes> {
+    let mut request = request.clone();
+    if let (Some(object), Some(model)) = (request.as_object_mut(), outgoing_model) {
+        object.insert("model".to_string(), Value::String(model.to_string()));
+    }
+    serde_json::to_vec(&request).ok().map(Bytes::from)
 }
 
 /// Makes a streaming request visible in the monitor even when the client aborts mid-stream.
@@ -756,6 +895,62 @@ fn process_sse_line(line: &str, rewrite_model: Option<&str>, usage: &mut UsageAc
     line.to_string()
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ResponsesTerminalKind {
+    Completed,
+    Incomplete,
+    Failed,
+}
+
+impl ResponsesTerminalKind {
+    fn is_resumable(self) -> bool {
+        matches!(self, Self::Completed | Self::Incomplete)
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ResponsesTerminal {
+    kind: ResponsesTerminalKind,
+    response: Option<Value>,
+}
+
+fn responses_terminal_event(sse: &str) -> Option<ResponsesTerminal> {
+    sse.lines().rev().find_map(|line| {
+        let payload = line.trim().strip_prefix("data:")?.trim();
+        let event: Value = serde_json::from_str(payload).ok()?;
+        let kind = match event.get("type").and_then(Value::as_str)? {
+            "response.completed" => ResponsesTerminalKind::Completed,
+            "response.incomplete" => ResponsesTerminalKind::Incomplete,
+            "response.failed" => ResponsesTerminalKind::Failed,
+            _ => return None,
+        };
+        Some(ResponsesTerminal {
+            kind,
+            response: event.get("response").cloned(),
+        })
+    })
+}
+
+fn responses_terminal_object(response: &Value) -> Option<ResponsesTerminal> {
+    let kind = match response.get("status").and_then(Value::as_str)? {
+        "completed" => ResponsesTerminalKind::Completed,
+        "incomplete" => ResponsesTerminalKind::Incomplete,
+        "failed" => ResponsesTerminalKind::Failed,
+        _ => return None,
+    };
+    Some(ResponsesTerminal {
+        kind,
+        response: Some(response.clone()),
+    })
+}
+
+fn is_responses_compact_path(path: &str) -> bool {
+    matches!(
+        path.trim_end_matches('/'),
+        "/responses/compact" | "/v1/responses/compact"
+    )
+}
+
 fn build_target(base_url: &str, uri: &Uri) -> Option<String> {
     if base_url.is_empty() {
         return None;
@@ -797,9 +992,25 @@ fn endpoint_targets(base_url: &str, uri: &Uri) -> Option<(String, Option<String>
         url
     };
     Some((
-        with_query(wire.upstream_url(base_url)),
-        wire.v1_fallback_url(base_url).map(with_query),
+        with_query(wire.upstream_url_for_request(base_url, uri.path())),
+        wire.v1_fallback_url_for_request(base_url, uri.path()).map(with_query),
     ))
+}
+
+/// Standalone Responses compaction returns a distinct `response.compaction` object whose output
+/// is the canonical replacement context window. Chat and Anthropic upstreams cannot provide that
+/// contract through the ordinary response transcoder, so fail explicitly instead of turning a
+/// compact request into an unrelated model turn. Responses providers keep the passthrough path.
+fn cross_wire_compact_error(path: &str, provider_wire: crate::protocol::Wire) -> Option<Response> {
+    (is_responses_compact_path(path)
+        && provider_wire != crate::protocol::Wire::OpenAiResponses)
+        .then(|| {
+            error_response(
+                StatusCode::NOT_IMPLEMENTED,
+                "CCBuddy: /v1/responses/compact requires an openai-responses provider; cross-protocol compaction is not supported",
+                "invalid_request_error",
+            )
+        })
 }
 
 /// The path component of a base URL (everything after scheme://authority), or "".
@@ -972,7 +1183,7 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
                 in_headers.get("x-api-key").and_then(|v| v.to_str().ok()).unwrap_or("")
             });
             if presented != token {
-                return error_response(StatusCode::UNAUTHORIZED, "ccbud: invalid gateway token", "authentication_error");
+                return error_response(StatusCode::UNAUTHORIZED, "CCBuddy: invalid gateway token", "authentication_error");
             }
         }
     }
@@ -1008,12 +1219,12 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
         Some(r) => r,
         None => {
             st.log("warn", "request rejected: no provider configured");
-            return error_response(StatusCode::BAD_GATEWAY, "ccbud: no provider configured. Add one in the app.", "api_error");
+            return error_response(StatusCode::BAD_GATEWAY, "CCBuddy: no provider configured. Add one in the app.", "api_error");
         }
     };
     let provider = match providers.iter().find(|p| p.get("id").and_then(|v| v.as_str()) == Some(routing.provider_id.as_str())) {
         Some(p) => p,
-        None => return error_response(StatusCode::BAD_GATEWAY, "ccbud: no provider configured.", "api_error"),
+        None => return error_response(StatusCode::BAD_GATEWAY, "CCBuddy: no provider configured.", "api_error"),
     };
     let base_url = provider.get("baseUrl").and_then(|v| v.as_str()).unwrap_or("");
     let auth_token = provider.get("authToken").and_then(|v| v.as_str()).unwrap_or("").to_string();
@@ -1047,7 +1258,7 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
         Some(pair) => pair,
         None => match build_target(base_url, &uri) {
             Some(t) => (t, None),
-            None => return error_response(StatusCode::BAD_GATEWAY, "ccbud: invalid provider baseUrl", "api_error"),
+            None => return error_response(StatusCode::BAD_GATEWAY, "CCBuddy: invalid provider baseUrl", "api_error"),
         },
     };
     let is_models_list = method == Method::GET && (req_path.ends_with("/v1/models") || req_path.ends_with("/v1/models/"));
@@ -1069,13 +1280,150 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
     let client_wire = crate::protocol::Wire::from_request_path(&uri);
     let provider_wire =
         crate::protocol::Wire::from_provider(provider.get("protocol").and_then(|v| v.as_str()));
+    let is_responses_compact = method == Method::POST && is_responses_compact_path(&req_path);
+    if method == Method::POST {
+        if let Some(response) = cross_wire_compact_error(&req_path, provider_wire) {
+            return response;
+        }
+    }
     let request_session = parsed.as_ref().and_then(request_session_id);
+    // Conversation history belongs to the client session, not the provider: users may switch the
+    // active provider mid-turn and previous_response_id must still restore the same transcript.
+    // Sessionless requests can use direct response-id lookup, but never call-id fallback because
+    // call ids are routinely reused across unrelated agent runs.
+    let codex_history_scope = codex_history_scope_for_session(request_session.as_deref());
+    let allow_codex_call_fallback = request_session.is_some();
+    let mut prepared_responses_request: Option<Value> = None;
+    let mut native_responses_history: Option<NativeResponsesHistoryContext> = None;
+    let mut history_localized = false;
+    if is_responses_compact {
+        if let Some(request) = parsed.as_ref() {
+            let previous_response_id = request
+                .get("previous_response_id")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToString::to_string);
+            let mut materialized_request = request.clone();
+            let resolution = st
+                .codex_history
+                .materialize_request_scoped(
+                    &codex_history_scope,
+                    allow_codex_call_fallback,
+                    &mut materialized_request,
+                )
+                .await;
+            let forward = match decide_responses_compact_history(
+                &routing.provider_id,
+                &resolution,
+            ) {
+                Ok(forward) => forward,
+                Err(ResponsesHistoryError::Unavailable) => {
+                    return error_response(
+                        StatusCode::BAD_REQUEST,
+                        &format!(
+                            "CCBuddy cannot compact previous_response_id '{}' with provider '{}': its complete context cannot be materialized; retry with the owning Responses provider",
+                            previous_response_id.as_deref().unwrap_or("<missing>"),
+                            provider_name
+                        ),
+                        "invalid_request_error",
+                    );
+                }
+            };
+            if forward == ResponsesForwardMode::Materialized {
+                history_localized = true;
+                let Some(body) = request_body_with_model(
+                    &materialized_request,
+                    routing.outgoing_model.as_deref(),
+                ) else {
+                    return error_response(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "CCBuddy failed to serialize locally materialized compact history",
+                        "api_error",
+                    );
+                };
+                out_body = body;
+            }
+        }
+    } else if client_wire == crate::protocol::Wire::OpenAiResponses && method == Method::POST {
+        if let Some(request) = parsed.as_ref() {
+            let previous_response_id = request
+                .get("previous_response_id")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToString::to_string);
+            let mut materialized_request = request.clone();
+            let resolution = st
+                .codex_history
+                .materialize_request_scoped(
+                    &codex_history_scope,
+                    allow_codex_call_fallback,
+                    &mut materialized_request,
+                )
+                .await;
+            let decision = match decide_responses_history(
+                provider_wire,
+                &routing.provider_id,
+                &resolution,
+            ) {
+                Ok(decision) => decision,
+                Err(ResponsesHistoryError::Unavailable) => {
+                    let detail = if resolution.previous_found {
+                        "is known locally but its complete context cannot be materialized"
+                    } else {
+                        "is not available in local history"
+                    };
+                    return error_response(
+                        StatusCode::BAD_REQUEST,
+                        &format!(
+                            "CCBuddy cannot continue previous_response_id '{}' through provider '{}': it {}; retry with the owning Responses provider or start a new conversation",
+                            previous_response_id.as_deref().unwrap_or("<missing>"),
+                            provider_name,
+                            detail
+                        ),
+                        "invalid_request_error",
+                    );
+                }
+            };
+            if decision.forward == ResponsesForwardMode::Materialized {
+                history_localized = true;
+                if provider_wire == crate::protocol::Wire::OpenAiResponses {
+                    let Some(body) = request_body_with_model(
+                        &materialized_request,
+                        routing.outgoing_model.as_deref(),
+                    ) else {
+                        return error_response(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "CCBuddy failed to serialize locally materialized Responses history",
+                            "api_error",
+                        );
+                    };
+                    out_body = body;
+                }
+            }
+            if provider_wire == crate::protocol::Wire::OpenAiResponses {
+                native_responses_history = Some(NativeResponsesHistoryContext {
+                    scope: codex_history_scope.clone(),
+                    request: materialized_request.clone(),
+                    provider_id: routing.provider_id.clone(),
+                    materializable: decision.descendant_materializable,
+                });
+            }
+            prepared_responses_request = Some(materialized_request);
+        }
+    }
     let is_gemini_upstream = provider_wire == crate::protocol::Wire::OpenAiChat
         && routing.outgoing_model.as_deref().unwrap_or("").to_ascii_lowercase().contains("gemini");
-    // translate ctx: (client_wire, provider_wire, client_facing_model, client_wanted_stream, incremental)
+    // translate ctx: (client wire, provider wire, client model, wanted stream, incremental,
+    // request-scoped Responses tool metadata, full translated client request for history,
+    // client-session history scope)
     // `incremental` = we can transcode the upstream stream event-by-event to the client (true
     // token-by-token). Otherwise we force the upstream buffered and synthesize the client response.
-    let mut translate: Option<(crate::protocol::Wire, crate::protocol::Wire, String, bool, bool)> = None;
+    let mut translate: Option<(crate::protocol::Wire, crate::protocol::Wire, String, bool, bool,
+        crate::protocol::openai_responses::CodexToolContext,
+        Value,
+        String)> = None;
     if client_wire != provider_wire && method == Method::POST && !is_models_list && !is_count_tokens {
         if let Some(p) = parsed.as_ref() {
             let wanted_stream = p.get("stream").and_then(|v| v.as_bool()).unwrap_or(false);
@@ -1083,24 +1431,50 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
                 && crate::protocol::can_transcode_stream(provider_wire, client_wire);
             let client_model = routing.client_facing_model.clone().unwrap_or_default();
             let outgoing = routing.outgoing_model.clone().unwrap_or_default();
-            let translated_body = match crate::protocol::decode_client_request(client_wire, p) {
-                Ok(mut ir) => {
-                    // Neither the Anthropic nor the Responses client wire round-trips Gemini's
-                    // thought signature, so every translated client (Claude Code AND Codex) needs
-                    // the session-cache restore + documented fallback sentinel — Gemini 3 rejects
-                    // current-turn function calls without a signature (400).
-                    if is_gemini_upstream {
-                        st.thought_signatures.lock().await.restore(
-                            &routing.provider_id,
-                            request_session.as_deref(),
-                            &mut ir,
-                        );
-                        apply_gemini_signature_fallback(&mut ir);
-                    }
-                    crate::protocol::encode_upstream_request(provider_wire, &ir, &outgoing, incremental)
-                }
-                Err(e) => Err(e),
+            let request_for_translation = prepared_responses_request
+                .clone()
+                .unwrap_or_else(|| p.clone());
+            let decoded = if client_wire == crate::protocol::Wire::OpenAiResponses {
+                crate::protocol::openai_responses::decode_request_with_context(
+                    &request_for_translation,
+                )
+            } else {
+                crate::protocol::decode_client_request(client_wire, &request_for_translation).map(
+                    |request| {
+                        (
+                            request,
+                            crate::protocol::openai_responses::CodexToolContext::default(),
+                        )
+                    },
+                )
             };
+            let (mut ir, tool_context) = match decoded {
+                Ok(decoded) => decoded,
+                Err(e) => {
+                    st.log(
+                        "warn",
+                        format!("client protocol decode ({:?}) failed: {}", client_wire, e),
+                    );
+                    return error_response(
+                        StatusCode::BAD_REQUEST,
+                        &format!("CCBuddy invalid client request: {}", e),
+                        "invalid_request_error",
+                    );
+                }
+            };
+            // Neither the Anthropic nor the Responses client wire round-trips Gemini's thought
+            // signature, so every translated client (Claude Code AND Codex) needs the session-cache
+            // restore + documented fallback sentinel — Gemini 3 rejects current-turn function calls
+            // without a signature (400).
+            if is_gemini_upstream {
+                st.thought_signatures.lock().await.restore(
+                    &routing.provider_id,
+                    request_session.as_deref(),
+                    &mut ir,
+                );
+                apply_gemini_signature_fallback(&mut ir);
+            }
+            let translated_body = crate::protocol::encode_upstream_request(provider_wire, &ir, &outgoing, incremental);
             match translated_body {
                 Ok(mut body) => {
                     // Ask OpenAI-family upstreams to include usage in the final stream chunk.
@@ -1113,11 +1487,12 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
                     // Send to the provider protocol's endpoint (drop the inbound path/query).
                     target = provider_wire.upstream_url(base_url);
                     v1_fallback_target = provider_wire.v1_fallback_url(base_url);
-                    translate = Some((client_wire, provider_wire, client_model, wanted_stream, incremental));
+                    translate = Some((client_wire, provider_wire, client_model, wanted_stream, incremental,
+                        tool_context, request_for_translation, codex_history_scope.clone()));
                 }
                 Err(e) => {
                     st.log("error", format!("protocol translate ({:?}→{:?}) failed: {}", client_wire, provider_wire, e));
-                    return error_response(StatusCode::BAD_GATEWAY, &format!("ccbud protocol translation failed: {}", e), "api_error");
+                    return error_response(StatusCode::BAD_GATEWAY, &format!("CCBuddy protocol translation failed: {}", e), "api_error");
                 }
             }
         }
@@ -1164,7 +1539,7 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
             "url": uri.path_and_query().map(|p| p.as_str().to_string()).unwrap_or_else(|| req_path.clone()),
             "headers": redact_headers(&in_headers),
         });
-        if ex_translated.is_some() {
+        if ex_translated.is_some() || history_localized {
             o["body"] = cap_text(&body_bytes, 1024 * 1024);
         }
         o
@@ -1255,7 +1630,7 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
                 }
                 st.log("error", format!("upstream error: {}", e));
                 st.emit_request(ex_id, started, &method, &req_path, &provider_name, &routing, 502, None);
-                return error_response(StatusCode::BAD_GATEWAY, &format!("ccbud upstream error: {}", e), "api_error");
+                return error_response(StatusCode::BAD_GATEWAY, &format!("CCBuddy upstream error: {}", e), "api_error");
             }
         }
     };
@@ -1307,12 +1682,12 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
     if ct.contains("text/event-stream") {
         // Incremental cross-protocol transcode: feed each upstream SSE line through a stateful
         // transcoder that emits the client protocol's events as they arrive (true token-by-token).
-        if let Some((client_wire, provider_wire, mut tc)) = translate
+        if let Some((client_wire, provider_wire, mut tc, history_request, history_scope)) = translate
             .as_ref()
             .filter(|t| t.4)
             .and_then(|t| {
                 // can_transcode_stream guarded `incremental`, so new() matches a wired pair.
-                crate::protocol::stream::Transcoder::new(t.1, t.0, &t.2).map(|tc| (t.0, t.1, tc))
+                crate::protocol::stream::Transcoder::new_with_context(t.1, t.0, &t.2, t.5.clone()).map(|tc| (t.0, t.1, tc, t.6.clone(), t.7.clone()))
             })
         {
             let st2 = st.clone();
@@ -1349,6 +1724,7 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
             let body_stream = async_stream::stream! {
                 let mut s = resp.bytes_stream();
                 let mut buf = String::new();
+                let mut history_recorded = false;
                 while let Some(chunk) = s.next().await {
                     match chunk {
                         Ok(bytes) => {
@@ -1360,7 +1736,7 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
                                 let line: String = buf.drain(..=idx).collect();
                                 out.push_str(&tc.push(&line));
                             }
-                            if capture_thought_signatures && tc.done() {
+                            if capture_thought_signatures && tc.succeeded() {
                                 let captured_calls = tc.captured_tool_calls();
                                 st2.thought_signatures.lock().await.remember(
                                     &signature_provider_id,
@@ -1372,6 +1748,26 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
                             // out, Codex closes the socket and the generator is dropped mid-await.
                             guard.push_res(&out);
                             guard.finished = tc.done();
+                            if client_wire == crate::protocol::Wire::OpenAiResponses
+                                && !history_recorded
+                            {
+                                if let Some(terminal) = responses_terminal_event(&out) {
+                                    history_recorded = true;
+                                    if terminal.kind.is_resumable() {
+                                        if let Some(response) = terminal.response.as_ref() {
+                                            st2.codex_history
+                                                .record_response_scoped_with_metadata(
+                                                    &history_scope,
+                                                    ResponseOrigin::Local,
+                                                    true,
+                                                    &history_request,
+                                                    response,
+                                                )
+                                                .await;
+                                        }
+                                    }
+                                }
+                            }
                             guard.usage = Some(UsageAcc {
                                 input: tc.input_tokens(), output: tc.output_tokens(), saw: true, ..Default::default()
                             });
@@ -1379,13 +1775,31 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
                                 yield Ok::<Bytes, std::io::Error>(Bytes::from(out));
                             }
                         }
-                        Err(_) => break,
+                        Err(error) => {
+                            let message = format!("upstream stream transport error: {}", error);
+                            st2.log("error", format!("{} ({})", message, pname2));
+                            buf.clear();
+                            let out = tc.fail(&message);
+                            guard.push_res(&out);
+                            guard.finished = tc.done();
+                            guard.usage = Some(UsageAcc {
+                                input: tc.input_tokens(), output: tc.output_tokens(), saw: true, ..Default::default()
+                            });
+                            if !out.is_empty() {
+                                yield Ok(Bytes::from(out));
+                            }
+                            break;
+                        }
                     }
                 }
                 let mut tail = String::new();
                 if !buf.is_empty() { tail.push_str(&tc.push(&buf)); }
                 tail.push_str(&tc.finish());
-                if capture_thought_signatures {
+                guard.finished = tc.done();
+                guard.usage = Some(UsageAcc {
+                    input: tc.input_tokens(), output: tc.output_tokens(), saw: true, ..Default::default()
+                });
+                if capture_thought_signatures && tc.succeeded() {
                     let captured_calls = tc.captured_tool_calls();
                     st2.thought_signatures.lock().await.remember(
                         &signature_provider_id,
@@ -1395,6 +1809,25 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
                 }
                 if !tail.is_empty() {
                     guard.push_res(&tail);
+                    if client_wire == crate::protocol::Wire::OpenAiResponses
+                        && !history_recorded
+                    {
+                        if let Some(terminal) = responses_terminal_event(&tail) {
+                            if terminal.kind.is_resumable() {
+                                if let Some(response) = terminal.response.as_ref() {
+                                    st2.codex_history
+                                        .record_response_scoped_with_metadata(
+                                            &history_scope,
+                                            ResponseOrigin::Local,
+                                            true,
+                                            &history_request,
+                                            response,
+                                        )
+                                        .await;
+                                }
+                            }
+                        }
+                    }
                     yield Ok(Bytes::from(tail));
                 }
                 let mut usage = UsageAcc::default();
@@ -1443,10 +1876,13 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
         let path2 = req_path.clone();
         let pname2 = provider_name.clone();
         let routing2 = routing.clone();
+        let native_history = native_responses_history.clone();
+        let native_responses_stream = client_wire == crate::protocol::Wire::OpenAiResponses;
         let body_stream = async_stream::stream! {
             let mut s = resp.bytes_stream();
             let mut buf = String::new();
             let mut usage = UsageAcc::default();
+            let mut history_recorded = false;
             while let Some(chunk) = s.next().await {
                 match chunk {
                     Ok(bytes) => {
@@ -1456,19 +1892,79 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
                             let line: String = buf.drain(..=idx).collect();
                             out.push_str(&process_sse_line(&line, rewrite_model.as_deref(), &mut usage));
                         }
+                        let terminal = native_responses_stream
+                            .then(|| responses_terminal_event(&out))
+                            .flatten();
                         guard.push_res(&out);
+                        if let Some(terminal) = terminal {
+                            guard.finished = true;
+                            if !history_recorded
+                                && (200..300).contains(&status_code)
+                                && terminal.kind.is_resumable()
+                            {
+                                if let (Some(history), Some(response)) =
+                                    (native_history.as_ref(), terminal.response.as_ref())
+                                {
+                                    st2.codex_history
+                                        .record_response_scoped_with_metadata(
+                                            &history.scope,
+                                            ResponseOrigin::Native(history.provider_id.clone()),
+                                            history.materializable,
+                                            &history.request,
+                                            response,
+                                        )
+                                        .await;
+                                }
+                            }
+                            history_recorded = true;
+                        }
                         guard.usage = Some(usage.clone());
                         if !out.is_empty() {
                             yield Ok::<Bytes, std::io::Error>(Bytes::from(out));
                         }
                     }
-                    Err(_) => break,
+                    Err(error) => {
+                        let message = format!("upstream stream transport error: {}", error);
+                        st2.log("error", format!("{} ({})", message, pname2));
+                        yield Err(std::io::Error::new(std::io::ErrorKind::Other, message));
+                        return;
+                    }
                 }
             }
             if !buf.is_empty() {
                 let line = process_sse_line(&buf, rewrite_model.as_deref(), &mut usage);
+                let terminal = native_responses_stream
+                    .then(|| responses_terminal_event(&line))
+                    .flatten();
                 guard.push_res(&line);
+                if let Some(terminal) = terminal {
+                    guard.finished = true;
+                    if !history_recorded
+                        && (200..300).contains(&status_code)
+                        && terminal.kind.is_resumable()
+                    {
+                        if let (Some(history), Some(response)) =
+                            (native_history.as_ref(), terminal.response.as_ref())
+                        {
+                            st2.codex_history
+                                .record_response_scoped_with_metadata(
+                                    &history.scope,
+                                    ResponseOrigin::Native(history.provider_id.clone()),
+                                    history.materializable,
+                                    &history.request,
+                                    response,
+                                )
+                                .await;
+                        }
+                    }
+                }
                 yield Ok(Bytes::from(line));
+            }
+            if native_responses_stream && !guard.finished {
+                let message = "upstream Responses stream ended before a terminal event";
+                st2.log("error", format!("{} ({})", message, pname2));
+                yield Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, message));
+                return;
             }
             st2.emit_request(ex_id2, started2, &method2, &path2, &pname2, &routing2, status_code, Some(&usage));
             let mut ex = guard.complete();
@@ -1483,7 +1979,24 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
     }
 
     // buffered (reqwest auto-decoded gzip/br/deflate)
-    let buf = resp.bytes().await.unwrap_or_default();
+    let buf = match resp.bytes().await {
+        Ok(buf) => buf,
+        Err(error) => {
+            let message = format!("upstream response body transport error: {}", error);
+            st.log("error", format!("{} ({})", message, provider_name));
+            st.emit_request(
+                ex_id,
+                started,
+                &method,
+                &req_path,
+                &provider_name,
+                &routing,
+                StatusCode::BAD_GATEWAY.as_u16(),
+                None,
+            );
+            return error_response(StatusCode::BAD_GATEWAY, &format!("CCBuddy: {}", message), "api_error");
+        }
+    };
 
     // count_tokens: pass the upstream's real number when it implements the endpoint; otherwise
     // (404 / non-JSON / missing input_tokens) estimate locally so Claude Code's sizing keeps working.
@@ -1565,14 +2078,15 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
 
     // Translated response: decode the (buffered) upstream reply → IR → re-encode to the client's
     // protocol. We forced stream=false upstream, so the reply is always buffered here.
-    if let Some((client_wire, provider_wire, ref client_model, wanted_stream, _incremental)) = translate {
+    if let Some((client_wire, provider_wire, ref client_model, wanted_stream, _incremental,
+        ref tool_context, ref history_request, ref history_scope)) = translate {
         let text = String::from_utf8_lossy(&buf);
         if !status.is_success() {
             st.log("warn", format!("upstream {} on translated request ({})", status.as_u16(), provider_name));
             st.emit_request(ex_id, started, &method, &req_path, &provider_name, &routing, status.as_u16(), None);
             return error_response(
                 StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY),
-                &format!("ccbud upstream error: {}", text.chars().take(400).collect::<String>()),
+                &format!("CCBuddy upstream error: {}", text.chars().take(400).collect::<String>()),
                 "api_error",
             );
         }
@@ -1581,30 +2095,78 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
             Err(e) => {
                 st.log("error", format!("response translate ({:?}→{:?}) failed: {}", provider_wire, client_wire, e));
                 st.emit_request(ex_id, started, &method, &req_path, &provider_name, &routing, 502, None);
-                return error_response(StatusCode::BAD_GATEWAY, &format!("ccbud response translation failed: {}", e), "api_error");
+                return error_response(StatusCode::BAD_GATEWAY, &format!("CCBuddy response translation failed: {}", e), "api_error");
             }
         };
-        if is_gemini_upstream {
-            let captured_calls = response_tool_calls(&ir);
-            st.thought_signatures.lock().await.remember(
-                &routing.provider_id,
-                request_session.as_deref(),
-                &captured_calls,
-            );
-        }
         let mut usage = UsageAcc::default();
         if let Some(u) = ir.usage.as_ref() {
             usage.input = u.prompt_tokens as i64;
             usage.output = u.completion_tokens as i64;
             usage.saw = true;
         }
-        let (ct_out, body_bytes) = if wanted_stream {
-            let sse = crate::protocol::encode_client_response_sse(client_wire, &ir, client_model).unwrap_or_default();
-            ("text/event-stream", Bytes::from(sse))
+        let (ct_out, body_bytes, terminal_response) = if wanted_stream {
+            let sse = if client_wire == crate::protocol::Wire::OpenAiResponses {
+                crate::protocol::openai_responses::encode_response_sse_with_context(
+                    &ir,
+                    client_model,
+                    tool_context,
+                )
+            } else {
+                crate::protocol::encode_client_response_sse(client_wire, &ir, client_model).unwrap_or_default()
+            };
+            let terminal = (client_wire == crate::protocol::Wire::OpenAiResponses)
+                .then(|| responses_terminal_event(&sse))
+                .flatten();
+            ("text/event-stream", Bytes::from(sse), terminal)
         } else {
-            let j = crate::protocol::encode_client_response(client_wire, &ir, client_model).unwrap_or_else(|_| json!({}));
-            ("application/json", Bytes::from(serde_json::to_vec(&j).unwrap_or_default()))
+            let j = if client_wire == crate::protocol::Wire::OpenAiResponses {
+                crate::protocol::openai_responses::encode_response_with_context(
+                    &ir,
+                    client_model,
+                    tool_context,
+                )
+            } else {
+                crate::protocol::encode_client_response(client_wire, &ir, client_model).unwrap_or_else(|_| json!({}))
+            };
+            let terminal = (client_wire == crate::protocol::Wire::OpenAiResponses)
+                .then(|| responses_terminal_object(&j))
+                .flatten();
+            ("application/json", Bytes::from(serde_json::to_vec(&j).unwrap_or_default()), terminal)
         };
+        if is_gemini_upstream {
+            let captured_calls = if client_wire == crate::protocol::Wire::OpenAiResponses {
+                terminal_response
+                    .as_ref()
+                    .filter(|terminal| terminal.kind == ResponsesTerminalKind::Completed)
+                    .and_then(|terminal| terminal.response.as_ref())
+                    .map(|response| response_tool_calls_with_client_ids(&ir, response))
+                    .unwrap_or_default()
+            } else {
+                response_tool_calls(&ir)
+            };
+            if !captured_calls.is_empty() {
+                st.thought_signatures.lock().await.remember(
+                    &routing.provider_id,
+                    request_session.as_deref(),
+                    &captured_calls,
+                );
+            }
+        }
+        if let Some(terminal) = terminal_response.as_ref() {
+            if terminal.kind.is_resumable() {
+                if let Some(response) = terminal.response.as_ref() {
+                    st.codex_history
+                        .record_response_scoped_with_metadata(
+                            history_scope,
+                            ResponseOrigin::Local,
+                            true,
+                            history_request,
+                            response,
+                        )
+                        .await;
+                }
+            }
+        }
         st.emit_request(ex_id, started, &method, &req_path, &provider_name, &routing, status.as_u16(), Some(&usage));
         st.record_exchange(json!({
             "id": ex_id, "ts": now_ms(), "ms": started.elapsed().as_millis() as u64,
@@ -1632,7 +2194,7 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
 
     let mut out_buf = buf.clone();
     let mut usage = UsageAcc::default();
-    if ct.contains("application/json") {
+    if ct.contains("application/json") || native_responses_history.is_some() {
         if let Ok(mut o) = serde_json::from_slice::<Value>(&buf) {
             if let Some(u) = o.get("usage").cloned() {
                 usage.input += u.get("input_tokens").and_then(|v| v.as_i64()).unwrap_or(0);
@@ -1640,6 +2202,24 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
                 usage.cache_read += u.get("cache_read_input_tokens").and_then(|v| v.as_i64()).unwrap_or(0);
                 usage.cache_creation += u.get("cache_creation_input_tokens").and_then(|v| v.as_i64()).unwrap_or(0);
                 usage.saw = true;
+            }
+            if status.is_success() {
+                if let (Some(history), Some(terminal)) = (
+                    native_responses_history.as_ref(),
+                    responses_terminal_object(&o),
+                ) {
+                    if terminal.kind.is_resumable() {
+                        st.codex_history
+                            .record_response_scoped_with_metadata(
+                                &history.scope,
+                                ResponseOrigin::Native(history.provider_id.clone()),
+                                history.materializable,
+                                &history.request,
+                                &o,
+                            )
+                            .await;
+                    }
+                }
             }
             if need_rewrite {
                 if let Some(cf) = &routing.client_facing_model {
@@ -2080,8 +2660,8 @@ mod tests {
         let cfg = json!({ "providers": [{ "id": "p", "defaultModel": "m", "smallFastModel": "m" }], "activeProviderId": "p" });
         let s = synthesize_models(&cfg, true);
         let ids: Vec<&str> = s["data"].as_array().unwrap().iter().filter_map(|m| m["id"].as_str()).collect();
-        assert!(ids.contains(&"gpt-5.6-sol"));
-        assert!(ids.contains(&"gpt-5.6-luna"));
+        assert!(ids.contains(&"gpt-5.4"));
+        assert!(ids.contains(&"gpt-5.4-mini"));
         assert!(!ids.iter().any(|id| id.starts_with("claude-")));
     }
     #[test]
@@ -2117,6 +2697,10 @@ mod tests {
             Some(("https://example.com/v1/responses".to_string(), None))
         );
         assert_eq!(
+            endpoint_targets("https://example.com/v1", &u("/v1/responses/compact")),
+            Some(("https://example.com/v1/responses/compact".to_string(), None))
+        );
+        assert_eq!(
             endpoint_targets(
                 "https://generativelanguage.googleapis.com/v1beta/openai",
                 &u("/v1/chat/completions"),
@@ -2129,6 +2713,216 @@ mod tests {
         assert_eq!(endpoint_targets("https://example.com/api", &u("/v1/models")), None);
         assert_eq!(endpoint_targets("https://example.com/api", &u("/v1/messages/count_tokens")), None);
     }
+    #[tokio::test]
+    async fn compact_rejects_cross_wire_and_allows_responses_passthrough() {
+        for provider_wire in [
+            crate::protocol::Wire::OpenAiChat,
+            crate::protocol::Wire::Anthropic,
+        ] {
+            let response = cross_wire_compact_error("/v1/responses/compact/", provider_wire)
+                .expect("cross-wire compact must be rejected locally");
+            assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
+            let body = to_bytes(response.into_body(), 4096).await.unwrap();
+            let error: Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(error["error"]["type"], "invalid_request_error");
+            assert!(error["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("cross-protocol compaction is not supported"));
+        }
+
+        assert!(cross_wire_compact_error(
+            "/v1/responses/compact",
+            crate::protocol::Wire::OpenAiResponses,
+        )
+        .is_none());
+        assert!(cross_wire_compact_error(
+            "/v1/responses",
+            crate::protocol::Wire::OpenAiChat,
+        )
+        .is_none());
+    }
+    #[test]
+    fn responses_history_policy_covers_native_and_translated_provider_switches() {
+        let known = |origin: ResponseOrigin, materializable: bool| HistoryResolution {
+            changed: 3,
+            had_previous_response_id: true,
+            previous_found: true,
+            previous_materialized: materializable,
+            previous_origin: Some(origin),
+        };
+        let portable = ResponsesHistoryDecision {
+            forward: ResponsesForwardMode::Materialized,
+            descendant_materializable: true,
+        };
+
+        // Native Responses A → translated chat/Anthropic.
+        assert_eq!(
+            decide_responses_history(
+                crate::protocol::Wire::OpenAiChat,
+                "provider-chat",
+                &known(ResponseOrigin::Native("provider-a".to_string()), true),
+            ),
+            Ok(portable)
+        );
+        // Translated/local → native Responses.
+        assert_eq!(
+            decide_responses_history(
+                crate::protocol::Wire::OpenAiResponses,
+                "provider-b",
+                &known(ResponseOrigin::Local, true),
+            ),
+            Ok(portable)
+        );
+        // Native Responses A → native Responses B.
+        assert_eq!(
+            decide_responses_history(
+                crate::protocol::Wire::OpenAiResponses,
+                "provider-b",
+                &known(ResponseOrigin::Native("provider-a".to_string()), true),
+            ),
+            Ok(portable)
+        );
+        // Same native owner keeps the provider-side id while the materialized local copy is retained
+        // for recording its descendant.
+        assert_eq!(
+            decide_responses_history(
+                crate::protocol::Wire::OpenAiResponses,
+                "provider-a",
+                &known(ResponseOrigin::Native("provider-a".to_string()), true),
+            ),
+            Ok(ResponsesHistoryDecision {
+                forward: ResponsesForwardMode::Original,
+                descendant_materializable: true,
+            })
+        );
+        assert_eq!(
+            decide_responses_history(
+                crate::protocol::Wire::OpenAiResponses,
+                "provider-a",
+                &known(ResponseOrigin::Native("provider-a".to_string()), false),
+            ),
+            Ok(ResponsesHistoryDecision {
+                forward: ResponsesForwardMode::Original,
+                descendant_materializable: false,
+            })
+        );
+
+        let missing = HistoryResolution {
+            had_previous_response_id: true,
+            ..HistoryResolution::default()
+        };
+        assert_eq!(
+            decide_responses_history(
+                crate::protocol::Wire::OpenAiResponses,
+                "provider-a",
+                &missing,
+            ),
+            Ok(ResponsesHistoryDecision {
+                forward: ResponsesForwardMode::Original,
+                descendant_materializable: false,
+            })
+        );
+        assert_eq!(
+            decide_responses_history(
+                crate::protocol::Wire::Anthropic,
+                "provider-anthropic",
+                &missing,
+            ),
+            Err(ResponsesHistoryError::Unavailable)
+        );
+        assert_eq!(
+            decide_responses_history(
+                crate::protocol::Wire::OpenAiResponses,
+                "provider-a",
+                &HistoryResolution {
+                    changed: 2,
+                    ..HistoryResolution::default()
+                },
+            ),
+            Ok(ResponsesHistoryDecision {
+                forward: ResponsesForwardMode::Materialized,
+                descendant_materializable: true,
+            })
+        );
+        assert_eq!(
+            decide_responses_history(
+                crate::protocol::Wire::OpenAiResponses,
+                "provider-b",
+                &known(ResponseOrigin::Local, false),
+            ),
+            Err(ResponsesHistoryError::Unavailable)
+        );
+    }
+    #[test]
+    fn responses_compact_localizes_portable_foreign_history_and_allows_owner_or_cache_miss() {
+        let known = |origin: ResponseOrigin, materializable: bool| HistoryResolution {
+            changed: 2,
+            had_previous_response_id: true,
+            previous_found: true,
+            previous_materialized: materializable,
+            previous_origin: Some(origin),
+        };
+        let missing = HistoryResolution {
+            had_previous_response_id: true,
+            ..HistoryResolution::default()
+        };
+        assert_eq!(
+            decide_responses_compact_history("provider-a", &missing),
+            Ok(ResponsesForwardMode::Original)
+        );
+        assert_eq!(
+            decide_responses_compact_history(
+                "provider-a",
+                &known(ResponseOrigin::Native("provider-a".to_string()), false),
+            ),
+            Ok(ResponsesForwardMode::Original)
+        );
+        for origin in [
+            ResponseOrigin::Local,
+            ResponseOrigin::Native("provider-b".to_string()),
+        ] {
+            assert_eq!(
+                decide_responses_compact_history("provider-a", &known(origin, true)),
+                Ok(ResponsesForwardMode::Materialized)
+            );
+        }
+        assert_eq!(
+            decide_responses_compact_history(
+                "provider-a",
+                &known(ResponseOrigin::Local, false),
+            ),
+            Err(ResponsesHistoryError::Unavailable)
+        );
+    }
+    #[test]
+    fn responses_terminal_parser_keeps_completed_and_incomplete_but_marks_failed() {
+        for (event_type, status, expected) in [
+            (
+                "response.completed",
+                "completed",
+                ResponsesTerminalKind::Completed,
+            ),
+            (
+                "response.incomplete",
+                "incomplete",
+                ResponsesTerminalKind::Incomplete,
+            ),
+            ("response.failed", "failed", ResponsesTerminalKind::Failed),
+        ] {
+            let sse = format!(
+                "event: {event_type}\ndata: {{\"type\":\"{event_type}\",\"response\":{{\"id\":\"resp_1\",\"object\":\"response\",\"status\":\"{status}\",\"output\":[]}}}}\n\n"
+            );
+            let terminal = responses_terminal_event(&sse).unwrap();
+            assert_eq!(terminal.kind, expected);
+            assert_eq!(terminal.kind.is_resumable(), status != "failed");
+            assert_eq!(terminal.response.as_ref().unwrap()["status"], status);
+        }
+        assert!(responses_terminal_event(
+            "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}\n\n"
+        )
+        .is_none());
+    }
     #[test]
     fn routing_classifies_by_family() {
         let cfg = json!({ "providers": [{ "id": "p", "baseUrl": "http://127.0.0.1:1", "authToken": "k",
@@ -2138,8 +2932,16 @@ mod tests {
         assert_eq!(out(resolve_routing(Some("claude-haiku-4-5"), &cfg, None)).as_deref(), Some("small"));
         assert_eq!(out(resolve_routing(Some("claude-fable-5"), &cfg, None)).as_deref(), Some("big"));
         assert_eq!(out(resolve_routing(Some("claude-opus-4-8"), &cfg, None)).as_deref(), Some("big"));
-        // Codex: sol/terra segment → primary (incl. auto-connect gpt-5.6-sol-pro),
-        // -luna (and others) → fast.
+        // Codex: stable/default identities → primary; explicit small tiers → fast. Legacy
+        // sol/terra names remain primary for existing configs.
+        assert_eq!(
+            out(resolve_routing(Some("gpt-5.4"), &cfg, None)).as_deref(),
+            Some("big")
+        );
+        assert_eq!(
+            out(resolve_routing(Some("gpt-5.4-mini"), &cfg, None)).as_deref(),
+            Some("small")
+        );
         assert_eq!(out(resolve_routing(Some("gpt-5.6-sol"), &cfg, None)).as_deref(), Some("big"));
         assert_eq!(out(resolve_routing(Some("gpt-5.6-terra"), &cfg, None)).as_deref(), Some("big"));
         assert_eq!(out(resolve_routing(Some("gpt-5.6-sol-pro"), &cfg, None)).as_deref(), Some("big"));
@@ -2166,6 +2968,8 @@ mod tests {
             Some("conv-42")
         );
         assert!(request_session_id(&json!({ "prompt_cache_key": "  " })).is_none());
+        assert_eq!(codex_history_scope_for_session(Some("conv-42")), "conv-42");
+        assert_eq!(codex_history_scope_for_session(None), "");
     }
 
     // The full Codex ⇄ Gemini(chat) signature round-trip: what ChatToResponses captured last turn

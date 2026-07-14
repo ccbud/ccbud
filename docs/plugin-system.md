@@ -1,6 +1,6 @@
-# ccbud Plugin System
+# CCBuddy Plugin System
 
-A ccbud plugin lets Claude Code and Codex run on some other coding agent's models
+A CCBuddy plugin lets Claude Code and Codex run on some other coding agent's models
 (the first one is **Grok/xAI**) by **reusing that agent's CLI login** — no API key,
 no per-token billing. This doc is the contract: what a plugin is and what it must
 implement. The reference plugin is
@@ -9,45 +9,45 @@ implement. The reference plugin is
 ## The one idea
 
 **A running plugin is just an ordinary provider whose `baseUrl` points at
-`127.0.0.1:<port>`.** ccbud's gateway already forwards requests to any provider and
+`127.0.0.1:<port>`.** CCBuddy's gateway already forwards requests to any provider and
 translates between the standard protocols, so a plugin is simply a small local HTTP
-server. All ccbud adds on top is lifecycle: find the plugin, start it, wait until it's
+server. All CCBuddy adds on top is lifecycle: find the plugin, start it, wait until it's
 healthy, and register it as a provider. Enabling a plugin turns it into a service you
 can pick under *Services*; disabling it just stops the process.
 
 ```
-Claude Code / Codex -> ccbud gateway -(one standard protocol)-> your plugin -> the vendor API
+Claude Code / Codex -> CCBuddy gateway -(one standard protocol)-> your plugin -> the vendor API
 ```
 
 ## Who does what
 
-- **ccbud translates protocols.** It converts between Anthropic Messages, OpenAI Chat,
+- **CCBuddy translates protocols.** It converts between Anthropic Messages, OpenAI Chat,
   and OpenAI Responses, and always forwards **one standard protocol** to the plugin.
 - **The plugin is the vendor layer.** Standard protocol in, standard protocol out — it
   absorbs everything specific to the vendor: reusing the login, cleaning up the request,
   and normalizing the response. When the vendor changes its API, only the plugin
-  changes; ccbud doesn't care.
+  changes; CCBuddy doesn't care.
 
 So a plugin picks whichever wire protocol fits its vendor best (Grok is closest to
-OpenAI Responses). ccbud's translation layer connects it to whatever the client speaks.
+OpenAI Responses). CCBuddy's translation layer connects it to whatever the client speaks.
 
 ## The three pieces
 
 1. **Manifest** (`plugin.json`) — declares the plugin: id, binary, models, protocol,
    and control-plane paths.
-2. **Control plane** — management endpoints ccbud calls to check the plugin, never for
+2. **Control plane** — management endpoints CCBuddy calls to check the plugin, never for
    inference: `GET /healthz`, `GET /v1/plugin/status`, `GET /v1/plugin/auth`.
-3. **Data plane** — the endpoints ccbud forwards inference to: `POST /v1/responses`
+3. **Data plane** — the endpoints CCBuddy forwards inference to: `POST /v1/responses`
    and `GET /v1/models`.
 
 ## Auth: reuse a CLI login, don't manage it
 
 The whole point is *reuse*. The user already has a coding-agent CLI installed and
 signed in (e.g. the Grok CLI, which writes `~/.grok/auth.json`); the plugin reads that
-and uses the token. **The plugin never signs in or out — that's the CLI's job.** ccbud
+and uses the token. **The plugin never signs in or out — that's the CLI's job.** CCBuddy
 never touches the credentials either; it only reads the login *state* (via
 `/v1/plugin/auth`) to show "signed in / expired / not signed in" in the UI. If the user
-isn't signed in, they run their CLI's login, not anything in ccbud.
+isn't signed in, they run their CLI's login, not anything in CCBuddy.
 
 ## The manifest
 
@@ -59,7 +59,7 @@ isn't signed in, they run their CLI's login, not anything in ccbud.
   "version": "0.1.1",
   "description": "Run Claude Code / Codex on Grok by reusing your Grok CLI login.",
   "icon": "icon.svg",
-  "source": {                       // optional: lets ccbud install/update from Git
+  "source": {                       // optional: lets CCBuddy install/update from Git
     "git": "https://github.com/ccbud/grok-build-plugin",
     "branch": "main",
     "build": "make dist"            // run in the clone to produce the binary
@@ -90,9 +90,9 @@ isn't signed in, they run their CLI's login, not anything in ccbud.
 
 `modelMapping.primary` / `.light` become the service's default and fast models.
 
-## How ccbud runs a plugin
+## How CCBuddy runs a plugin
 
-Plugins live in `~/.ccbud/plugins/<id>/`. When you enable one, ccbud:
+Plugins live in `~/.ccbud/plugins/<id>/`. When you enable one, CCBuddy:
 
 1. picks the binary for your platform and spawns it with `{port}`/`{home}` filled in;
 2. polls `healthPath` until it returns 200 (or gives up after `readyTimeoutMs`);
@@ -108,14 +108,14 @@ plugin behind the active service auto-starts on launch.
 ## Install and update
 
 On the plugins page, **Add from Git** clones the repo, runs `source.build`, and installs
-the binary. To publish an update, bump `version` in `plugin.json`; ccbud compares it
+the binary. To publish an update, bump `version` in `plugin.json`; CCBuddy compares it
 against the installed copy and offers an in-app update. (Installing from Git builds code
 from a URL — only add sources you trust.)
 
 ## Declarative UI (`ui.actions`)
 
 Everything in a plugin's card is read from the manifest/control-plane, and a plugin can
-declare its **own buttons** too. ccbud renders them and forwards clicks back to the
+declare its **own buttons** too. CCBuddy renders them and forwards clicks back to the
 plugin — it never hard-codes a specific plugin's controls.
 
 ```jsonc
@@ -143,11 +143,11 @@ plugin — it never hard-codes a specific plugin's controls.
 
 The plugin implements the endpoint: `POST submitPath` with the form values ->
 `{ "ok": true, "message": "..." }` (a non-2xx surfaces `message` as an error);
-`GET loadPath` -> `{ "values": { ... } }`. ccbud only draws the form and forwards — it
+`GET loadPath` -> `{ "values": { ... } }`. CCBuddy only draws the form and forwards — it
 never interprets the fields.
 
 ## Adding another coding agent
 
 Write another plugin that implements this same contract, drop it in
-`~/.ccbud/plugins/`, and ccbud discovers it — **the host needs no changes**. Each plugin
+`~/.ccbud/plugins/`, and CCBuddy discovers it — **the host needs no changes**. Each plugin
 handles its own login reuse, its own inference call, and its own wire protocol.

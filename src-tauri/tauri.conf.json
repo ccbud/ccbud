@@ -1,7 +1,7 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
-  "productName": "ccbud",
-  "version": "1.3.3",
+  "productName": "CCBuddy",
+  "version": "1.3.4",
   "identifier": "dev.ccbud.gateway",
   "build": {
     "frontendDist": "../src/renderer",
@@ -12,7 +12,7 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "ccbud",
+        "title": "CCBuddy",
         "width": 1180,
         "height": 760,
         "minWidth": 900,
@@ -25,7 +25,7 @@
       {
         "label": "popover",
         "url": "popover.html",
-        "title": "ccbud usage",
+        "title": "CCBuddy Usage",
         "width": 424,
         "height": 344,
         "visible": false,
@@ -51,6 +51,11 @@
     "active": true,
     "targets": "all",
     "createUpdaterArtifacts": true,
+    "windows": {
+      "wix": {
+        "upgradeCode": "3607f9f8-3416-53dd-8ba7-5c1d6a348351"
+      }
+    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

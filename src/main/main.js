@@ -869,7 +869,7 @@ function createWindow() {
     vibrancy: 'under-window',
     visualEffectState: 'active',
     backgroundColor: '#00000000',
-    title: 'ccbud — Coding CLI Buddy',
+    title: 'CCBuddy — Coding CLI Buddy',
     webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false },
   });
   mainWindow.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
@@ -975,7 +975,7 @@ if (gotLock) {
         img = nativeImage.createFromPath(path.join(__dirname, 'icon.png')).resize({ width: 18, height: 18 });
       }
       tray = new Tray(img);
-      tray.setToolTip('ccbud — Coding CLI Buddy');
+      tray.setToolTip('CCBuddy — Coding CLI Buddy');
       // Wire the handlers right after creating the Tray so a later failure (e.g. popover) can't
       // leave the menu-bar icon inert. The popover is best-effort.
       tray.on('click', () => togglePopover());

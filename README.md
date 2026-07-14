@@ -1,8 +1,8 @@
 <div align="center">
 
-<img src="docs/img/icon.png" alt="CCBUD" width="120" height="120" style="border-radius: 26px; box-shadow: 0 12px 32px rgba(0,0,0,0.18);">
+<img src="docs/img/icon.png" alt="CCBuddy" width="120" height="120" style="border-radius: 26px; box-shadow: 0 12px 32px rgba(0,0,0,0.18);">
 
-# CCBUD
+# CCBuddy
 
 ### Coding CLI Buddy
 
@@ -20,13 +20,13 @@
 
 ---
 
-**CCBUD** (`cc` coding CLI + `bud` buddy) is a cross-platform desktop app that runs a tiny **local gateway** between Claude Code and any Anthropic-compatible provider — Kimi, DeepSeek, GLM, MiMo and more. Add your providers once, switch with a single click, and let CCBUD wire up Claude Code for you. **You never touch an environment variable.**
+**CCBuddy** (`CC` coding CLI + `Buddy`) is a cross-platform desktop app that runs a tiny **local gateway** between Claude Code and any Anthropic-compatible provider — Kimi, DeepSeek, GLM, MiMo and more. Add your providers once, switch with a single click, and let CCBuddy wire up Claude Code for you. **You never touch an environment variable.**
 
 <div align="center">
-  <img src="docs/img/services.jpg" alt="CCBUD — services view" width="820">
+  <img src="docs/img/services.jpg" alt="CCBuddy — services view" width="820">
 </div>
 
-- **One-click Connect** — CCBUD writes `~/.claude/settings.json` for you, and restores it exactly when you disconnect.
+- **One-click Connect** — CCBuddy writes `~/.claude/settings.json` for you, and restores it exactly when you disconnect.
 - **Switch in a click** — keep many providers side by side; tap a card to switch instantly.
 - **Automatic model mapping** — Claude's default model names are routed to the active provider's models for you.
 - **Stays on your machine** — the gateway binds to `127.0.0.1`; nothing leaves your computer.
@@ -44,7 +44,7 @@ Grab the latest build for your platform from the **[Releases page](https://githu
 | **Linux** | `.AppImage` / `.deb` |
 
 > **macOS Gatekeeper:** if the first launch is blocked, right-click the app → **Open**, or run
-> `xattr -dr com.apple.quarantine /Applications/ccbud.app`.
+> `xattr -dr com.apple.quarantine /Applications/CCBuddy.app`.
 
 ### Homebrew (macOS)
 
@@ -55,7 +55,7 @@ brew upgrade --cask ccbud             # later upgrades
 
 ### Staying up to date
 
-CCBUD checks for new releases on launch (and daily) and surfaces them under **Settings → About & Updates**. App updates are delivered through the Tauri updater when available; Homebrew users can also run `brew upgrade --cask ccbud`.
+CCBuddy checks for new releases on launch (and daily) and surfaces them under **Settings → About & Updates**. App updates are delivered through the Tauri updater when available; Homebrew users can also run `brew upgrade --cask ccbud`.
 
 ### Build from source
 
@@ -72,20 +72,20 @@ npm run dist:mac          # or: dist:win · dist:linux
 ## 🚀 Quick Start
 
 **1 · Add a provider**
-Open CCBUD, click **`+`**, pick a preset (GLM · DeepSeek · MiMo · Kimi …) or enter a custom base URL, and paste your API key.
+Open CCBuddy, click **`+`**, pick a preset (GLM · DeepSeek · MiMo · Kimi …) or enter a custom base URL, and paste your API key.
 
 <div align="center"><img src="docs/img/switch.jpg" alt="Add and switch providers" width="760"></div>
 
 **2 · Connect**
-Hit the big **Connect** button. CCBUD points Claude Code at the local gateway by writing `env.ANTHROPIC_BASE_URL` and `env.ANTHROPIC_AUTH_TOKEN` into `~/.claude/settings.json` — backing up whatever was there before.
+Hit the big **Connect** button. CCBuddy points Claude Code at the local gateway by writing `env.ANTHROPIC_BASE_URL` and `env.ANTHROPIC_AUTH_TOKEN` into `~/.claude/settings.json` — backing up whatever was there before.
 
 **3 · Use Claude Code**
-Start a new Claude Code session and you're on your chosen provider. Switch anytime by clicking another card; hit **Disconnect** to restore your original settings, untouched. Keep CCBUD running while you work — closing the window tucks it into the menu bar / tray.
+Start a new Claude Code session and you're on your chosen provider. Switch anytime by clicking another card; hit **Disconnect** to restore your original settings, untouched. Keep CCBuddy running while you work — closing the window tucks it into the menu bar / tray.
 
 ## 🔧 How it works
 
 ```text
-Claude Code ──(ANTHROPIC_BASE_URL = 127.0.0.1:port)──▶ CCBUD gateway ──▶ active provider
+Claude Code ──(ANTHROPIC_BASE_URL = 127.0.0.1:port)──▶ CCBuddy gateway ──▶ active provider
                                                           │
                                           · swaps in the upstream's real token
                                           · routes / maps model names
@@ -93,7 +93,7 @@ Claude Code ──(ANTHROPIC_BASE_URL = 127.0.0.1:port)──▶ CCBUD gateway �
                                             back to the name the client asked for
 ```
 
-CCBUD never edits your providers' own configs — it just runs a forwarding server on your machine. When you use a model alias, the gateway rewrites the `model` field in the response (including the streaming `message_start`) back to the alias, so Claude Code always sees the name it requested. If you don't set `ANTHROPIC_MODEL`, Claude's default `claude-*` model names are mapped to the active provider's main model (with `haiku` → its small model).
+CCBuddy never edits your providers' own configs — it just runs a forwarding server on your machine. When you use a model alias, the gateway rewrites the `model` field in the response (including the streaming `message_start`) back to the alias, so Claude Code always sees the name it requested. If you don't set `ANTHROPIC_MODEL`, Claude's default `claude-*` model names are mapped to the active provider's main model (with `haiku` → its small model).
 
 ## 📸 A look inside
 
