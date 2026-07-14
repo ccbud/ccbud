@@ -404,6 +404,7 @@ pub struct ChatToResponses {
     message: Option<TextItemAcc>,
     tools: Vec<RespToolAcc>,
     input_tokens: i64,
+    cached_tokens: i64,
     output_tokens: i64,
     stopped: bool,
 }
@@ -436,6 +437,7 @@ impl ChatToResponses {
             message: None,
             tools: vec![],
             input_tokens: 0,
+            cached_tokens: 0,
             output_tokens: 0,
             stopped: false,
         }
@@ -447,9 +449,10 @@ impl ChatToResponses {
 
     /// The turn's tool calls (with any Gemini thought signatures sniffed from the chat stream),
     /// keyed by the call_id the Responses client will echo back — feeds the gateway's
-    /// session-scoped signature cache exactly like ChatToAnthropic.
+    /// session-scoped signature cache exactly like ChatToAnthropic. Nameless slots are excluded,
+    /// matching what finish() emits (and therefore what the client can echo).
     pub fn captured_tool_calls(&self) -> Vec<CapturedToolCall> {
-        self.tools.iter().map(|slot| {
+        self.tools.iter().filter(|slot| !slot.name.is_empty()).map(|slot| {
             CapturedToolCall {
                 call_id: slot.call_id.clone(),
                 name: slot.name.clone(),
@@ -515,6 +518,9 @@ impl ChatToResponses {
         if let Some(u) = chunk.get("usage").filter(|u| !u.is_null()) {
             self.input_tokens = u.get("prompt_tokens").and_then(|v| v.as_i64()).unwrap_or(self.input_tokens);
             self.output_tokens = u.get("completion_tokens").and_then(|v| v.as_i64()).unwrap_or(self.output_tokens);
+            if let Some(c) = u.pointer("/prompt_tokens_details/cached_tokens").and_then(|v| v.as_i64()) {
+                self.cached_tokens = c;
+            }
         }
         let choice = match chunk.get("choices").and_then(|c| c.as_array()).and_then(|a| a.first()) {
             Some(c) => c,
@@ -685,7 +691,9 @@ impl ChatToResponses {
                     "item": resp_message_item(&m.id, &m.acc) }),
             ));
         }
-        for s in &self.tools {
+        // A slot whose name never arrived is model garbage the client cannot execute — and a
+        // nameless function_call echoed into the next request is rejected upstream. Skip it.
+        for s in self.tools.iter().filter(|s| !s.name.is_empty()) {
             out.push_str(&ev(
                 "response.function_call_arguments.done",
                 json!({ "type": "response.function_call_arguments.done", "item_id": s.id,
@@ -704,12 +712,12 @@ impl ChatToResponses {
         if let Some(m) = &self.message {
             items.push((m.index, resp_message_item(&m.id, &m.acc)));
         }
-        for s in &self.tools {
+        for s in self.tools.iter().filter(|s| !s.name.is_empty()) {
             items.push((s.index, resp_function_call_item(&s.id, &s.call_id, &s.name, &s.args)));
         }
         items.sort_by_key(|(i, _)| *i);
         let output: Vec<Value> = items.into_iter().map(|(_, v)| v).collect();
-        out.push_str(&resp_completed(&self.rid(), &self.client_model, output, self.input_tokens, 0, self.output_tokens));
+        out.push_str(&resp_completed(&self.rid(), &self.client_model, output, self.input_tokens, self.cached_tokens, self.output_tokens));
         out
     }
 
@@ -1137,7 +1145,7 @@ mod tests {
         out.push_str(&tc.push("data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"check.\"}}]}"));
         out.push_str(&tc.push("data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"shell\",\"arguments\":\"{\\\"co\"}}]}}]}"));
         out.push_str(&tc.push("data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"mmand\\\":[\\\"ls\\\"]}\"}}]}}]}"));
-        out.push_str(&tc.push("data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":20,\"completion_tokens\":9}}"));
+        out.push_str(&tc.push("data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":20,\"completion_tokens\":9,\"prompt_tokens_details\":{\"cached_tokens\":7}}}"));
         out.push_str(&tc.push("data: [DONE]"));
 
         // ordered: created → text deltas → item done events → completed
@@ -1153,9 +1161,10 @@ mod tests {
         assert!(out.contains(r#""text":"Let me check.""#));
         assert!(out.contains(r#""call_id":"call_1""#) && out.contains(r#""name":"shell""#));
         assert!(out.contains(r#""arguments":"{\"command\":[\"ls\"]}""#));
-        // completed carries id + usage
+        // completed carries id + usage, incl. the prompt cache detail Codex reports
         assert!(out.contains(r#""id":"resp_chatcmpl-1""#));
         assert!(out.contains(r#""input_tokens":20"#) && out.contains(r#""output_tokens":9"#));
+        assert!(out.contains(r#""cached_tokens":7"#));
         assert_eq!(tc.input_tokens(), 20);
         assert_eq!(tc.output_tokens(), 9);
         // captured for the gateway's signature cache, keyed by the call_id Codex echoes back
@@ -1189,6 +1198,21 @@ mod tests {
         // the Gemini thought signature is captured for the session cache (restore next turn)
         assert_eq!(captured[0].thought_signature.as_deref(), Some("sig-parallel"));
         assert!(captured[1].thought_signature.is_none());
+    }
+
+    // Some models emit tool-call fragments that never carry a function name; forwarding them
+    // gives Codex an unexecutable call whose echo the upstream then rejects — drop them instead.
+    #[test]
+    fn chat_to_responses_skips_nameless_tool_calls() {
+        let mut tc = ChatToResponses::new("alias-x");
+        let mut out = String::new();
+        out.push_str(&tc.push("data: {\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{}\"}}]}}]}"));
+        out.push_str(&tc.push("data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}"));
+        out.push_str(&tc.push("data: [DONE]"));
+        assert!(!out.contains("response.function_call_arguments.done"));
+        assert!(out.contains(r#""output":[]"#), "completed output stays empty: {}", out);
+        assert!(out.contains(r#""type":"response.completed""#));
+        assert!(tc.captured_tool_calls().is_empty());
     }
 
     #[test]

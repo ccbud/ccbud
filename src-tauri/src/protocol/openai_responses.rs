@@ -267,18 +267,60 @@ fn parts_images(content: &Value) -> Vec<MessageBlock> {
     out
 }
 
+/// Reasoning text carried by a Responses `reasoning` item: the summary parts (what a transcoded
+/// stream emits and Codex echoes back), falling back to full `content` parts.
+fn reasoning_item_text(item: &Value) -> Option<String> {
+    for key in ["summary", "content"] {
+        let Some(parts) = item.get(key).and_then(|v| v.as_array()) else { continue };
+        let text = parts
+            .iter()
+            .filter_map(|p| p.get("text").and_then(|v| v.as_str()).or_else(|| p.as_str()))
+            .filter(|t| !t.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        if !text.trim().is_empty() {
+            return Some(text);
+        }
+    }
+    None
+}
+
+/// Append reasoning text onto a message's `reasoning_content` (the OpenAI-chat wire field).
+fn append_reasoning_content(message: &mut Message, text: &str) {
+    let text = text.trim();
+    if text.is_empty() {
+        return;
+    }
+    match &mut message.reasoning_content {
+        Some(existing) if !existing.is_empty() => {
+            existing.push_str("\n\n");
+            existing.push_str(text);
+        }
+        slot => *slot = Some(text.to_string()),
+    }
+}
+
 /// Decode an OpenAI Responses REQUEST json (what Codex sends with wire_api="responses") into the
 /// IR. Handles the full item vocabulary of an agentic history: message items (user input_text /
-/// input_image, assistant output_text), function_call, function_call_output. `reasoning` items
-/// (another model's chain-of-thought) and OpenAI-native tool items (local_shell_call,
-/// web_search_call, custom_tool_call…) have no cross-provider equivalent and are dropped.
+/// input_image, assistant output_text), function_call, function_call_output, and `reasoning`
+/// items — whose text is bridged onto the adjacent assistant message as `reasoning_content`,
+/// because thinking chat upstreams (Kimi/Moonshot, DeepSeek, …) reject assistant tool-call
+/// history that lost its reasoning. System/developer items collapse into ONE leading system
+/// message: strict providers (MiniMax) reject `role:system` anywhere but the head. OpenAI-native
+/// tool items (local_shell_call, web_search_call, custom_tool_call…) have no cross-provider
+/// equivalent and are dropped.
 pub fn decode_request(req: &Value) -> Result<ChatRequest, String> {
     let model = req.get("model").and_then(|v| v.as_str()).unwrap_or("").to_string();
     let mut messages: Vec<Message> = vec![];
+    // All system text (instructions + system/developer message items), merged to the head.
+    let mut system_texts: Vec<String> = vec![];
+    // Reasoning waiting for the assistant message it belongs to (model output order is
+    // reasoning → prose → tool calls, so reasoning usually precedes its assistant message).
+    let mut pending_reasoning: Option<String> = None;
 
     if let Some(instr) = req.get("instructions").and_then(|v| v.as_str()) {
         if !instr.trim().is_empty() {
-            messages.push(Message::text(Role::System, instr));
+            system_texts.push(instr.to_string());
         }
     }
 
@@ -304,15 +346,21 @@ pub fn decode_request(req: &Value) -> Result<ChatRequest, String> {
                         match role {
                             "assistant" => {
                                 if !text.is_empty() {
-                                    messages.push(Message::text(Role::Assistant, text));
+                                    let mut m = Message::text(Role::Assistant, text);
+                                    if let Some(r) = pending_reasoning.take() {
+                                        append_reasoning_content(&mut m, &r);
+                                    }
+                                    messages.push(m);
                                 }
                             }
                             "system" | "developer" => {
-                                if !text.is_empty() {
-                                    messages.push(Message::text(Role::System, text));
+                                pending_reasoning = None;
+                                if !text.trim().is_empty() {
+                                    system_texts.push(text);
                                 }
                             }
                             _ => {
+                                pending_reasoning = None;
                                 let mut blocks: Vec<MessageBlock> = vec![];
                                 if !text.is_empty() {
                                     blocks.push(MessageBlock::text(text));
@@ -320,6 +368,24 @@ pub fn decode_request(req: &Value) -> Result<ChatRequest, String> {
                                 blocks.extend(parts_images(&content));
                                 if !blocks.is_empty() {
                                     messages.push(Message::new(Role::User, blocks));
+                                }
+                            }
+                        }
+                    }
+                    "reasoning" => {
+                        // Belongs to the assistant step it neighbors: fold backward onto a
+                        // directly preceding assistant message, else hold for the next one.
+                        if let Some(text) = reasoning_item_text(item) {
+                            match messages.last_mut() {
+                                Some(m) if m.role == Role::Assistant => append_reasoning_content(m, &text),
+                                _ => {
+                                    match &mut pending_reasoning {
+                                        Some(existing) if !existing.is_empty() => {
+                                            existing.push_str("\n\n");
+                                            existing.push_str(text.trim());
+                                        }
+                                        slot => *slot = Some(text.trim().to_string()),
+                                    }
                                 }
                             }
                         }
@@ -350,16 +416,23 @@ pub fn decode_request(req: &Value) -> Result<ChatRequest, String> {
                         // IR carries one assistant turn, mirroring the Chat/Anthropic shape.
                         match messages.last_mut() {
                             Some(m) if m.role == Role::Assistant => {
+                                if let Some(r) = pending_reasoning.take() {
+                                    append_reasoning_content(m, &r);
+                                }
                                 m.tool_calls.get_or_insert_with(Vec::new).push(call);
                             }
                             _ => {
                                 let mut m = Message::new(Role::Assistant, vec![]);
+                                if let Some(r) = pending_reasoning.take() {
+                                    append_reasoning_content(&mut m, &r);
+                                }
                                 m.tool_calls = Some(vec![call]);
                                 messages.push(m);
                             }
                         }
                     }
                     "function_call_output" => {
+                        pending_reasoning = None;
                         let id = item.get("call_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
                         let text = match item.get("output") {
                             Some(Value::String(s)) => s.clone(),
@@ -378,6 +451,10 @@ pub fn decode_request(req: &Value) -> Result<ChatRequest, String> {
             }
         }
         _ => {}
+    }
+
+    if !system_texts.is_empty() {
+        messages.insert(0, Message::text(Role::System, system_texts.join("\n\n")));
     }
 
     let mut cr = ChatRequest::new(model).with_messages(messages);
@@ -644,7 +721,7 @@ mod tests {
 
     // A representative Codex request (wire_api="responses"): instructions, flattened function
     // tools, and an agentic history — user message, assistant prose + function_call, its
-    // function_call_output, and a reasoning item that must be dropped.
+    // function_call_output, and a reasoning item bridged onto the assistant turn.
     fn codex_request() -> Value {
         json!({
             "model": "z-ai/glm-5.2",
@@ -675,11 +752,12 @@ mod tests {
         let ir = decode_request(&codex_request()).unwrap();
         let roles: Vec<_> = ir.messages.iter().map(|m| format!("{:?}", m.role)).collect();
         // instructions → System; assistant prose + function_call folded into ONE assistant turn;
-        // function_call_output → Tool; reasoning item dropped.
+        // function_call_output → Tool; reasoning item bridged onto the assistant turn.
         assert_eq!(roles, vec!["System", "User", "Assistant", "Tool", "User"]);
         assert_eq!(ir.messages[0].content_as_text(), "You are Codex.");
         assert_eq!(ir.messages[1].content_as_text(), "list files");
         assert_eq!(ir.messages[2].content_as_text(), "Running ls.");
+        assert_eq!(ir.messages[2].reasoning_content.as_deref(), Some("thinking…"));
         let calls = ir.messages[2].tool_calls.as_ref().unwrap();
         assert_eq!(calls[0].id, "call_1");
         assert_eq!(calls[0].function.name, "shell");
@@ -707,6 +785,33 @@ mod tests {
         assert!(msgs.iter().any(|m| m["role"] == "user"
             && m["content"].as_array().unwrap().iter().any(|b| b["type"] == "tool_result" && b["tool_use_id"] == "call_1")));
         assert_eq!(body["system"], "You are Codex.");
+    }
+
+    // Thinking chat upstreams reject tool-call history without reasoning, and MiniMax rejects
+    // `role:system` anywhere but the head — the decoder must bridge reasoning items onto their
+    // assistant turn and merge all system/developer text into one leading system message.
+    #[test]
+    fn bridges_reasoning_and_collapses_system_into_head() {
+        let req = json!({
+            "model": "m",
+            "instructions": "You are Codex.",
+            "input": [
+                { "type": "message", "role": "user", "content": [{ "type": "input_text", "text": "run ls" }] },
+                { "type": "reasoning", "summary": [{ "type": "summary_text", "text": "need to list" }] },
+                { "type": "function_call", "call_id": "c1", "name": "shell", "arguments": "{}" },
+                { "type": "function_call_output", "call_id": "c1", "output": "a.txt" },
+                { "type": "message", "role": "developer", "content": [{ "type": "input_text", "text": "be careful" }] },
+                { "type": "message", "role": "user", "content": [{ "type": "input_text", "text": "again" }] }
+            ]
+        });
+        let ir = decode_request(&req).unwrap();
+        let roles: Vec<_> = ir.messages.iter().map(|m| format!("{:?}", m.role)).collect();
+        // exactly ONE system message, at the head, carrying instructions + the developer item
+        assert_eq!(roles, vec!["System", "User", "Assistant", "Tool", "User"]);
+        assert_eq!(ir.messages[0].content_as_text(), "You are Codex.\n\nbe careful");
+        // the reasoning that produced the tool call rides the tool-call assistant turn
+        assert_eq!(ir.messages[2].reasoning_content.as_deref(), Some("need to list"));
+        assert_eq!(ir.messages[2].tool_calls.as_ref().unwrap()[0].id, "c1");
     }
 
     #[test]

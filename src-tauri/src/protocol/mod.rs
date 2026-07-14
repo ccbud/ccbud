@@ -199,6 +199,30 @@ fn normalize_openai_request_thought_signatures(body: &mut Value) {
     }
 }
 
+/// Thinking chat upstreams (Kimi/Moonshot, DeepSeek, …) require every assistant message that
+/// carries `tool_calls` to also carry a non-empty `reasoning_content`, and answer
+/// "reasoning_content is missing in assistant tool call message" otherwise. Real reasoning is
+/// bridged from the client history where available (thinking blocks, Responses reasoning items);
+/// this is the last-resort placeholder for turns whose reasoning didn't survive the wire.
+/// Providers without the requirement ignore the extra field.
+fn ensure_chat_tool_call_reasoning_content(body: &mut Value) {
+    let Some(messages) = body.get_mut("messages").and_then(Value::as_array_mut) else { return };
+    for message in messages {
+        let has_tool_calls = message.get("role").and_then(Value::as_str) == Some("assistant")
+            && message.get("tool_calls").and_then(Value::as_array).is_some_and(|c| !c.is_empty());
+        if !has_tool_calls {
+            continue;
+        }
+        let missing = message
+            .get("reasoning_content")
+            .and_then(Value::as_str)
+            .is_none_or(|s| s.trim().is_empty());
+        if missing {
+            message["reasoning_content"] = json!("tool call");
+        }
+    }
+}
+
 /// Gemini/OpenRouter/Cloudflare return provider metadata in `extra_content`, which serde ignores
 /// when llm-connector parses a standard OpenAI ToolCall. Copy the opaque signature into the
 /// crate's internal field before parsing; the original response remains otherwise unchanged.
@@ -251,6 +275,7 @@ pub fn encode_upstream_request(
             if outgoing_model.to_ascii_lowercase().contains("gemini") {
                 normalize_openai_request_thought_signatures(&mut body);
             }
+            ensure_chat_tool_call_reasoning_content(&mut body);
             Ok(body)
         }
         Wire::OpenAiResponses => Ok(openai_responses::encode_request(&ir, outgoing_model, stream)),
@@ -371,6 +396,32 @@ mod tests {
         for status in [401, 403, 413, 415, 422, 429, 500] {
             assert!(!should_try_v1_fallback(status));
         }
+    }
+
+    // Kimi/Moonshot and DeepSeek thinking models 400 on assistant tool-call history missing
+    // `reasoning_content`: real reasoning must survive the Responses→chat bridge, and turns whose
+    // reasoning didn't survive get the placeholder.
+    #[test]
+    fn chat_bodies_backfill_tool_call_reasoning() {
+        let codex = json!({
+            "model": "m",
+            "input": [
+                { "type": "message", "role": "user", "content": [{ "type": "input_text", "text": "go" }] },
+                { "type": "function_call", "call_id": "c1", "name": "shell", "arguments": "{}" },
+                { "type": "function_call_output", "call_id": "c1", "output": "ok" },
+                { "type": "reasoning", "summary": [{ "type": "summary_text", "text": "real thoughts" }] },
+                { "type": "function_call", "call_id": "c2", "name": "shell", "arguments": "{}" },
+                { "type": "function_call_output", "call_id": "c2", "output": "ok" }
+            ]
+        });
+        let ir = decode_client_request(Wire::OpenAiResponses, &codex).unwrap();
+        let body = encode_upstream_request(Wire::OpenAiChat, &ir, "kimi-k2-thinking", true).unwrap();
+        let assistants: Vec<_> = body["messages"].as_array().unwrap().iter()
+            .filter(|m| m["role"] == "assistant").collect();
+        assert_eq!(assistants.len(), 2);
+        // step 1 lost its reasoning → placeholder; step 2's bridged reasoning is preserved
+        assert_eq!(assistants[0]["reasoning_content"], "tool call");
+        assert_eq!(assistants[1]["reasoning_content"], "real thoughts");
     }
 
     #[test]
