@@ -128,6 +128,52 @@ fn canonical_tool_arguments(arguments: &str) -> String {
         .unwrap_or_else(|_| arguments.to_string())
 }
 
+/// Codex records a model-emitted function call even when the host cannot parse its arguments, then
+/// sends that failed call back on the next Responses turn beside the router error. OpenAI accepts
+/// the arguments as an opaque string, but stricter chat providers (notably Gemini) parse every
+/// historical `tool_calls[].function.arguments` value and reject the whole request when a model
+/// appended prose or a second object. Preserve valid object arguments byte-for-byte so cached
+/// thought signatures still match; otherwise salvage the first complete object, or wrap the raw
+/// text in a valid object as a last resort.
+fn provider_safe_history_tool_arguments(arguments: &str) -> Option<String> {
+    let trimmed = arguments.trim();
+    if trimmed.is_empty() {
+        return Some("{}".to_string());
+    }
+    match serde_json::from_str::<Value>(arguments) {
+        Ok(Value::Object(_)) => return None,
+        Ok(value) => return Some(json!({ "_ccbuddy_value": value }).to_string()),
+        Err(_) => {}
+    }
+    if let Some(Ok(Value::Object(object))) = serde_json::Deserializer::from_str(trimmed)
+        .into_iter::<Value>()
+        .next()
+    {
+        return Some(Value::Object(object).to_string());
+    }
+    Some(json!({ "_ccbuddy_raw_arguments": arguments }).to_string())
+}
+
+fn sanitize_provider_history_tool_arguments(
+    request: &mut llm_connector::types::ChatRequest,
+) -> usize {
+    let mut repaired = 0usize;
+    for message in &mut request.messages {
+        let Some(calls) = message.tool_calls.as_mut() else { continue };
+        for call in calls {
+            let Some(arguments) = provider_safe_history_tool_arguments(&call.function.arguments)
+            else { continue };
+            call.function.arguments = arguments;
+            // A provider signature authenticates the exact call payload. Repaired arguments must
+            // use the documented synthetic-history fallback instead of a now-stale real signature.
+            call.thought_signature = None;
+            call.function.thought_signature = None;
+            repaired += 1;
+        }
+    }
+    repaired
+}
+
 fn current_tool_turn_start(request: &llm_connector::types::ChatRequest) -> usize {
     request.messages.iter()
         .rposition(|message| message.role == llm_connector::types::Role::User)
@@ -1472,6 +1518,13 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
                     request_session.as_deref(),
                     &mut ir,
                 );
+            }
+            // Repair after signature restoration so any call whose provider-visible payload changes
+            // cannot accidentally regain a cached signature that authenticated different bytes.
+            if provider_wire == crate::protocol::Wire::OpenAiChat {
+                sanitize_provider_history_tool_arguments(&mut ir);
+            }
+            if is_gemini_upstream {
                 apply_gemini_signature_fallback(&mut ir);
             }
             let translated_body = crate::protocol::encode_upstream_request(provider_wire, &ir, &outgoing, incremental);
@@ -3018,6 +3071,116 @@ mod tests {
             .collect();
         assert_eq!(signatures, vec![json!(GEMINI_SIGNATURE_FALLBACK), json!("sig-codex")]);
     }
+
+    #[test]
+    fn repairs_malformed_history_arguments_before_strict_chat_forwarding() {
+        let body = json!({
+            "model": "gpt-5.4",
+            "input": [
+                { "type": "message", "role": "user", "content": [{
+                    "type": "input_text", "text": "Use the helper and continue"
+                }] },
+                { "type": "function_call", "call_id": "call_bad", "name": "helper",
+                    "arguments": "{\"value\":1} trailing-garbage" },
+                { "type": "function_call_output", "call_id": "call_bad",
+                    "output": "failed to parse function arguments" }
+            ],
+            "tools": [{ "type": "function", "name": "helper", "description": "test",
+                "parameters": { "type": "object", "properties": { "value": { "type": "number" } } } }]
+        });
+        let mut ir = crate::protocol::decode_client_request(
+            crate::protocol::Wire::OpenAiResponses,
+            &body,
+        )
+        .unwrap();
+        let call = ir.messages[1].tool_calls.as_mut().unwrap().first_mut().unwrap();
+        call.thought_signature = Some("stale-signature".to_string());
+
+        assert_eq!(sanitize_provider_history_tool_arguments(&mut ir), 1);
+        let call = &ir.messages[1].tool_calls.as_ref().unwrap()[0];
+        assert_eq!(serde_json::from_str::<Value>(&call.function.arguments).unwrap()["value"], 1);
+        assert!(crate::protocol::tool_call_thought_signature(call).is_none());
+        assert_eq!(apply_gemini_signature_fallback(&mut ir), 1);
+
+        let encoded = crate::protocol::encode_upstream_request(
+            crate::protocol::Wire::OpenAiChat,
+            &ir,
+            "gemini-3.5-flash",
+            false,
+        )
+        .unwrap();
+        let outgoing = &encoded["messages"][1]["tool_calls"][0];
+        assert_eq!(
+            serde_json::from_str::<Value>(outgoing["function"]["arguments"].as_str().unwrap())
+                .unwrap()["value"],
+            1
+        );
+        assert_eq!(
+            outgoing["extra_content"]["google"]["thought_signature"],
+            GEMINI_SIGNATURE_FALLBACK
+        );
+    }
+
+    #[test]
+    fn history_argument_repair_preserves_valid_objects_and_wraps_unrecoverable_text() {
+        assert_eq!(provider_safe_history_tool_arguments(" { \"value\": 1 } "), None);
+        let scalar = provider_safe_history_tool_arguments("42").unwrap();
+        assert_eq!(serde_json::from_str::<Value>(&scalar).unwrap()["_ccbuddy_value"], 42);
+        let raw = provider_safe_history_tool_arguments("not json at all").unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(&raw).unwrap()["_ccbuddy_raw_arguments"],
+            "not json at all"
+        );
+
+        for arguments in ["{\"value\":1}\u{00a0}", "\u{000b}{\"value\":1}"] {
+            let repaired = provider_safe_history_tool_arguments(arguments).unwrap();
+            assert_eq!(
+                serde_json::from_str::<Value>(&repaired).unwrap(),
+                json!({ "value": 1 })
+            );
+        }
+    }
+
+    #[test]
+    fn history_argument_repair_clears_a_signature_restored_for_different_bytes() {
+        let captured = crate::protocol::stream::CapturedToolCall {
+            call_id: "call_empty".to_string(),
+            name: "helper".to_string(),
+            arguments: String::new(),
+            thought_signature: Some("real-signature".to_string()),
+        };
+        let mut cache = ThoughtSignatureCache::default();
+        cache.remember("google", Some("session-empty"), &[captured]);
+        let body = json!({
+            "model": "gpt-5.4",
+            "input": [
+                { "role": "user", "content": "Call helper" },
+                { "type": "function_call", "call_id": "call_empty", "name": "helper",
+                    "arguments": "" },
+                { "type": "function_call_output", "call_id": "call_empty", "output": "invalid" }
+            ]
+        });
+        let mut ir = crate::protocol::decode_client_request(
+            crate::protocol::Wire::OpenAiResponses,
+            &body,
+        )
+        .unwrap();
+
+        assert_eq!(cache.restore("google", Some("session-empty"), &mut ir), 1);
+        assert_eq!(sanitize_provider_history_tool_arguments(&mut ir), 1);
+        let call = &ir.messages[1].tool_calls.as_ref().unwrap()[0];
+        assert_eq!(call.function.arguments, "{}");
+        assert!(crate::protocol::tool_call_thought_signature(call).is_none());
+        assert_eq!(apply_gemini_signature_fallback(&mut ir), 1);
+        assert_eq!(
+            crate::protocol::tool_call_thought_signature(
+                &ir.messages[1].tool_calls.as_ref().unwrap()[0]
+            )
+            .as_deref(),
+            Some(GEMINI_SIGNATURE_FALLBACK)
+        );
+    }
+
     #[test]
     fn restores_latest_batch_and_falls_back_for_prior_steps() {
         let call = |id: &str, name: &str, arguments: &str, signature: Option<&str>| {
