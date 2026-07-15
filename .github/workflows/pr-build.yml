@@ -81,7 +81,7 @@ jobs:
           SHA=$(git rev-parse --short=7 HEAD)
           DEV="${BASE}-${SHA}"
           echo "DEV_VERSION=$DEV" >> "$GITHUB_ENV"
-          echo "Building ccbud $DEV"
+          echo "Building CCBuddy $DEV"
           node -e "const fs=require('fs'),f='package.json',j=JSON.parse(fs.readFileSync(f));j.version='$DEV';fs.writeFileSync(f,JSON.stringify(j,null,2)+'\n')"
           node -e "const fs=require('fs'),f='src-tauri/tauri.conf.json',j=JSON.parse(fs.readFileSync(f));j.version='$DEV';j.bundle.createUpdaterArtifacts=false;j.bundle.targets=['app','dmg','appimage','deb','nsis'];fs.writeFileSync(f,JSON.stringify(j,null,2)+'\n')"
 
@@ -93,7 +93,7 @@ jobs:
       - name: Upload installers
         uses: actions/upload-artifact@v4
         with:
-          name: ccbud-${{ env.DEV_VERSION }}-${{ matrix.artifact }}
+          name: CCBuddy-${{ env.DEV_VERSION }}-${{ matrix.artifact }}
           if-no-files-found: error
           # Native builds land in target/release/bundle; cross-target builds (macOS arm64) land in
           # target/<triple>/release/bundle. Cover both explicitly rather than relying on a glob.

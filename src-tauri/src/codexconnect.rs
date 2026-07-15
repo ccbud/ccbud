@@ -114,7 +114,7 @@ pub fn connect(port: u16, token: &str, model: &str) {
         doc["model_providers"] = Item::Table(Table::new());
     }
     let mut block = Table::new();
-    block.insert("name", value("ccbud"));
+    block.insert("name", value("CC Buddy"));
     block.insert("base_url", value(gateway_base(port)));
     block.insert("wire_api", value("responses"));
     block.insert("requires_openai_auth", value(false));
@@ -195,6 +195,7 @@ mod tests {
         assert!(raw.contains("# my codex config"), "user comment preserved");
         assert!(raw.contains("approval_policy"), "unrelated setting preserved");
         assert!(raw.contains("[model_providers.ccbud]"));
+        assert!(raw.contains("name = \"CC Buddy\""));
         assert!(raw.contains("base_url = \"http://localhost:4321/v1\""));
         assert!(raw.contains("wire_api = \"responses\""), "codex only supports the responses wire API");
         assert!(raw.contains("requires_openai_auth = false"));

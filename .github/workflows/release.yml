@@ -105,9 +105,9 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         with:
           tagName: v__VERSION__
-          releaseName: ccbud v__VERSION__
+          releaseName: CCBuddy v__VERSION__
           releaseBody: |
-            **ccbud** v__VERSION__ — a cross-platform desktop gateway that proxies Claude Code to any
+            **CCBuddy** v__VERSION__ — a cross-platform desktop gateway that proxies Claude Code to any
             Anthropic-compatible provider, with one-click provider switching and model-name mapping.
 
             Pick the installer for your platform (macOS `.dmg` x64/arm64 · Windows `.exe`/`.msi` ·

@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src 'self' ipc: http://ipc.localhost https://*.clarity.ms https://c.bing.com; style-src 'self' 'unsafe-inline'; script-src 'self' https://www.clarity.ms https://*.clarity.ms; img-src 'self' data: asset: http://asset.localhost" />
-    <title>ccbud</title>
+    <title>CC Buddy</title>
     <link rel="stylesheet" href="styles.css" />
     <link id="hljs-light" rel="stylesheet" href="vendor/hljs-light.css" />
     <link id="hljs-dark" rel="stylesheet" href="vendor/hljs-dark.css" media="not all" />
@@ -15,7 +15,7 @@
         <header class="sidebar-brand no-drag flex items-center gap-[9px] px-[6px] pb-5">
           <div class="logo w-[30px] h-[30px] flex-shrink-0 drop-shadow-[0_2px_8px_var(--brand-glow)]" id="appLogo" aria-hidden="true"></div>
           <div class="brand-text group-[.collapsed]/sidebar:hidden">
-            <div class="brand-title text-[15px] font-semibold tracking-[-0.02em] leading-[1.15] transition-colors duration-200 [&.running]:text-green" id="brandTitle">CCBUD</div>
+            <div class="brand-title text-[15px] font-semibold tracking-[-0.02em] leading-[1.15] transition-colors duration-200 [&.running]:text-green" id="brandTitle">CC Buddy</div>
             <div class="brand-sub" data-i18n="brand.sub">Coding CLI Buddy</div>
           </div>
         </header>
@@ -502,7 +502,7 @@
             </label>
             <label class="field flex flex-col gap-1.25 flex-1">
               <span class="field-label text-[11px] font-semibold text-caption uppercase tracking-[0.03em]" data-i18n="modal.apiUrl">API 地址</span>
-              <input id="fBaseUrl" data-clarity-mask="true" class="bg-bg-input border border-border-custom rounded-[7px] px-2.75 py-2 text-fg text-[13px] font-mono w-full outline-none transition-colors duration-120 focus:border-primary" type="text" placeholder="https://open.bigmodel.cn/api/anthropic" />
+              <input id="fBaseUrl" data-clarity-mask="true" class="bg-bg-input border border-border-custom rounded-[7px] px-2.75 py-2 text-fg text-[13px] font-mono w-full outline-none transition-colors duration-120 focus:border-primary" type="text" placeholder="https://open.bigmodel.cn/api/anthropic/v1" />
             </label>
           </div>
 

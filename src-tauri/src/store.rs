@@ -43,7 +43,7 @@ pub fn default_config() -> Value {
         "language": null,
         "historyDirs": ["~/.claude"],
         "historyActive": "all",
-        "connectTargets": ["claude"],
+        "connectTargets": [],
         "retry429": { "enabled": true, "max": 3, "baseMs": 500 },
         "insecureSkipVerify": false,
         "autoUpdate": { "check": true, "autoDownload": true },
@@ -115,10 +115,20 @@ pub fn normalize(input: Value) -> Value {
                 Some("openai-responses") => "openai-responses",
                 _ => "anthropic",
             };
+            // Zhipu's Anthropic-compatible endpoint is versioned. The old preset omitted `/v1`;
+            // its unversioned path returns HTTP 200 with an embedded `404 NOT_FOUND`, which cannot
+            // trigger the gateway's status-based compatibility retry. Normalize only that exact
+            // legacy preset URL, leaving every custom/provider URL authoritative.
+            let mut base_url = str_of(p.get("baseUrl"));
+            if protocol == "anthropic"
+                && base_url.trim_end_matches('/') == "https://open.bigmodel.cn/api/anthropic"
+            {
+                base_url = "https://open.bigmodel.cn/api/anthropic/v1".to_string();
+            }
             let mut np = json!({
                 "id": p.get("id").cloned().unwrap_or(Value::Null),
                 "name": name,
-                "baseUrl": str_of(p.get("baseUrl")),
+                "baseUrl": base_url,
                 "authToken": str_of(p.get("authToken")),
                 "defaultModel": str_of(p.get("defaultModel")),
                 "smallFastModel": str_of(p.get("smallFastModel")),
@@ -235,8 +245,8 @@ pub fn normalize(input: Value) -> Value {
 
     // connectTargets: which coding CLIs are wired to the gateway. Subset of {claude, codex}, deduped.
     // Empty is a VALID state (everything disconnected) — don't snap it back to ["claude"], or the UI
-    // toggle for the last-remaining CLI could never turn off. default_config seeds ["claude"] for a
-    // fresh install; an explicit [] here is preserved.
+    // toggle for the last-remaining CLI could never turn off. Fresh and legacy configs deliberately
+    // normalize to [] so startup never mistakes a schema default for an explicit connection choice.
     let mut targets: Vec<String> = vec![];
     if let Some(arr) = obj.get("connectTargets").and_then(|v| v.as_array()) {
         for t in arr {
@@ -426,6 +436,17 @@ fn set_0600(_p: &PathBuf) {}
 mod tests {
     use super::*;
     #[test]
+    fn fresh_and_legacy_configs_do_not_select_a_startup_connection() {
+        assert_eq!(default_config()["connectTargets"], json!([]));
+        assert_eq!(normalize(json!({}))["connectTargets"], json!([]));
+
+        let explicit = normalize(json!({
+            "connectTargets": ["codex", "claude", "codex", "invalid"]
+        }));
+        assert_eq!(explicit["connectTargets"], json!(["codex", "claude"]));
+    }
+
+    #[test]
     fn normalize_sanitizes_providers_and_active() {
         let input = json!({
             "port": 9000,
@@ -449,6 +470,25 @@ mod tests {
         // unrecognized → safe passthrough default
         let bad = normalize(json!({ "providers": [{ "name": "B", "protocol": "grpc" }] }));
         assert_eq!(bad["providers"][0]["protocol"], "anthropic");
+    }
+    #[test]
+    fn normalize_migrates_legacy_glm_anthropic_base_url() {
+        let legacy = normalize(json!({ "providers": [{
+            "name": "GLM",
+            "baseUrl": "https://open.bigmodel.cn/api/anthropic/",
+            "protocol": "anthropic"
+        }] }));
+        assert_eq!(
+            legacy["providers"][0]["baseUrl"],
+            "https://open.bigmodel.cn/api/anthropic/v1"
+        );
+
+        let custom = normalize(json!({ "providers": [{
+            "name": "Custom",
+            "baseUrl": "https://example.com/api/anthropic",
+            "protocol": "anthropic"
+        }] }));
+        assert_eq!(custom["providers"][0]["baseUrl"], "https://example.com/api/anthropic");
     }
     #[test]
     fn normalize_clamps_retry() {

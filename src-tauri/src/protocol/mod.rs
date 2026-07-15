@@ -16,6 +16,7 @@
 #![allow(dead_code)]
 
 pub mod anthropic;
+pub mod codex_history;
 pub mod openai_chat_client;
 pub mod openai_responses;
 pub mod stream;
@@ -44,8 +45,8 @@ impl Wire {
     /// The client's protocol, inferred from the inbound request path. Claude Code hits
     /// `/v1/messages`; an OpenAI/Codex client hits `/v1/chat/completions` or `/v1/responses`.
     pub fn from_request_path(uri: &Uri) -> Wire {
-        let p = uri.path();
-        if p.ends_with("/responses") || p.ends_with("/responses/") {
+        let p = uri.path().trim_end_matches('/');
+        if p.ends_with("/responses") || p.ends_with("/responses/compact") {
             Wire::OpenAiResponses
         } else if p.contains("/chat/completions") {
             Wire::OpenAiChat
@@ -97,9 +98,40 @@ impl Wire {
         match path.trim_end_matches('/') {
             "/messages" | "/v1/messages" => Some(Wire::Anthropic),
             "/chat/completions" | "/v1/chat/completions" => Some(Wire::OpenAiChat),
-            "/responses" | "/v1/responses" => Some(Wire::OpenAiResponses),
+            "/responses" | "/v1/responses" | "/responses/compact" | "/v1/responses/compact" => {
+                Some(Wire::OpenAiResponses)
+            }
             _ => None,
         }
+    }
+
+    pub fn request_endpoint_path(self, inbound_path: &str) -> &'static str {
+        if self == Wire::OpenAiResponses
+            && inbound_path.trim_end_matches('/').ends_with("/responses/compact")
+        {
+            "/responses/compact"
+        } else {
+            self.endpoint_path()
+        }
+    }
+
+    pub fn upstream_url_for_request(self, base_url: &str, inbound_path: &str) -> String {
+        let base = base_url.trim_end_matches('/');
+        format!("{}{}", base, self.request_endpoint_path(inbound_path))
+    }
+
+    pub fn v1_fallback_url_for_request(
+        self,
+        base_url: &str,
+        inbound_path: &str,
+    ) -> Option<String> {
+        let base = base_url.trim_end_matches('/');
+        if base_url_has_version_suffix(base_url)
+            || (self == Wire::OpenAiChat && base.ends_with("/openai"))
+        {
+            return None;
+        }
+        Some(format!("{}/v1{}", base, self.request_endpoint_path(inbound_path)))
     }
 }
 
@@ -199,6 +231,30 @@ fn normalize_openai_request_thought_signatures(body: &mut Value) {
     }
 }
 
+/// Thinking chat upstreams (Kimi/Moonshot, DeepSeek, …) require every assistant message that
+/// carries `tool_calls` to also carry a non-empty `reasoning_content`, and answer
+/// "reasoning_content is missing in assistant tool call message" otherwise. Real reasoning is
+/// bridged from the client history where available (thinking blocks, Responses reasoning items);
+/// this is the last-resort placeholder for turns whose reasoning didn't survive the wire.
+/// Providers without the requirement ignore the extra field.
+fn ensure_chat_tool_call_reasoning_content(body: &mut Value) {
+    let Some(messages) = body.get_mut("messages").and_then(Value::as_array_mut) else { return };
+    for message in messages {
+        let has_tool_calls = message.get("role").and_then(Value::as_str) == Some("assistant")
+            && message.get("tool_calls").and_then(Value::as_array).is_some_and(|c| !c.is_empty());
+        if !has_tool_calls {
+            continue;
+        }
+        let missing = message
+            .get("reasoning_content")
+            .and_then(Value::as_str)
+            .map_or(true, |s| s.trim().is_empty());
+        if missing {
+            message["reasoning_content"] = json!("tool call");
+        }
+    }
+}
+
 /// Gemini/OpenRouter/Cloudflare return provider metadata in `extra_content`, which serde ignores
 /// when llm-connector parses a standard OpenAI ToolCall. Copy the opaque signature into the
 /// crate's internal field before parsing; the original response remains otherwise unchanged.
@@ -248,9 +304,21 @@ pub fn encode_upstream_request(
             let mut body = OpenAIProtocol::new("")
                 .build_chat_request_body(&ir)
                 .map_err(|e| e.to_string())?;
-            if outgoing_model.to_ascii_lowercase().contains("gemini") {
+            let lower_model = outgoing_model.to_ascii_lowercase();
+            if lower_model.contains("gemini") {
                 normalize_openai_request_thought_signatures(&mut body);
             }
+            // GLM's OpenAI-compatible coding endpoint uses its native `thinking` switch rather
+            // than the OpenAI `reasoning_effort` field emitted by the generic connector.
+            if lower_model.contains("glm") || lower_model.contains("zhipu") || lower_model.contains("z-ai") {
+                if let Some(object) = body.as_object_mut() {
+                    object.remove("reasoning_effort");
+                }
+                if ir.enable_thinking == Some(true) {
+                    body["thinking"] = json!({ "type": "enabled" });
+                }
+            }
+            ensure_chat_tool_call_reasoning_content(&mut body);
             Ok(body)
         }
         Wire::OpenAiResponses => Ok(openai_responses::encode_request(&ir, outgoing_model, stream)),
@@ -359,6 +427,17 @@ mod tests {
         assert_eq!(Wire::from_request_endpoint("/v1/messages"), Some(Wire::Anthropic));
         assert_eq!(Wire::from_request_endpoint("/v1/chat/completions"), Some(Wire::OpenAiChat));
         assert_eq!(Wire::from_request_endpoint("/v1/responses"), Some(Wire::OpenAiResponses));
+        assert_eq!(
+            Wire::from_request_endpoint("/v1/responses/compact"),
+            Some(Wire::OpenAiResponses)
+        );
+        assert_eq!(
+            Wire::OpenAiResponses.upstream_url_for_request(
+                "https://example.com/v1",
+                "/v1/responses/compact",
+            ),
+            "https://example.com/v1/responses/compact"
+        );
         assert_eq!(Wire::from_request_endpoint("/v1/messages/count_tokens"), None);
         assert_eq!(Wire::from_request_endpoint("/v1/models"), None);
     }
@@ -371,6 +450,49 @@ mod tests {
         for status in [401, 403, 413, 415, 422, 429, 500] {
             assert!(!should_try_v1_fallback(status));
         }
+    }
+
+    // Kimi/Moonshot and DeepSeek thinking models 400 on assistant tool-call history missing
+    // `reasoning_content`: real reasoning must survive the Responses→chat bridge, and turns whose
+    // reasoning didn't survive get the placeholder.
+    #[test]
+    fn chat_bodies_backfill_tool_call_reasoning() {
+        let codex = json!({
+            "model": "m",
+            "input": [
+                { "type": "message", "role": "user", "content": [{ "type": "input_text", "text": "go" }] },
+                { "type": "function_call", "call_id": "c1", "name": "shell", "arguments": "{}" },
+                { "type": "function_call_output", "call_id": "c1", "output": "ok" },
+                { "type": "reasoning", "summary": [{ "type": "summary_text", "text": "real thoughts" }] },
+                { "type": "function_call", "call_id": "c2", "name": "shell", "arguments": "{}" },
+                { "type": "function_call_output", "call_id": "c2", "output": "ok" }
+            ]
+        });
+        let ir = decode_client_request(Wire::OpenAiResponses, &codex).unwrap();
+        let body = encode_upstream_request(Wire::OpenAiChat, &ir, "kimi-k2-thinking", true).unwrap();
+        let assistants: Vec<_> = body["messages"].as_array().unwrap().iter()
+            .filter(|m| m["role"] == "assistant").collect();
+        assert_eq!(assistants.len(), 2);
+        // step 1 lost its reasoning → placeholder; step 2's bridged reasoning is preserved
+        assert_eq!(assistants[0]["reasoning_content"], "tool call");
+        assert_eq!(assistants[1]["reasoning_content"], "real thoughts");
+    }
+
+    #[test]
+    fn glm_chat_uses_native_thinking_switch() {
+        let codex = json!({
+            "model": "gpt-5.4",
+            "input": [{
+                "type": "message",
+                "role": "user",
+                "content": [{ "type": "input_text", "text": "inspect" }]
+            }],
+            "reasoning": { "effort": "ultra" }
+        });
+        let ir = decode_client_request(Wire::OpenAiResponses, &codex).unwrap();
+        let body = encode_upstream_request(Wire::OpenAiChat, &ir, "glm-5.2", true).unwrap();
+        assert_eq!(body["thinking"]["type"], "enabled");
+        assert!(body.get("reasoning_effort").is_none());
     }
 
     #[test]
