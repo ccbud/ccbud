@@ -214,7 +214,7 @@
         '</div><nav class="toc" id="toc"></nav>' +
       '</aside>' +
       '<main class="content"><div class="thread" id="thread">' + threadHtml + orphanHtml + '</div>' +
-      '<div class="footer">由 <a class="footer-link" href="https://ccbud.github.io/" target="_blank" rel="noopener">CCBuddy</a> 导出 · ' + (meta.count || 0) + ' 条消息' + (meta.subagentCount ? ' · ' + meta.subagentCount + ' 个子代理' : '') + '<div class="footer-site"><a class="footer-link" href="https://ccbud.github.io/" target="_blank" rel="noopener">https://ccbud.github.io/</a></div></div></main>' +
+      '<div class="footer">由 <a class="footer-link" href="https://ccbud.github.io/" target="_blank" rel="noopener">CC Buddy</a> 导出 · ' + (meta.count || 0) + ' 条消息' + (meta.subagentCount ? ' · ' + meta.subagentCount + ' 个子代理' : '') + '<div class="footer-site"><a class="footer-link" href="https://ccbud.github.io/" target="_blank" rel="noopener">https://ccbud.github.io/</a></div></div></main>' +
     '</div>';
 
   var content = app.querySelector('.content');

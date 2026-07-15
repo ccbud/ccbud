@@ -758,6 +758,15 @@ fn request_body_with_model(request: &Value, outgoing_model: Option<&str>) -> Opt
     serde_json::to_vec(&request).ok().map(Bytes::from)
 }
 
+fn apply_responses_chat_request_controls(body: &mut Value, request: &Value) {
+    if let Some(parallel_tool_calls) = request
+        .get("parallel_tool_calls")
+        .and_then(Value::as_bool)
+    {
+        body["parallel_tool_calls"] = json!(parallel_tool_calls);
+    }
+}
+
 /// Makes a streaming request visible in the monitor even when the client aborts mid-stream.
 /// The row + exchange record are normally emitted at the END of the response generator; when the
 /// client disconnects, axum simply drops the generator and that code never runs — the request
@@ -1053,7 +1062,7 @@ fn cross_wire_compact_error(path: &str, provider_wire: crate::protocol::Wire) ->
         .then(|| {
             error_response(
                 StatusCode::NOT_IMPLEMENTED,
-                "CCBuddy: /v1/responses/compact requires an openai-responses provider; cross-protocol compaction is not supported",
+                "CC Buddy: /v1/responses/compact requires an openai-responses provider; cross-protocol compaction is not supported",
                 "invalid_request_error",
             )
         })
@@ -1229,7 +1238,7 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
                 in_headers.get("x-api-key").and_then(|v| v.to_str().ok()).unwrap_or("")
             });
             if presented != token {
-                return error_response(StatusCode::UNAUTHORIZED, "CCBuddy: invalid gateway token", "authentication_error");
+                return error_response(StatusCode::UNAUTHORIZED, "CC Buddy: invalid gateway token", "authentication_error");
             }
         }
     }
@@ -1265,12 +1274,12 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
         Some(r) => r,
         None => {
             st.log("warn", "request rejected: no provider configured");
-            return error_response(StatusCode::BAD_GATEWAY, "CCBuddy: no provider configured. Add one in the app.", "api_error");
+            return error_response(StatusCode::BAD_GATEWAY, "CC Buddy: no provider configured. Add one in the app.", "api_error");
         }
     };
     let provider = match providers.iter().find(|p| p.get("id").and_then(|v| v.as_str()) == Some(routing.provider_id.as_str())) {
         Some(p) => p,
-        None => return error_response(StatusCode::BAD_GATEWAY, "CCBuddy: no provider configured.", "api_error"),
+        None => return error_response(StatusCode::BAD_GATEWAY, "CC Buddy: no provider configured.", "api_error"),
     };
     let base_url = provider.get("baseUrl").and_then(|v| v.as_str()).unwrap_or("");
     let auth_token = provider.get("authToken").and_then(|v| v.as_str()).unwrap_or("").to_string();
@@ -1304,7 +1313,7 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
         Some(pair) => pair,
         None => match build_target(base_url, &uri) {
             Some(t) => (t, None),
-            None => return error_response(StatusCode::BAD_GATEWAY, "CCBuddy: invalid provider baseUrl", "api_error"),
+            None => return error_response(StatusCode::BAD_GATEWAY, "CC Buddy: invalid provider baseUrl", "api_error"),
         },
     };
     let is_models_list = method == Method::GET && (req_path.ends_with("/v1/models") || req_path.ends_with("/v1/models/"));
@@ -1368,7 +1377,7 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
                     return error_response(
                         StatusCode::BAD_REQUEST,
                         &format!(
-                            "CCBuddy cannot compact previous_response_id '{}' with provider '{}': its complete context cannot be materialized; retry with the owning Responses provider",
+                            "CC Buddy cannot compact previous_response_id '{}' with provider '{}': its complete context cannot be materialized; retry with the owning Responses provider",
                             previous_response_id.as_deref().unwrap_or("<missing>"),
                             provider_name
                         ),
@@ -1384,7 +1393,7 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
                 ) else {
                     return error_response(
                         StatusCode::INTERNAL_SERVER_ERROR,
-                        "CCBuddy failed to serialize locally materialized compact history",
+                        "CC Buddy failed to serialize locally materialized compact history",
                         "api_error",
                     );
                 };
@@ -1423,7 +1432,7 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
                     return error_response(
                         StatusCode::BAD_REQUEST,
                         &format!(
-                            "CCBuddy cannot continue previous_response_id '{}' through provider '{}': it {}; retry with the owning Responses provider or start a new conversation",
+                            "CC Buddy cannot continue previous_response_id '{}' through provider '{}': it {}; retry with the owning Responses provider or start a new conversation",
                             previous_response_id.as_deref().unwrap_or("<missing>"),
                             provider_name,
                             detail
@@ -1441,7 +1450,7 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
                     ) else {
                         return error_response(
                             StatusCode::INTERNAL_SERVER_ERROR,
-                            "CCBuddy failed to serialize locally materialized Responses history",
+                            "CC Buddy failed to serialize locally materialized Responses history",
                             "api_error",
                         );
                     };
@@ -1503,7 +1512,7 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
                     );
                     return error_response(
                         StatusCode::BAD_REQUEST,
-                        &format!("CCBuddy invalid client request: {}", e),
+                        &format!("CC Buddy invalid client request: {}", e),
                         "invalid_request_error",
                     );
                 }
@@ -1530,6 +1539,11 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
             let translated_body = crate::protocol::encode_upstream_request(provider_wire, &ir, &outgoing, incremental);
             match translated_body {
                 Ok(mut body) => {
+                    if client_wire == crate::protocol::Wire::OpenAiResponses
+                        && provider_wire == crate::protocol::Wire::OpenAiChat
+                    {
+                        apply_responses_chat_request_controls(&mut body, &request_for_translation);
+                    }
                     // Ask OpenAI-family upstreams to include usage in the final stream chunk.
                     if incremental && provider_wire == crate::protocol::Wire::OpenAiChat {
                         body["stream_options"] = json!({ "include_usage": true });
@@ -1545,7 +1559,7 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
                 }
                 Err(e) => {
                     st.log("error", format!("protocol translate ({:?}→{:?}) failed: {}", client_wire, provider_wire, e));
-                    return error_response(StatusCode::BAD_GATEWAY, &format!("CCBuddy protocol translation failed: {}", e), "api_error");
+                    return error_response(StatusCode::BAD_GATEWAY, &format!("CC Buddy protocol translation failed: {}", e), "api_error");
                 }
             }
         }
@@ -1683,7 +1697,7 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
                 }
                 st.log("error", format!("upstream error: {}", e));
                 st.emit_request(ex_id, started, &method, &req_path, &provider_name, &routing, 502, None);
-                return error_response(StatusCode::BAD_GATEWAY, &format!("CCBuddy upstream error: {}", e), "api_error");
+                return error_response(StatusCode::BAD_GATEWAY, &format!("CC Buddy upstream error: {}", e), "api_error");
             }
         }
     };
@@ -2047,7 +2061,7 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
                 StatusCode::BAD_GATEWAY.as_u16(),
                 None,
             );
-            return error_response(StatusCode::BAD_GATEWAY, &format!("CCBuddy: {}", message), "api_error");
+            return error_response(StatusCode::BAD_GATEWAY, &format!("CC Buddy: {}", message), "api_error");
         }
     };
 
@@ -2139,7 +2153,7 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
             st.emit_request(ex_id, started, &method, &req_path, &provider_name, &routing, status.as_u16(), None);
             return error_response(
                 StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY),
-                &format!("CCBuddy upstream error: {}", text.chars().take(400).collect::<String>()),
+                &format!("CC Buddy upstream error: {}", text.chars().take(400).collect::<String>()),
                 "api_error",
             );
         }
@@ -2148,7 +2162,7 @@ async fn handle(State(st): State<Arc<GatewayState>>, req: axum::extract::Request
             Err(e) => {
                 st.log("error", format!("response translate ({:?}→{:?}) failed: {}", provider_wire, client_wire, e));
                 st.emit_request(ex_id, started, &method, &req_path, &provider_name, &routing, 502, None);
-                return error_response(StatusCode::BAD_GATEWAY, &format!("CCBuddy response translation failed: {}", e), "api_error");
+                return error_response(StatusCode::BAD_GATEWAY, &format!("CC Buddy response translation failed: {}", e), "api_error");
             }
         };
         let mut usage = UsageAcc::default();
@@ -2716,6 +2730,19 @@ mod tests {
         assert!(ids.contains(&"gpt-5.4"));
         assert!(ids.contains(&"gpt-5.4-mini"));
         assert!(!ids.iter().any(|id| id.starts_with("claude-")));
+    }
+    #[test]
+    fn responses_chat_translation_preserves_parallel_tool_calls() {
+        let mut body = json!({ "model": "upstream", "messages": [] });
+        apply_responses_chat_request_controls(
+            &mut body,
+            &json!({ "parallel_tool_calls": false }),
+        );
+        assert_eq!(body["parallel_tool_calls"], false);
+
+        let mut absent = json!({ "model": "upstream", "messages": [] });
+        apply_responses_chat_request_controls(&mut absent, &json!({}));
+        assert!(absent.get("parallel_tool_calls").is_none());
     }
     #[test]
     fn build_target_collapses_path_overlap() {

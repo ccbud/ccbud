@@ -348,7 +348,7 @@ function createGateway({ getConfig }) {
       const auth = req.headers['authorization'] || '';
       const presented = auth.replace(/^Bearer\s+/i, '') || req.headers['x-api-key'] || '';
       if (presented !== config.gatewayToken) {
-        respondJson(res, 401, JSON.parse(errorBody('CCBuddy: invalid gateway token', 'authentication_error')));
+        respondJson(res, 401, JSON.parse(errorBody('CC Buddy: invalid gateway token', 'authentication_error')));
         return;
       }
     }
@@ -373,7 +373,7 @@ function createGateway({ getConfig }) {
 
     const routing = resolveRouting(requestedModel, config, knownModels);
     if (!routing || !routing.provider) {
-      respondJson(res, 502, JSON.parse(errorBody('CCBuddy: no provider configured. Add one in the app.', 'api_error')));
+      respondJson(res, 502, JSON.parse(errorBody('CC Buddy: no provider configured. Add one in the app.', 'api_error')));
       log('warn', 'request rejected: no provider configured');
       return;
     }
@@ -422,7 +422,7 @@ function createGateway({ getConfig }) {
       }
       target = new URL(base.protocol + '//' + base.host + basePath + inbound);
     } catch (e) {
-      respondJson(res, 502, JSON.parse(errorBody('CCBuddy: invalid provider baseUrl: ' + provider.baseUrl, 'api_error')));
+      respondJson(res, 502, JSON.parse(errorBody('CC Buddy: invalid provider baseUrl: ' + provider.baseUrl, 'api_error')));
       return;
     }
 
@@ -620,7 +620,7 @@ function createGateway({ getConfig }) {
               finishLog();
               return;
             }
-            if (!res.headersSent) respondJson(res, 502, JSON.parse(errorBody('CCBuddy upstream stream error: ' + err.message, 'api_error')));
+            if (!res.headersSent) respondJson(res, 502, JSON.parse(errorBody('CC Buddy upstream stream error: ' + err.message, 'api_error')));
             else { try { res.destroy(); } catch (_) {} }
             emitExchange(upRes.statusCode, outHeaders, capText(Buffer.concat(cs), RES_CAP), err.message);
             finishLog(err.message);
@@ -730,7 +730,7 @@ function createGateway({ getConfig }) {
         return;
       }
       if (!res.headersSent) {
-        respondJson(res, 502, JSON.parse(errorBody('CCBuddy upstream error: ' + err.message, 'api_error')));
+        respondJson(res, 502, JSON.parse(errorBody('CC Buddy upstream error: ' + err.message, 'api_error')));
       } else {
         try {
           res.destroy();
@@ -772,7 +772,7 @@ function createGateway({ getConfig }) {
         .then(() => handle(req, res, startedAt))
         .catch((e) => {
           try {
-            if (!res.headersSent) respondJson(res, 500, JSON.parse(errorBody('CCBuddy internal error: ' + (e && e.message ? e.message : e), 'api_error')));
+            if (!res.headersSent) respondJson(res, 500, JSON.parse(errorBody('CC Buddy internal error: ' + (e && e.message ? e.message : e), 'api_error')));
             else res.destroy();
           } catch (_) {}
         });

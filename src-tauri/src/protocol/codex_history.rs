@@ -853,6 +853,10 @@ fn history_item_is_materializable(item: &Value) -> bool {
             }
         });
     match item_type {
+        // Responses Lite carries request-scoped tool declarations as a developer input item.
+        // They are ordinary JSON tool definitions and can be replayed when CC Buddy has to
+        // materialize a previous response across providers.
+        "additional_tools" => object.get("tools").is_some_and(Value::is_array),
         "message" => object
             .get("content")
             .map_or(true, history_content_is_materializable),
@@ -1016,6 +1020,25 @@ mod tests {
     use super::*;
     use serde_json::json;
     use std::sync::Arc;
+
+    #[test]
+    fn responses_lite_additional_tools_are_materializable() {
+        let request = json!({
+            "input": [{
+                "type": "additional_tools",
+                "role": "developer",
+                "tools": [
+                    { "type": "custom", "name": "exec" },
+                    {
+                        "type": "namespace",
+                        "name": "collaboration",
+                        "tools": [{ "type": "function", "name": "spawn_agent" }]
+                    }
+                ]
+            }]
+        });
+        assert!(request_input_is_materializable(&request));
+    }
 
     #[tokio::test]
     async fn restores_call_before_output_from_previous_response() {

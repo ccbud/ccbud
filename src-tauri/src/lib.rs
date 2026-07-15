@@ -435,7 +435,7 @@ fn connect_targets(cfg: &Value) -> Vec<String> {
 
 /// Plan the safe subset of connections to repair on startup. Older releases could persist the
 /// then-default `["claude"]` without the user ever connecting, so selection alone is insufficient:
-/// a target's compatibility backup is the proof that CCBuddy previously took ownership of it.
+/// a target's compatibility backup is the proof that CC Buddy previously took ownership of it.
 fn startup_reconcile_targets(cfg: &Value) -> Vec<String> {
     connect_targets(cfg)
         .into_iter()
@@ -848,11 +848,11 @@ struct TrayLabels {
 fn tray_labels(lang: &str) -> TrayLabels {
     match lang {
         // config.language stores "zh" (store.rs normalize) — accept both spellings.
-        "zh" | "zh-CN" => TrayLabels { running_with: "● 网关运行中 · {name}", stopped: "○ 网关已停止", open_main: "打开主界面", stop_gw: "停止网关服务", start_gw: "启动网关服务", quit: "退出 CCBuddy", check_updates: "检查更新…" },
-        "zh-TW" => TrayLabels { running_with: "● 閘道執行中 · {name}", stopped: "○ 閘道已停止", open_main: "開啟主視窗", stop_gw: "停止閘道服務", start_gw: "啟動閘道服務", quit: "結束 CCBuddy", check_updates: "檢查更新…" },
-        "ja" => TrayLabels { running_with: "● ゲートウェイ稼働中 · {name}", stopped: "○ ゲートウェイ停止中", open_main: "メインウィンドウを開く", stop_gw: "ゲートウェイを停止", start_gw: "ゲートウェイを起動", quit: "CCBuddy を終了", check_updates: "更新を確認…" },
-        "ko" => TrayLabels { running_with: "● 게이트웨이 실행 중 · {name}", stopped: "○ 게이트웨이 중지됨", open_main: "메인 창 열기", stop_gw: "게이트웨이 중지", start_gw: "게이트웨이 시작", quit: "CCBuddy 종료", check_updates: "업데이트 확인…" },
-        _ => TrayLabels { running_with: "● Gateway running · {name}", stopped: "○ Gateway stopped", open_main: "Open main window", stop_gw: "Stop gateway service", start_gw: "Start gateway service", quit: "Quit CCBuddy", check_updates: "Check for updates…" },
+        "zh" | "zh-CN" => TrayLabels { running_with: "● 网关运行中 · {name}", stopped: "○ 网关已停止", open_main: "打开主界面", stop_gw: "停止网关服务", start_gw: "启动网关服务", quit: "退出 CC Buddy", check_updates: "检查更新…" },
+        "zh-TW" => TrayLabels { running_with: "● 閘道執行中 · {name}", stopped: "○ 閘道已停止", open_main: "開啟主視窗", stop_gw: "停止閘道服務", start_gw: "啟動閘道服務", quit: "結束 CC Buddy", check_updates: "檢查更新…" },
+        "ja" => TrayLabels { running_with: "● ゲートウェイ稼働中 · {name}", stopped: "○ ゲートウェイ停止中", open_main: "メインウィンドウを開く", stop_gw: "ゲートウェイを停止", start_gw: "ゲートウェイを起動", quit: "CC Buddy を終了", check_updates: "更新を確認…" },
+        "ko" => TrayLabels { running_with: "● 게이트웨이 실행 중 · {name}", stopped: "○ 게이트웨이 중지됨", open_main: "메인 창 열기", stop_gw: "게이트웨이 중지", start_gw: "게이트웨이 시작", quit: "CC Buddy 종료", check_updates: "업데이트 확인…" },
+        _ => TrayLabels { running_with: "● Gateway running · {name}", stopped: "○ Gateway stopped", open_main: "Open main window", stop_gw: "Stop gateway service", start_gw: "Start gateway service", quit: "Quit CC Buddy", check_updates: "Check for updates…" },
     }
 }
 fn config_lang(config: &Value) -> String {
@@ -883,7 +883,7 @@ fn build_tray_menu(
     use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
     let l = tray_labels(lang);
     let status_txt = if running {
-        let name = if provider.is_empty() { "CCBuddy" } else { provider };
+        let name = if provider.is_empty() { "CC Buddy" } else { provider };
         l.running_with.replace("{name}", name)
     } else {
         l.stopped.to_string()
@@ -1801,7 +1801,7 @@ pub fn run() {
                 let _ = TrayIconBuilder::with_id("main")
                     .icon(tray_img)
                     .icon_as_template(true)
-                    .tooltip("CCBuddy")
+                    .tooltip("CC Buddy")
                     .menu(&menu)
                     .show_menu_on_left_click(false)
                     .on_menu_event(|app, event| match event.id.as_ref() {

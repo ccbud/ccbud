@@ -102,18 +102,18 @@ pub fn build_profile(port: u16, token: &str) -> String {
       <key>PayloadVersion</key>
       <integer>1</integer>
       <key>PayloadDisplayName</key>
-      <string>Claude Desktop Third-Party Inference (CCBuddy)</string>
+      <string>Claude Desktop Third-Party Inference (CC Buddy)</string>
 {body}
     </dict>
   </array>
   <key>PayloadDisplayName</key>
-  <string>CCBuddy · Claude Desktop 第三方推理</string>
+  <string>CC Buddy · Claude Desktop 第三方推理</string>
   <key>PayloadDescription</key>
-  <string>将 Claude 桌面版的模型推理指向本地 CCBuddy 网关（{ep}）。可随时移除以还原为官方推理。</string>
+  <string>将 Claude 桌面版的模型推理指向本地 CC Buddy 网关（{ep}）。可随时移除以还原为官方推理。</string>
   <key>PayloadIdentifier</key>
   <string>{ident}</string>
   <key>PayloadOrganization</key>
-  <string>CCBuddy</string>
+  <string>CC Buddy</string>
   <key>PayloadRemovalDisallowed</key>
   <false/>
   <key>PayloadScope</key>

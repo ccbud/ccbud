@@ -408,7 +408,7 @@ pub fn html_from_data(data: &Value) -> String {
         "<!doctype html><html lang=\"zh\" data-theme=\"light\"><head><meta charset=\"utf-8\">\
 <meta http-equiv=\"Content-Security-Policy\" content=\"{csp}\">\
 <meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\
-<title>{title} · CCBuddy</title>\
+<title>{title} · CC Buddy</title>\
 <style>{skin}\n{hljscss}</style>\
 </head><body><div id=\"app\" data-clarity-mask=\"true\"></div>\
 <script nonce=\"ccbudexport\">{marked}</script>\

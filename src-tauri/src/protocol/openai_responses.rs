@@ -26,8 +26,8 @@
 use llm_connector::core::Protocol;
 use llm_connector::protocols::adapters::openai::OpenAIProtocol;
 use llm_connector::types::{
-    ChatRequest, ChatResponse, FunctionCall, Message, MessageBlock, Role, Tool, ToolCall,
-    ToolChoice,
+    ChatRequest, ChatResponse, FunctionCall, Message, MessageBlock, ReasoningEffort, Role, Tool,
+    ToolCall, ToolChoice,
 };
 use serde_json::{json, Value};
 use sha1::{Digest, Sha1};
@@ -85,6 +85,11 @@ impl CodexToolContext {
             }
         }
         if let Some(input) = req.get("input") {
+            // Codex Responses Lite (used by gpt-5.6-sol*) moves the complete tool registry out
+            // of the top-level `tools` field and into an `additional_tools` developer item. Treat
+            // those definitions exactly like top-level tools; the item itself is request metadata,
+            // not a chat message.
+            collect_additional_tools(input, &mut context);
             collect_tool_search_output_tools(input, &mut context);
             collect_response_tool_call_identities(input, &mut context);
         }
@@ -542,6 +547,29 @@ fn hashed_chat_tool_name(preferred: &str, digest: &str, attempt: u64) -> String 
     format!("{prefix}{suffix}")
 }
 
+fn collect_additional_tools(value: &Value, context: &mut CodexToolContext) {
+    match value {
+        Value::Array(items) => {
+            for item in items {
+                collect_additional_tools(item, context);
+            }
+        }
+        Value::Object(object) => {
+            if object.get("type").and_then(Value::as_str) == Some("additional_tools") {
+                if let Some(tools) = object.get("tools").and_then(Value::as_array) {
+                    for tool in tools {
+                        context.add_response_tool(tool);
+                    }
+                }
+            }
+            for child in object.values() {
+                collect_additional_tools(child, context);
+            }
+        }
+        _ => {}
+    }
+}
+
 fn collect_tool_search_output_tools(value: &Value, context: &mut CodexToolContext) {
     match value {
         Value::Array(items) => {
@@ -715,9 +743,19 @@ fn budget_to_effort(budget: Option<u32>) -> &'static str {
 /// Reverse of budget_to_effort: a Responses reasoning effort tier → a thinking budget (tokens).
 fn effort_to_budget(effort: &str) -> u32 {
     match effort {
+        "ultra" | "max" => 32768,
+        "xhigh" => 24576,
         "high" => 16384,
         "medium" => 4096,
         _ => 1024, // "low" / "minimal"
+    }
+}
+
+fn effort_to_reasoning_effort(effort: &str) -> ReasoningEffort {
+    match effort {
+        "medium" => ReasoningEffort::Medium,
+        "high" | "xhigh" | "max" | "ultra" => ReasoningEffort::High,
+        _ => ReasoningEffort::Low,
     }
 }
 
@@ -1473,8 +1511,9 @@ pub fn decode_request_with_context(req: &Value) -> Result<(ChatRequest, CodexToo
             }
         }
     }
-    // reasoning.effort → IR thinking (an Anthropic upstream turns this into a thinking budget;
-    // chat upstreams ignore it).
+    // Preserve both representations: Anthropic-family encoders consume the thinking budget,
+    // while OpenAI-compatible Chat encoders consume reasoning_effort. Higher Responses tiers do
+    // not exist in the connector enum, so xhigh/max/ultra intentionally collapse to High there.
     if let Some(effort) = req
         .get("reasoning")
         .and_then(|r| r.get("effort"))
@@ -1482,7 +1521,8 @@ pub fn decode_request_with_context(req: &Value) -> Result<(ChatRequest, CodexToo
     {
         cr = cr
             .with_enable_thinking(true)
-            .with_thinking_budget(effort_to_budget(effort));
+            .with_thinking_budget(effort_to_budget(effort))
+            .with_reasoning_effort(effort_to_reasoning_effort(effort));
     }
     Ok((cr, tool_context))
 }
@@ -1879,6 +1919,148 @@ mod tests {
                 .iter()
                 .any(|b| b["type"] == "tool_result" && b["tool_use_id"] == "call_1")));
         assert_eq!(body["system"], "You are Codex.");
+    }
+
+    fn codex_responses_lite_request() -> Value {
+        json!({
+            "model": "gpt-5.6-sol-pro",
+            "input": [
+                {
+                    "type": "additional_tools",
+                    "role": "developer",
+                    "tools": [
+                        {
+                            "type": "custom",
+                            "name": "exec",
+                            "description": "Run JavaScript that can call nested Codex tools.",
+                            "format": {
+                                "type": "grammar",
+                                "syntax": "lark",
+                                "definition": "start: /[\\s\\S]+/"
+                            }
+                        },
+                        {
+                            "type": "function",
+                            "name": "wait",
+                            "description": "Wait for a yielded exec cell.",
+                            "parameters": {
+                                "type": "object",
+                                "properties": { "cell_id": { "type": "string" } },
+                                "required": ["cell_id"],
+                                "additionalProperties": false
+                            }
+                        },
+                        {
+                            "type": "function",
+                            "name": "request_user_input",
+                            "description": "Ask the user a question.",
+                            "parameters": {
+                                "type": "object",
+                                "properties": { "question": { "type": "string" } },
+                                "required": ["question"]
+                            }
+                        },
+                        {
+                            "type": "namespace",
+                            "name": "collaboration",
+                            "tools": [{
+                                "type": "function",
+                                "name": "spawn_agent",
+                                "description": "Spawn a sub-agent.",
+                                "parameters": {
+                                    "type": "object",
+                                    "properties": { "task_name": { "type": "string" } },
+                                    "required": ["task_name"]
+                                }
+                            }]
+                        }
+                    ]
+                },
+                {
+                    "type": "message",
+                    "role": "developer",
+                    "content": [{ "type": "input_text", "text": "You are Codex." }]
+                },
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{ "type": "input_text", "text": "Inspect the project." }]
+                }
+            ],
+            "tool_choice": "auto",
+            "parallel_tool_calls": false,
+            "reasoning": { "effort": "ultra", "summary": "none", "context": "all_turns" },
+            "stream": true
+        })
+    }
+
+    #[test]
+    fn decodes_responses_lite_additional_tools_and_restores_custom_calls() {
+        let (ir, context) =
+            decode_request_with_context(&codex_responses_lite_request()).unwrap();
+
+        let roles = ir
+            .messages
+            .iter()
+            .map(|message| format!("{:?}", message.role))
+            .collect::<Vec<_>>();
+        assert_eq!(roles, vec!["System", "User"]);
+        assert_eq!(ir.messages[0].content_as_text(), "You are Codex.");
+
+        let tools = ir.tools.as_ref().unwrap();
+        let names = tools
+            .iter()
+            .map(|tool| tool.function.name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            names,
+            vec![
+                "exec",
+                "wait",
+                "request_user_input",
+                "collaboration__spawn_agent"
+            ]
+        );
+        assert_eq!(
+            context.lookup_chat_name("exec").map(|spec| spec.kind),
+            Some(CodexToolKind::Custom)
+        );
+        assert_eq!(ir.enable_thinking, Some(true));
+        assert_eq!(ir.thinking_budget, Some(32768));
+        assert_eq!(ir.reasoning_effort, Some(ReasoningEffort::High));
+
+        let chat_request = OpenAIProtocol::new("")
+            .build_chat_request_body(&ir)
+            .unwrap();
+        assert_eq!(chat_request["tools"].as_array().map(Vec::len), Some(4));
+        assert_eq!(chat_request["reasoning_effort"], "high");
+
+        let chat_response = r#"{
+            "id":"chatcmpl-lite","object":"chat.completion","created":1,"model":"up",
+            "choices":[{"index":0,"finish_reason":"tool_calls","message":{
+                "role":"assistant","content":null,
+                "tool_calls":[{"id":"call_exec","type":"function","function":{
+                    "name":"exec","arguments":"{\"input\":\"const result = await tools.exec_command({cmd: \\\"pwd\\\"});\"}"
+                }}]
+            }}],
+            "usage":{"prompt_tokens":9,"completion_tokens":4,"total_tokens":13}
+        }"#;
+        let response_ir = OpenAIProtocol::new("")
+            .parse_response(chat_response)
+            .unwrap();
+        let response =
+            encode_response_with_context(&response_ir, "gpt-5.6-sol-pro", &context);
+        let exec = response["output"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["type"] == "custom_tool_call")
+            .unwrap();
+        assert_eq!(exec["name"], "exec");
+        assert_eq!(
+            exec["input"],
+            "const result = await tools.exec_command({cmd: \"pwd\"});"
+        );
     }
 
     #[test]
