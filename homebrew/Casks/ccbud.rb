@@ -1,7 +1,7 @@
 cask "ccbud" do
   arch arm: "aarch64", intel: "x64"
 
-  version "1.3.4"
+  version "1.3.5"
   sha256 :no_check
 
   url "https://github.com/ccbud/ccbud/releases/download/v#{version}/CCBuddy_#{version}_#{arch}.dmg",

@@ -1690,8 +1690,47 @@ const POPOVER_SELFCHECK_JS: &str = r#"
 })();
 "#;
 
+/// Installs that predate 1.3.4 live in "ccbud.app". The in-app updater swaps the
+/// bundle's contents but never the folder itself, so Launch Services keeps showing
+/// the stale "ccbud" name in the Dock and the Applications list. Rename the bundle
+/// once to match CFBundleName ("CC Buddy"), relaunch from the new path so Launch
+/// Services re-registers it, and exit. Bails out on any obstacle (translocation,
+/// read-only volume, name already taken) and keeps running under the old name.
+#[cfg(target_os = "macos")]
+fn migrate_legacy_bundle_name() {
+    let exe = match std::env::current_exe() {
+        Ok(p) => p,
+        Err(_) => return,
+    };
+    // exe = <dir>/ccbud.app/Contents/MacOS/<bin>
+    let bundle = match exe.ancestors().nth(3) {
+        Some(p) if p.file_name().and_then(|n| n.to_str()) == Some("ccbud.app") => p.to_path_buf(),
+        _ => return,
+    };
+    let target = match bundle.parent() {
+        Some(dir) => dir.join("CC Buddy.app"),
+        None => return,
+    };
+    if target.exists() || std::fs::rename(&bundle, &target).is_err() {
+        return;
+    }
+    match std::process::Command::new("/usr/bin/open").arg("-n").arg(&target).spawn() {
+        Ok(_) => std::process::exit(0),
+        // Relaunch failed — restore the old name so the running process keeps a
+        // valid bundle path behind it.
+        Err(_) => {
+            let _ = std::fs::rename(&target, &bundle);
+        }
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Must run before the builder: it may rename the bundle and hand off to a
+    // fresh instance at the new path.
+    #[cfg(target_os = "macos")]
+    migrate_legacy_bundle_name();
+
     #[allow(unused_mut)]
     let mut builder = tauri::Builder::default()
         // single-instance MUST be the first plugin registered.
@@ -1757,6 +1796,13 @@ pub fn run() {
             // required per target because old defaults could persist `["claude"]` without any
             // connection action; startup never connects a first-time target or disconnects one.
             reconcile_connections_on_startup(&startup_cfg);
+            // Rewrite the login item to the current exe path — in-place hot updates
+            // (and the one-time bundle rename above) otherwise leave it pointing at
+            // a binary that no longer exists.
+            if startup_cfg.get("openAtLogin").and_then(|v| v.as_bool()).unwrap_or(false) {
+                use tauri_plugin_autostart::ManagerExt;
+                let _ = app.autolaunch().enable();
+            }
             let port = startup_cfg.get("port").and_then(|v| v.as_u64()).unwrap_or(8788) as u16;
             let enabled = startup_cfg.get("gatewayEnabled").and_then(|v| v.as_bool()).unwrap_or(true);
             // If the active service is plugin-backed, remember its plugin id so we can
