@@ -666,6 +666,64 @@ fn desktop_replay(file: String, prompt: Option<String>) -> Value {
         json!({ "ok": false, "reason": "unsupported" })
     }
 }
+#[tauri::command]
+fn chatgpt_replay(file: String, prompt: Option<String>) -> Value {
+    if file.is_empty() {
+        return json!({ "ok": false, "reason": "noFile" });
+    }
+    // ChatGPT has no file-attach deep link, so the transcripts travel via the clipboard:
+    // main session plus every subagent, each under a "=== <name> ===" header (ChatGPT turns
+    // a long paste into a text attachment, so the full content survives). The review prompt
+    // rides the documented chatgpt.com `?q=` prefill — works on every platform.
+    let mut paths = vec![file.clone()];
+    paths.extend(history::subagent_transcript_paths(&file));
+    const CAP: usize = 16 * 1024 * 1024; // clipboard sanity cap for pathological transcripts
+    let mut content = String::new();
+    let mut truncated = false;
+    for p in &paths {
+        if let Ok(text) = std::fs::read_to_string(p) {
+            let name = std::path::Path::new(p)
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| p.clone());
+            if !content.is_empty() {
+                content.push_str("\n\n");
+            }
+            content.push_str("=== ");
+            content.push_str(&name);
+            content.push_str(" ===\n");
+            let room = CAP.saturating_sub(content.len());
+            if text.len() > room {
+                // Cut on a char boundary so the clipboard string stays valid UTF-8.
+                let mut cut = room;
+                while cut > 0 && !text.is_char_boundary(cut) {
+                    cut -= 1;
+                }
+                content.push_str(&text[..cut]);
+                truncated = true;
+                break;
+            }
+            content.push_str(&text);
+        }
+    }
+    if content.is_empty() {
+        return json!({ "ok": false, "reason": "noFile" });
+    }
+    if truncated {
+        content.push_str("\n\n[transcripts truncated at 16 MB]");
+    }
+    let copied = match arboard::Clipboard::new() {
+        Ok(mut cb) => cb.set_text(content).is_ok(),
+        Err(_) => false,
+    };
+    if !copied {
+        return json!({ "ok": false, "reason": "copy" });
+    }
+    let prompt = prompt.filter(|p| !p.is_empty()).unwrap_or_else(|| {
+        "I'm about to paste the JSONL transcripts of a Claude Code session. Reply asking me to paste them, then help me review the session.".to_string()
+    });
+    json!({ "ok": util_open_external(format!("https://chatgpt.com/?q={}", pct(&prompt))) })
+}
 
 // ---- server / usage / monitor / logs ----
 async fn full_status(gw: &std::sync::Arc<gateway::GatewayState>) -> Value {
@@ -2200,7 +2258,7 @@ pub fn run() {
             plugin_action, plugin_action_load,
             plugin_install, plugin_uninstall, plugin_open_dir,
             plugin_install_git, plugin_check_update, plugin_update,
-            claude_connect, claude_disconnect, set_connect_target, desktop_status, desktop_connect, desktop_disconnect, desktop_replay,
+            claude_connect, claude_disconnect, set_connect_target, desktop_status, desktop_connect, desktop_disconnect, desktop_replay, chatgpt_replay,
             server_status, gateway_set_enabled, usage_get, monitor_get, monitor_clear, logs_get, logs_clear,
             app_open_main, app_quit, window_settings_mode, window_view_min_width,
             history_projects, history_list, history_get, history_search, history_dirs, history_pick_dir, history_set_active,

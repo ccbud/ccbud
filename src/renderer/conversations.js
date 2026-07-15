@@ -531,6 +531,7 @@
     const eb = $('convExportBtn'); if (eb) eb.disabled = !openFile;
     const cp = $('convCopyPathBtn'); if (cp) cp.disabled = !openFile;
     const rp = $('convReplayBtn'); if (rp) rp.disabled = !openFile;
+    const cg = $('convChatgptBtn'); if (cg) cg.disabled = !openFile;
     const mb = $('convMoreBtn'); if (mb) mb.disabled = !openFile;
     renderList();
     // Big sessions take a beat to read+parse off disk — show a loading hint during the async fetch
@@ -1139,6 +1140,21 @@
       false
     );
   }
+  // ChatGPT has no file-attach deep link, so the backend copies the transcripts to the
+  // clipboard and opens chatgpt.com with the review prompt prefilled (?q=) — the user
+  // just pastes; ChatGPT turns a long paste into a text attachment.
+  async function doChatgpt(btn) {
+    const p = currentJsonlPath();
+    if (!p || !api.chatgptReplay) return;
+    if (btn) btn.disabled = true;
+    toast(L('conv.chatgptOpening'));
+    let res;
+    const prompt = L('desktop.chatgptPrompt').slice(0, 2000);
+    try { res = await api.chatgptReplay(p, prompt); } catch (e) { res = { ok: false }; }
+    if (btn) btn.disabled = false;
+    if (res && res.ok) return; // browser now opening with the prompt, transcripts on clipboard
+    toast(L('conv.chatgptFail'), false);
+  }
   // Collapse the action buttons into a "⋯" menu when the toolbar is too narrow to fit them
   // alongside a 200px-min search box.
   function updateToolbarLayout() {
@@ -1574,6 +1590,8 @@
     if (copyPathBtn) copyPathBtn.addEventListener('click', doCopyPath);
     const replayBtn = $('convReplayBtn');
     if (replayBtn) replayBtn.addEventListener('click', () => doReplay(replayBtn));
+    const chatgptBtn = $('convChatgptBtn');
+    if (chatgptBtn) chatgptBtn.addEventListener('click', () => doChatgpt(chatgptBtn));
 
     const moreBtn = $('convMoreBtn');
     const moreMenu = $('convMoreMenu');
@@ -1583,6 +1601,7 @@
       moreMenu.classList.add('hidden');
       const a = it.dataset.more;
       if (a === 'replay') doReplay();
+      else if (a === 'chatgpt') doChatgpt();
       else if (a === 'copyPath') doCopyPath();
       else if (a === 'jsonl') doExport('jsonl');
       else if (a === 'html') doExport('html');

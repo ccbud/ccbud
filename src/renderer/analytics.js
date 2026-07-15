@@ -109,6 +109,7 @@
     convImportBtn: 'conv-import',
     convExportBtn: 'conv-export',
     convReplayBtn: 'conv-replay',
+    convChatgptBtn: 'conv-chatgpt',
     convCopyPathBtn: 'conv-copy-path',
     btnCopyExport: 'copy-export',
     btnGenToken: 'token-generate',
