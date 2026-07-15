@@ -1723,14 +1723,20 @@ fn migrate_legacy_bundle_name() {
     if target.exists() || std::fs::rename(&bundle, &target).is_err() {
         return;
     }
-    match std::process::Command::new("/usr/bin/open").arg("-n").arg(&target).spawn() {
-        Ok(_) => std::process::exit(0),
-        // Relaunch failed — restore the old name so the running process keeps a
-        // valid bundle path behind it.
-        Err(_) => {
-            let _ = std::fs::rename(&target, &bundle);
-        }
+    // `open -n` asks Launch Services to start a fresh instance from the new path
+    // (which also re-registers the name). Wait for its verdict rather than exiting
+    // on spawn: a refusal must restore the old name so the running process keeps a
+    // valid bundle path behind it instead of leaving the user with nothing open.
+    let launched = std::process::Command::new("/usr/bin/open")
+        .arg("-n")
+        .arg(&target)
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if launched {
+        std::process::exit(0);
     }
+    let _ = std::fs::rename(&target, &bundle);
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
