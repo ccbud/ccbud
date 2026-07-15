@@ -44,7 +44,7 @@
 | **Linux** | `.AppImage` / `.deb` |
 
 > **macOS 首次打开被拦截：** 右键点应用 → **打开**，或执行
-> `xattr -dr com.apple.quarantine /Applications/CCBuddy.app`。
+> `xattr -dr com.apple.quarantine "/Applications/CC Buddy.app"`。
 
 ### Homebrew（macOS）
 

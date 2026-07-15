@@ -666,6 +666,49 @@ fn desktop_replay(file: String, prompt: Option<String>) -> Value {
         json!({ "ok": false, "reason": "unsupported" })
     }
 }
+#[tauri::command]
+fn chatgpt_replay(file: String, prompt: Option<String>) -> Value {
+    if file.is_empty() {
+        return json!({ "ok": false, "reason": "noFile" });
+    }
+    if !cfg!(target_os = "macos") {
+        return json!({ "ok": false, "reason": "unsupported" });
+    }
+    // The ChatGPT desktop app (Codex era) keeps the codex:// scheme: codex://new takes
+    // `prompt` (initial composer text) and `path` (workspace dir). It has no file-attach
+    // param, so the workspace is pointed at the transcripts' directory and the prompt
+    // lists the absolute JSONL paths — main session plus every subagent (they live under
+    // `<dir>/<session>/subagents/`, inside the same workspace) — for the task to read.
+    let prompt = prompt
+        .filter(|p| !p.is_empty())
+        .unwrap_or_else(|| "请读取下列 Coding CLI 会话的 JSONL 记录并帮我复盘。".to_string());
+    let mut text = prompt;
+    text.push_str("\n\nTranscripts:\n");
+    text.push_str(&file);
+    for sub in history::subagent_transcript_paths(&file) {
+        text.push('\n');
+        text.push_str(&sub);
+    }
+    let mut url = format!("codex://new?prompt={}", pct(&text));
+    if let Some(dir) = std::path::Path::new(&file).parent() {
+        url.push_str("&path=");
+        url.push_str(&pct(&dir.to_string_lossy()));
+    }
+    #[cfg(target_os = "macos")]
+    {
+        // `open` exits non-zero when nothing handles the scheme → app not installed.
+        match std::process::Command::new("/usr/bin/open").arg(&url).status() {
+            Ok(s) if s.success() => json!({ "ok": true }),
+            Ok(_) => json!({ "ok": false, "reason": "notInstalled" }),
+            Err(_) => json!({ "ok": false, "reason": "failed" }),
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = url;
+        json!({ "ok": false, "reason": "unsupported" })
+    }
+}
 
 // ---- server / usage / monitor / logs ----
 async fn full_status(gw: &std::sync::Arc<gateway::GatewayState>) -> Value {
@@ -1690,8 +1733,62 @@ const POPOVER_SELFCHECK_JS: &str = r#"
 })();
 "#;
 
+/// Older installs live in "ccbud.app" (pre-1.3.4) or "CCBuddy.app" (1.3.4). The
+/// in-app updater swaps the bundle's contents but never the folder itself, and
+/// macOS shows CFBundleDisplayName only when the folder name matches CFBundleName
+/// ("CC Buddy") — any mismatch makes the Dock and the Applications list fall back
+/// to the folder name. Rename the bundle once, relaunch from the new path so
+/// Launch Services re-registers it, and exit. Bails out on any obstacle
+/// (translocation, read-only volume, name already taken) and keeps running under
+/// the old name.
+#[cfg(target_os = "macos")]
+fn migrate_legacy_bundle_name() {
+    let exe = match std::env::current_exe() {
+        Ok(p) => p,
+        Err(_) => return,
+    };
+    // exe = <dir>/<legacy>.app/Contents/MacOS/<bin>
+    let bundle = match exe.ancestors().nth(3) {
+        Some(p)
+            if matches!(
+                p.file_name().and_then(|n| n.to_str()),
+                Some("ccbud.app") | Some("CCBuddy.app")
+            ) =>
+        {
+            p.to_path_buf()
+        }
+        _ => return,
+    };
+    let target = match bundle.parent() {
+        Some(dir) => dir.join("CC Buddy.app"),
+        None => return,
+    };
+    if target.exists() || std::fs::rename(&bundle, &target).is_err() {
+        return;
+    }
+    // `open -n` asks Launch Services to start a fresh instance from the new path
+    // (which also re-registers the name). Wait for its verdict rather than exiting
+    // on spawn: a refusal must restore the old name so the running process keeps a
+    // valid bundle path behind it instead of leaving the user with nothing open.
+    let launched = std::process::Command::new("/usr/bin/open")
+        .arg("-n")
+        .arg(&target)
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if launched {
+        std::process::exit(0);
+    }
+    let _ = std::fs::rename(&target, &bundle);
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Must run before the builder: it may rename the bundle and hand off to a
+    // fresh instance at the new path.
+    #[cfg(target_os = "macos")]
+    migrate_legacy_bundle_name();
+
     #[allow(unused_mut)]
     let mut builder = tauri::Builder::default()
         // single-instance MUST be the first plugin registered.
@@ -1757,6 +1854,13 @@ pub fn run() {
             // required per target because old defaults could persist `["claude"]` without any
             // connection action; startup never connects a first-time target or disconnects one.
             reconcile_connections_on_startup(&startup_cfg);
+            // Rewrite the login item to the current exe path — in-place hot updates
+            // (and the one-time bundle rename above) otherwise leave it pointing at
+            // a binary that no longer exists.
+            if startup_cfg.get("openAtLogin").and_then(|v| v.as_bool()).unwrap_or(false) {
+                use tauri_plugin_autostart::ManagerExt;
+                let _ = app.autolaunch().enable();
+            }
             let port = startup_cfg.get("port").and_then(|v| v.as_u64()).unwrap_or(8788) as u16;
             let enabled = startup_cfg.get("gatewayEnabled").and_then(|v| v.as_bool()).unwrap_or(true);
             // If the active service is plugin-backed, remember its plugin id so we can
@@ -2139,7 +2243,7 @@ pub fn run() {
             plugin_action, plugin_action_load,
             plugin_install, plugin_uninstall, plugin_open_dir,
             plugin_install_git, plugin_check_update, plugin_update,
-            claude_connect, claude_disconnect, set_connect_target, desktop_status, desktop_connect, desktop_disconnect, desktop_replay,
+            claude_connect, claude_disconnect, set_connect_target, desktop_status, desktop_connect, desktop_disconnect, desktop_replay, chatgpt_replay,
             server_status, gateway_set_enabled, usage_get, monitor_get, monitor_clear, logs_get, logs_clear,
             app_open_main, app_quit, window_settings_mode, window_view_min_width,
             history_projects, history_list, history_get, history_search, history_dirs, history_pick_dir, history_set_active,

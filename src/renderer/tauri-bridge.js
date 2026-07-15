@@ -60,6 +60,7 @@
     desktopConnect: () => inv('desktop_connect'),
     desktopDisconnect: () => inv('desktop_disconnect'),
     desktopReplay: (file, prompt) => inv('desktop_replay', { file, prompt }),
+    chatgptReplay: (file, prompt) => inv('chatgpt_replay', { file, prompt }),
 
     serverStatus: () => inv('server_status'),
     usageGet: (range) => inv('usage_get', { range }),

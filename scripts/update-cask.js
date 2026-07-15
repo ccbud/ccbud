@@ -8,7 +8,7 @@
  *
  * Usage:
  *   node scripts/update-cask.js [dmgDir] [outFile]
- *     dmgDir  : directory holding CCBuddy_<version>_aarch64.dmg / _x64.dmg (default: dist)
+ *     dmgDir  : directory holding CC.Buddy_<version>_aarch64.dmg / _x64.dmg (default: dist)
  *     outFile : cask path to write (default: homebrew/Casks/ccbud.rb)
  *
  * In CI this runs after the release is published, then the cask is pushed to the tap repo.
@@ -30,9 +30,13 @@ function sha256Of(file) {
   catch (_) { return null; }
 }
 
-// Tauri (tauri-action) names the dmgs CCBuddy_<version>_<arch>.dmg with arch aarch64 / x64.
-const arm = sha256Of(path.join(dmgDir, `CCBuddy_${version}_aarch64.dmg`));
-const intel = sha256Of(path.join(dmgDir, `CCBuddy_${version}_x64.dmg`));
+// Tauri names the dmgs "CC Buddy_<version>_<arch>.dmg" (arch aarch64 / x64); GitHub release
+// assets replace the space with a period, so downloaded copies are CC.Buddy_<version>_<arch>.dmg.
+const dmgSha = (arch) =>
+  sha256Of(path.join(dmgDir, `CC.Buddy_${version}_${arch}.dmg`)) ||
+  sha256Of(path.join(dmgDir, `CC Buddy_${version}_${arch}.dmg`));
+const arm = dmgSha('aarch64');
+const intel = dmgSha('x64');
 
 let shaStanza;
 if (arm && intel) {
@@ -49,17 +53,17 @@ const cask = `cask "ccbud" do
   version "${version}"
 ${shaStanza}
 
-  url "https://github.com/ccbud/ccbud/releases/download/v#{version}/CCBuddy_#{version}_#{arch}.dmg",
+  url "https://github.com/ccbud/ccbud/releases/download/v#{version}/CC.Buddy_#{version}_#{arch}.dmg",
       verified: "github.com/ccbud/ccbud/"
-  name "CCBuddy"
-  desc "CCBuddy — Claude Code gateway plus Claude Code/Codex session browser"
+  name "CC Buddy"
+  desc "CC Buddy — Claude Code gateway plus Claude Code/Codex session browser"
   homepage "https://github.com/ccbud/ccbud"
 
-  # CCBuddy can update itself in-app; Homebrew handles normal cask upgrades.
+  # CC Buddy can update itself in-app; Homebrew handles normal cask upgrades.
   auto_updates true
   depends_on macos: :big_sur
 
-  app "CCBuddy.app"
+  app "CC Buddy.app"
 
   zap trash: [
     "~/Library/Application Support/ccbud",
