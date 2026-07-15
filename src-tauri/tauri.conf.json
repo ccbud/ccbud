@@ -56,9 +56,6 @@
         "upgradeCode": "3607f9f8-3416-53dd-8ba7-5c1d6a348351"
       }
     },
-    "macOS": {
-      "bundleName": "CC Buddy"
-    },
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

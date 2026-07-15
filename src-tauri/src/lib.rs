@@ -1690,21 +1690,30 @@ const POPOVER_SELFCHECK_JS: &str = r#"
 })();
 "#;
 
-/// Installs that predate 1.3.4 live in "ccbud.app". The in-app updater swaps the
-/// bundle's contents but never the folder itself, so Launch Services keeps showing
-/// the stale "ccbud" name in the Dock and the Applications list. Rename the bundle
-/// once to match CFBundleName ("CC Buddy"), relaunch from the new path so Launch
-/// Services re-registers it, and exit. Bails out on any obstacle (translocation,
-/// read-only volume, name already taken) and keeps running under the old name.
+/// Older installs live in "ccbud.app" (pre-1.3.4) or "CCBuddy.app" (1.3.4). The
+/// in-app updater swaps the bundle's contents but never the folder itself, and
+/// macOS shows CFBundleDisplayName only when the folder name matches CFBundleName
+/// ("CC Buddy") — any mismatch makes the Dock and the Applications list fall back
+/// to the folder name. Rename the bundle once, relaunch from the new path so
+/// Launch Services re-registers it, and exit. Bails out on any obstacle
+/// (translocation, read-only volume, name already taken) and keeps running under
+/// the old name.
 #[cfg(target_os = "macos")]
 fn migrate_legacy_bundle_name() {
     let exe = match std::env::current_exe() {
         Ok(p) => p,
         Err(_) => return,
     };
-    // exe = <dir>/ccbud.app/Contents/MacOS/<bin>
+    // exe = <dir>/<legacy>.app/Contents/MacOS/<bin>
     let bundle = match exe.ancestors().nth(3) {
-        Some(p) if p.file_name().and_then(|n| n.to_str()) == Some("ccbud.app") => p.to_path_buf(),
+        Some(p)
+            if matches!(
+                p.file_name().and_then(|n| n.to_str()),
+                Some("ccbud.app") | Some("CCBuddy.app")
+            ) =>
+        {
+            p.to_path_buf()
+        }
         _ => return,
     };
     let target = match bundle.parent() {

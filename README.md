@@ -44,7 +44,7 @@ Grab the latest build for your platform from the **[Releases page](https://githu
 | **Linux** | `.AppImage` / `.deb` |
 
 > **macOS Gatekeeper:** if the first launch is blocked, right-click the app → **Open**, or run
-> `xattr -dr com.apple.quarantine /Applications/CCBuddy.app`.
+> `xattr -dr com.apple.quarantine "/Applications/CC Buddy.app"`.
 
 ### Homebrew (macOS)
 
