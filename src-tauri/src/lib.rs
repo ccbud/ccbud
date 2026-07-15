@@ -681,7 +681,7 @@ fn chatgpt_replay(file: String, prompt: Option<String>) -> Value {
     // `<dir>/<session>/subagents/`, inside the same workspace) — for the task to read.
     let prompt = prompt
         .filter(|p| !p.is_empty())
-        .unwrap_or_else(|| "请读取下列 Claude Code 会话的 JSONL 记录并帮我复盘。".to_string());
+        .unwrap_or_else(|| "请读取下列 Coding CLI 会话的 JSONL 记录并帮我复盘。".to_string());
     let mut text = prompt;
     text.push_str("\n\nTranscripts:\n");
     text.push_str(&file);
