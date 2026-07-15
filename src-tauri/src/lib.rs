@@ -671,58 +671,43 @@ fn chatgpt_replay(file: String, prompt: Option<String>) -> Value {
     if file.is_empty() {
         return json!({ "ok": false, "reason": "noFile" });
     }
-    // ChatGPT has no file-attach deep link, so the transcripts travel via the clipboard:
-    // main session plus every subagent, each under a "=== <name> ===" header (ChatGPT turns
-    // a long paste into a text attachment, so the full content survives). The review prompt
-    // rides the documented chatgpt.com `?q=` prefill — works on every platform.
-    let mut paths = vec![file.clone()];
-    paths.extend(history::subagent_transcript_paths(&file));
-    const CAP: usize = 16 * 1024 * 1024; // clipboard sanity cap for pathological transcripts
-    let mut content = String::new();
-    let mut truncated = false;
-    for p in &paths {
-        if let Ok(text) = std::fs::read_to_string(p) {
-            let name = std::path::Path::new(p)
-                .file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_else(|| p.clone());
-            if !content.is_empty() {
-                content.push_str("\n\n");
-            }
-            content.push_str("=== ");
-            content.push_str(&name);
-            content.push_str(" ===\n");
-            let room = CAP.saturating_sub(content.len());
-            if text.len() > room {
-                // Cut on a char boundary so the clipboard string stays valid UTF-8.
-                let mut cut = room;
-                while cut > 0 && !text.is_char_boundary(cut) {
-                    cut -= 1;
-                }
-                content.push_str(&text[..cut]);
-                truncated = true;
-                break;
-            }
-            content.push_str(&text);
+    if !cfg!(target_os = "macos") {
+        return json!({ "ok": false, "reason": "unsupported" });
+    }
+    // The ChatGPT desktop app (Codex era) keeps the codex:// scheme: codex://new takes
+    // `prompt` (initial composer text) and `path` (workspace dir). It has no file-attach
+    // param, so the workspace is pointed at the transcripts' directory and the prompt
+    // lists the absolute JSONL paths — main session plus every subagent (they live under
+    // `<dir>/<session>/subagents/`, inside the same workspace) — for the task to read.
+    let prompt = prompt
+        .filter(|p| !p.is_empty())
+        .unwrap_or_else(|| "请读取下列 Claude Code 会话的 JSONL 记录并帮我复盘。".to_string());
+    let mut text = prompt;
+    text.push_str("\n\nTranscripts:\n");
+    text.push_str(&file);
+    for sub in history::subagent_transcript_paths(&file) {
+        text.push('\n');
+        text.push_str(&sub);
+    }
+    let mut url = format!("codex://new?prompt={}", pct(&text));
+    if let Some(dir) = std::path::Path::new(&file).parent() {
+        url.push_str("&path=");
+        url.push_str(&pct(&dir.to_string_lossy()));
+    }
+    #[cfg(target_os = "macos")]
+    {
+        // `open` exits non-zero when nothing handles the scheme → app not installed.
+        match std::process::Command::new("/usr/bin/open").arg(&url).status() {
+            Ok(s) if s.success() => json!({ "ok": true }),
+            Ok(_) => json!({ "ok": false, "reason": "notInstalled" }),
+            Err(_) => json!({ "ok": false, "reason": "failed" }),
         }
     }
-    if content.is_empty() {
-        return json!({ "ok": false, "reason": "noFile" });
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = url;
+        json!({ "ok": false, "reason": "unsupported" })
     }
-    if truncated {
-        content.push_str("\n\n[transcripts truncated at 16 MB]");
-    }
-    let copied = match arboard::Clipboard::new() {
-        Ok(mut cb) => cb.set_text(content).is_ok(),
-        Err(_) => false,
-    };
-    if !copied {
-        return json!({ "ok": false, "reason": "copy" });
-    }
-    let prompt = prompt.filter(|p| !p.is_empty()).unwrap_or_else(|| {
-        "I'm about to paste the JSONL transcripts of a Claude Code session. Reply asking me to paste them, then help me review the session.".to_string()
-    });
-    json!({ "ok": util_open_external(format!("https://chatgpt.com/?q={}", pct(&prompt))) })
 }
 
 // ---- server / usage / monitor / logs ----
