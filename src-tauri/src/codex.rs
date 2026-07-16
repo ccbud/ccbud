@@ -21,7 +21,8 @@
 
 #![allow(dead_code)]
 
-use serde_json::{json, Map, Value};
+use crate::history::{image_block, Norm};
+use serde_json::{json, Value};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -244,25 +245,6 @@ fn shape_output(out: &Value) -> (String, bool) {
         }
     }
     (s, false)
-}
-
-/// data-URL input_image → Claude-style image source block, else None.
-fn image_block(url: &str) -> Option<Value> {
-    let rest = url.strip_prefix("data:")?;
-    let (mime, b64) = rest.split_once(";base64,")?;
-    Some(json!({ "type": "image", "source": { "type": "base64", "media_type": mime, "data": b64 } }))
-}
-
-pub struct Norm {
-    pub messages: Vec<Value>,
-    pub totals: Value,
-    pub model: Option<String>,
-    pub first_ts: Option<String>,
-    pub last_ts: Option<String>,
-    pub cwd: Option<String>,
-    pub session_id: Option<String>,
-    pub git_branch: Option<String>,
-    pub version: Option<String>,
 }
 
 /// Normalize parsed rollout records into the renderer's message model.
@@ -558,68 +540,7 @@ pub fn head_ids(recs: &[Value]) -> (Option<String>, Option<String>) {
     (None, None)
 }
 
-// ---- sidecar customization (~/.ccbud/codex-meta.json): { "<stem>": {title?, tagList?, delete?} } ----
-
-fn sidecar_path() -> PathBuf {
-    crate::store::ccbud_home().join("codex-meta.json")
-}
-
-fn sidecar_cache() -> &'static std::sync::Mutex<Option<(f64, Map<String, Value>)>> {
-    static CACHE: std::sync::OnceLock<std::sync::Mutex<Option<(f64, Map<String, Value>)>>> =
-        std::sync::OnceLock::new();
-    CACHE.get_or_init(|| std::sync::Mutex::new(None))
-}
-
-fn sidecar_mtime() -> f64 {
-    fs::metadata(sidecar_path())
-        .and_then(|m| m.modified())
-        .ok()
-        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|d| d.as_millis() as f64)
-        .unwrap_or(0.0)
-}
-
-fn read_sidecar() -> Map<String, Value> {
-    let mt = sidecar_mtime();
-    if let Ok(guard) = sidecar_cache().lock() {
-        if let Some((cmt, map)) = guard.as_ref() {
-            if *cmt == mt {
-                return map.clone();
-            }
-        }
-    }
-    let map = fs::read_to_string(sidecar_path())
-        .ok()
-        .and_then(|s| serde_json::from_str::<Value>(&s).ok())
-        .and_then(|v| v.as_object().cloned())
-        .unwrap_or_default();
-    if let Ok(mut guard) = sidecar_cache().lock() {
-        *guard = Some((mt, map.clone()));
-    }
-    map
-}
-
-fn write_sidecar(map: &Map<String, Value>) -> bool {
-    let dir = crate::store::ccbud_home();
-    let _ = fs::create_dir_all(&dir);
-    let file = sidecar_path();
-    let tmp = dir.join("codex-meta.json.tmp");
-    let bytes = match serde_json::to_vec_pretty(&Value::Object(map.clone())) {
-        Ok(b) => b,
-        Err(_) => return false,
-    };
-    if fs::write(&tmp, bytes).is_err() {
-        return false;
-    }
-    if fs::rename(&tmp, &file).is_err() {
-        let _ = fs::remove_file(&tmp);
-        return false;
-    }
-    if let Ok(mut guard) = sidecar_cache().lock() {
-        *guard = Some((sidecar_mtime(), map.clone()));
-    }
-    true
-}
+// ---- sidecar customization (shared store, ~/.ccbud/codex-meta.json, keyed by rollout stem) ----
 
 fn stem_of(file: &Path) -> String {
     file.file_stem().and_then(|s| s.to_str()).unwrap_or("").to_string()
@@ -627,29 +548,7 @@ fn stem_of(file: &Path) -> String {
 
 /// (custom title, tags, deleted) for a codex session, from the sidecar.
 fn sidecar_meta(file: &Path) -> (Option<String>, Vec<String>, bool) {
-    let map = read_sidecar();
-    let c = match map.get(&stem_of(file)) {
-        Some(v) => v,
-        None => return (None, vec![], false),
-    };
-    let title = c
-        .get("title")
-        .and_then(|t| t.as_str())
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty());
-    let tags = c
-        .get("tagList")
-        .and_then(|t| t.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|t| t.as_str())
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .collect()
-        })
-        .unwrap_or_default();
-    let deleted = c.get("delete").and_then(|v| v.as_bool()).unwrap_or(false);
-    (title, tags, deleted)
+    crate::sidecar::meta(&crate::sidecar::codex_file(), &stem_of(file))
 }
 
 pub fn is_deleted(file: &Path) -> bool {
@@ -663,64 +562,12 @@ pub fn set_meta(file: &str, patch: &Value) -> Value {
     if stem.is_empty() {
         return json!({ "ok": false, "reason": "empty" });
     }
-    let mut map = read_sidecar();
-    let mut next = map
-        .get(&stem)
-        .and_then(|v| v.as_object())
-        .cloned()
-        .unwrap_or_default();
-    if let Some(t) = patch.get("title") {
-        let t = t.as_str().unwrap_or("").trim().to_string();
-        if !t.is_empty() {
-            next.insert("title".into(), json!(t));
-        } else {
-            next.remove("title");
-        }
-    }
-    if let Some(tags) = patch.get("tags") {
-        let mut arr: Vec<String> = vec![];
-        if let Some(ta) = tags.as_array() {
-            for x in ta {
-                if let Some(s) = x.as_str() {
-                    let s = s.trim();
-                    if !s.is_empty() && !arr.iter().any(|y| y == s) {
-                        arr.push(s.to_string());
-                    }
-                }
-            }
-        }
-        if !arr.is_empty() {
-            next.insert("tagList".into(), json!(arr));
-        } else {
-            next.remove("tagList");
-        }
-    }
-    if let Some(d) = patch.get("delete") {
-        if d.as_bool().unwrap_or(false) {
-            next.insert("delete".into(), json!(true));
-        } else {
-            next.remove("delete");
-        }
-    }
-    if next.is_empty() {
-        map.remove(&stem);
-    } else {
-        map.insert(stem, Value::Object(next));
-    }
-    if write_sidecar(&map) {
-        json!({ "ok": true })
-    } else {
-        json!({ "ok": false, "reason": "write" })
-    }
+    crate::sidecar::set_meta(&crate::sidecar::codex_file(), &stem, patch)
 }
 
 /// Drop a session's sidecar entry (after its rollout file is deleted forever).
 pub fn remove_meta(file: &str) {
-    let stem = stem_of(Path::new(file));
-    let mut map = read_sidecar();
-    if map.remove(&stem).is_some() {
-        let _ = write_sidecar(&map);
-    }
+    crate::sidecar::remove_meta(&crate::sidecar::codex_file(), &stem_of(Path::new(file)));
 }
 
 // ---- list/detail shapes (codex flavors of history.rs session_meta / get_session) ----

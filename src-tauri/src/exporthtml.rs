@@ -285,11 +285,10 @@ fn read_subagents(file: &Path) -> Value {
     Value::Object(by_tool)
 }
 
-// Codex rollout → the same export data shape (messages re-capped + field names the viewer
-// runtime reads: model / usage{in,out,cacheRead} / stop), with meta.assistant = "Codex" so the
-// exported page labels turns correctly.
-fn build_codex_data(file: &str, recs: &[Value]) -> Value {
-    let sess = crate::codex::session_from_recs(file, recs);
+// Non-Claude session detail → the export data shape (messages re-capped + field names the
+// viewer runtime reads: model / usage{in,out,cacheRead} / stop). `assistant` labels turns on
+// the exported page (Codex / Grok / Copilot / Antigravity).
+fn build_from_session(sess: Value, assistant: &str) -> Value {
     let m = sess.get("meta").cloned().unwrap_or_else(|| json!({}));
     let messages: Vec<Value> = sess
         .get("messages")
@@ -328,7 +327,7 @@ fn build_codex_data(file: &str, recs: &[Value]) -> Value {
     json!({
         "meta": {
             "title": if title.is_empty() { "(conversation)".to_string() } else { title },
-            "assistant": "Codex",
+            "assistant": assistant,
             "model": m.get("model").cloned().unwrap_or(Value::Null),
             "project": m.get("project").cloned().unwrap_or(Value::Null),
             "cwd": m.get("cwd").cloned().unwrap_or(Value::Null),
@@ -351,9 +350,24 @@ fn build_codex_data(file: &str, recs: &[Value]) -> Value {
 
 pub fn build_data(file: &str) -> Value {
     let path = Path::new(file);
+    // Foreign sources first — container-shape routing (one of them is SQLite, not jsonl).
+    match crate::history::foreign_kind(path) {
+        Some(crate::history::Foreign::Grok) => {
+            let recs = parse_jsonl(path);
+            return build_from_session(crate::grok::session_from_recs(file, &recs), "Grok");
+        }
+        Some(crate::history::Foreign::Copilot) => {
+            let recs = parse_jsonl(path);
+            return build_from_session(crate::copilot::session_from_recs(file, &recs), "Copilot");
+        }
+        Some(crate::history::Foreign::Antigravity) => {
+            return build_from_session(crate::antigravity::session_from(file), "Antigravity");
+        }
+        None => {}
+    }
     let recs = parse_jsonl(path);
     if crate::codex::looks_codex(&recs) {
-        return build_codex_data(file, &recs);
+        return build_from_session(crate::codex::session_from_recs(file, &recs), "Codex");
     }
     let meta_rec = recs.iter().find(|r| r.get("cwd").is_some()).or_else(|| recs.iter().find(|r| r.get("sessionId").is_some()));
     let s = shape_session(&recs);

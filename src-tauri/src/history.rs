@@ -68,7 +68,7 @@ pub(crate) fn parse_lines(text: &str) -> Vec<Value> {
     out
 }
 
-fn read_head(file: &Path, max: usize) -> String {
+pub(crate) fn read_head(file: &Path, max: usize) -> String {
     use std::io::Read;
     let mut f = match fs::File::open(file) {
         Ok(f) => f,
@@ -175,13 +175,38 @@ pub(crate) fn read_ccbud(recs: &[Value]) -> (Option<String>, Vec<String>, bool) 
     (title, tags, deleted)
 }
 
+/// The foreign-CLI session sources routed by CONTAINER SHAPE (their path layouts are
+/// distinctive per tool, and one of them isn't even jsonl) — content sniffing stays reserved
+/// for the historical Claude-vs-Codex jsonl split.
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) enum Foreign {
+    Grok,
+    Copilot,
+    Antigravity,
+}
+
+pub(crate) fn foreign_kind(file: &Path) -> Option<Foreign> {
+    if crate::grok::looks_grok_path(file) {
+        return Some(Foreign::Grok);
+    }
+    if crate::copilot::looks_copilot_path(file) {
+        return Some(Foreign::Copilot);
+    }
+    if crate::antigravity::looks_agy_path(file) {
+        return Some(Foreign::Antigravity);
+    }
+    None
+}
+
 /// Cached soft-delete verdict for one file: a Claude session's flag (rides its first line, so it's
-/// final for a given mtime), or "this is a Codex rollout" (whose flag lives in the sidecar and can
-/// flip WITHOUT touching the file — so only the format verdict is cached, never the flag).
+/// final for a given mtime), or "this belongs to another CLI" (Codex rollout / foreign source,
+/// whose flag lives in a sidecar and can flip WITHOUT touching the file — so only the format
+/// verdict is cached, never the flag).
 #[derive(Clone, Copy)]
 enum DelKind {
     Claude(bool),
     Codex,
+    Foreign(Foreign),
 }
 
 /// Process-lifetime memo of soft-delete status, keyed `path -> (mtime, kind)`. mtime is the
@@ -204,16 +229,21 @@ fn is_session_deleted(file: &Path) -> bool {
         .ok()
         .and_then(|c| c.get(file).filter(|(cmt, _)| *cmt == mt).map(|(_, k)| *k));
     let kind = cached.unwrap_or_else(|| {
-        // Read the same window session_meta uses: a Codex rollout's first (session_meta) line
-        // embeds the full system prompt (~22 KB), so a smaller head truncates it, parse yields
-        // nothing, and the session mis-sniffs as Claude — desyncing dir vs trash counts.
-        let recs = parse_lines(&read_head(file, 131072));
-        // Imported codex COPIES carry the flag in-file like Claude sessions (see set_ccbud) —
-        // only live rollouts (no .import.json) use the sidecar.
-        let kind = if crate::codex::looks_codex(&recs) && read_import_meta(&file.to_string_lossy()).is_none() {
-            DelKind::Codex
+        // Foreign sources are recognized by path shape alone — no read needed.
+        let kind = if let Some(fk) = foreign_kind(file) {
+            DelKind::Foreign(fk)
         } else {
-            DelKind::Claude(read_ccbud(&recs).2)
+            // Read the same window session_meta uses: a Codex rollout's first (session_meta) line
+            // embeds the full system prompt (~22 KB), so a smaller head truncates it, parse yields
+            // nothing, and the session mis-sniffs as Claude — desyncing dir vs trash counts.
+            let recs = parse_lines(&read_head(file, 131072));
+            // Imported codex COPIES carry the flag in-file like Claude sessions (see set_ccbud) —
+            // only live rollouts (no .import.json) use the sidecar.
+            if crate::codex::looks_codex(&recs) && read_import_meta(&file.to_string_lossy()).is_none() {
+                DelKind::Codex
+            } else {
+                DelKind::Claude(read_ccbud(&recs).2)
+            }
         };
         if let Ok(mut cache) = deleted_cache().lock() {
             cache.insert(file.to_path_buf(), (mt, kind));
@@ -223,6 +253,9 @@ fn is_session_deleted(file: &Path) -> bool {
     match kind {
         DelKind::Claude(del) => del,
         DelKind::Codex => crate::codex::is_deleted(file),
+        DelKind::Foreign(Foreign::Grok) => crate::grok::is_deleted(file),
+        DelKind::Foreign(Foreign::Copilot) => crate::copilot::is_deleted(file),
+        DelKind::Foreign(Foreign::Antigravity) => crate::antigravity::is_deleted(file),
     }
 }
 
@@ -255,6 +288,44 @@ struct Shaped {
     model: Option<String>,
     first_ts: Option<String>,
     last_ts: Option<String>,
+}
+
+/// The renderer's normalized session shape shared by every non-Claude source (Codex, Grok,
+/// Copilot, Antigravity): Anthropic-style messages (`role` + content blocks of
+/// text/thinking/tool_use/tool_result) plus the session-level facts each format can recover.
+pub struct Norm {
+    pub messages: Vec<Value>,
+    pub totals: Value,
+    pub model: Option<String>,
+    pub first_ts: Option<String>,
+    pub last_ts: Option<String>,
+    pub cwd: Option<String>,
+    pub session_id: Option<String>,
+    pub git_branch: Option<String>,
+    pub version: Option<String>,
+}
+
+impl Default for Norm {
+    fn default() -> Self {
+        Norm {
+            messages: vec![],
+            totals: json!({ "in": 0, "out": 0, "cacheRead": 0, "cacheCreation": 0, "turns": 0 }),
+            model: None,
+            first_ts: None,
+            last_ts: None,
+            cwd: None,
+            session_id: None,
+            git_branch: None,
+            version: None,
+        }
+    }
+}
+
+/// data-URL image → Claude-style image source block, else None.
+pub(crate) fn image_block(url: &str) -> Option<Value> {
+    let rest = url.strip_prefix("data:")?;
+    let (mime, b64) = rest.split_once(";base64,")?;
+    Some(json!({ "type": "image", "source": { "type": "base64", "media_type": mime, "data": b64 } }))
 }
 
 fn shape_messages(recs: &[Value]) -> Shaped {
@@ -362,19 +433,27 @@ fn all_dirs(config: &Value) -> Vec<(String, String, PathBuf)> {
     dirs.push(("__imported__".to_string(), "导入".to_string(), imports_root().join("projects")));
     dirs
 }
-/// A dir entry's Codex data tree: sibling `sessions/` next to its `projects/` — every work dir
-/// is probed for BOTH layouts (Claude Code writes `<dir>/projects/…`, Codex `<dir>/sessions/…`),
-/// so `~/.codex` is just another configured dir rather than a special case.
-fn sessions_dir(projects_dir: &Path) -> Option<PathBuf> {
-    projects_dir.parent().map(|b| b.join("sessions"))
+/// A sibling data tree next to a dir entry's `projects/`. Every configured dir is probed for
+/// EVERY layout (Claude Code writes `<dir>/projects/…`, Codex and Grok `<dir>/sessions/…`,
+/// Copilot `<dir>/session-state/…`, Antigravity `<dir>/conversations/*.db`), so `~/.codex`,
+/// `~/.grok`, `~/.copilot`, `~/.gemini/antigravity-cli` are just configured dirs rather than
+/// special cases.
+fn sibling_dir(projects_dir: &Path, name: &str) -> Option<PathBuf> {
+    projects_dir.parent().map(|b| b.join(name))
 }
 
-/// Dirs to watch for live history changes — each work dir's projects/ AND sessions/ tree.
+fn sessions_dir(projects_dir: &Path) -> Option<PathBuf> {
+    sibling_dir(projects_dir, "sessions")
+}
+
+/// Dirs to watch for live history changes — each work dir's data trees (all four layouts).
 pub fn watch_roots(config: &Value) -> Vec<PathBuf> {
     let mut roots: Vec<PathBuf> = vec![];
     for (_, _, pd) in all_dirs(config) {
-        if let Some(sd) = sessions_dir(&pd) {
-            roots.push(sd);
+        for name in ["sessions", "session-state", "conversations"] {
+            if let Some(sd) = sibling_dir(&pd, name) {
+                roots.push(sd);
+            }
         }
         roots.push(pd);
     }
@@ -404,9 +483,32 @@ fn each_session_file<F: FnMut(PathBuf, String, &str, &str)>(config: &Value, mut 
                 }
             }
         }
-        // Codex rollouts live in a date-sharded sessions/ tree, so it gets its own walk.
+        // Codex rollouts live in a date-sharded sessions/ tree; Grok shares the same sessions/
+        // root but keys children by percent-encoded cwd (and stuffs sidecar jsonl — events/
+        // updates/rewind — beside each chat_history.jsonl), so children are routed one by one
+        // rather than letting the codex walker sweep grok trees into garbage rows.
         if let Some(sd) = sessions_dir(&root) {
-            crate::codex::walk_sessions(&sd, |p| cb(p, String::new(), &id, &label));
+            if let Ok(children) = fs::read_dir(&sd) {
+                for ent in children.flatten() {
+                    let p = ent.path();
+                    let name = ent.file_name().to_string_lossy().into_owned();
+                    if p.is_dir() && crate::grok::is_cwd_dir_name(&name) {
+                        crate::grok::walk_cwd_dir(&p, &mut |f| cb(f, String::new(), &id, &label));
+                    } else if p.is_dir() {
+                        crate::codex::walk_sessions(&p, |f| cb(f, String::new(), &id, &label));
+                    } else if p.is_file() && p.extension().and_then(|e| e.to_str()) == Some("jsonl") {
+                        cb(p, String::new(), &id, &label);
+                    }
+                }
+            }
+        }
+        // Copilot session logs (flat <uuid>.jsonl + <uuid>/events.jsonl).
+        if let Some(ss) = sibling_dir(&root, "session-state") {
+            crate::copilot::walk(&ss, &mut |f| cb(f, String::new(), &id, &label));
+        }
+        // Antigravity conversations (one SQLite per session).
+        if let Some(cd) = sibling_dir(&root, "conversations") {
+            crate::antigravity::walk(&cd, &mut |f| cb(f, String::new(), &id, &label));
         }
     }
 }
@@ -422,8 +524,17 @@ fn meta_cache() -> &'static std::sync::Mutex<std::collections::HashMap<PathBuf, 
     CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
 }
 
+/// Freshness stamp for the list-meta / search caches: plain mtime, except Antigravity DBs
+/// where a live agy writes into the WAL without touching the main file.
+fn cache_stamp_ms(file: &Path) -> f64 {
+    match foreign_kind(file) {
+        Some(Foreign::Antigravity) => crate::antigravity::wal_mtime_ms(file),
+        _ => mtime_ms(file),
+    }
+}
+
 fn session_meta(file: &Path, dir_name: &str, dir_id: &str, dir_label: &str) -> Option<Value> {
-    let (mt, size) = (mtime_ms(file), fs::metadata(file).ok()?.len());
+    let (mt, size) = (cache_stamp_ms(file), fs::metadata(file).ok()?.len());
     if let Ok(cache) = meta_cache().lock() {
         if let Some((cmt, csz, v)) = cache.get(file) {
             if *cmt == mt && *csz == size {
@@ -439,6 +550,17 @@ fn session_meta(file: &Path, dir_name: &str, dir_id: &str, dir_label: &str) -> O
 }
 
 fn build_session_meta(file: &Path, dir_name: &str, dir_id: &str, dir_label: &str) -> Option<Value> {
+    // Foreign sources first — routed by container shape BEFORE any content read (one of them
+    // isn't even text), each through its own shaper.
+    match foreign_kind(file) {
+        Some(Foreign::Grok) => return crate::grok::session_meta_from(file, dir_id, dir_label),
+        Some(Foreign::Copilot) => {
+            let recs = parse_lines(&read_head(file, 131072));
+            return crate::copilot::session_meta_from(file, &recs, dir_id, dir_label);
+        }
+        Some(Foreign::Antigravity) => return crate::antigravity::session_meta_from(file, dir_id, dir_label),
+        None => {}
+    }
     let meta = fs::metadata(file).ok()?;
     let size = meta.len();
     let head = read_head(file, 131072);
@@ -573,8 +695,12 @@ pub fn dir_stats(config: &Value) -> Vec<Value> {
     let mut out: Vec<Value> = all_dirs(config)
         .into_iter()
         .map(|(id, label, pd)| {
-            // A dir "exists" when EITHER data tree is on disk — ~/.codex has only sessions/.
-            let exists = pd.is_dir() || sessions_dir(&pd).map(|s| s.is_dir()).unwrap_or(false);
+            // A dir "exists" when ANY data tree is on disk — ~/.codex has only sessions/,
+            // ~/.copilot only session-state/, ~/.gemini/antigravity-cli only conversations/.
+            let exists = pd.is_dir()
+                || ["sessions", "session-state", "conversations"]
+                    .iter()
+                    .any(|n| sibling_dir(&pd, n).map(|s| s.is_dir()).unwrap_or(false));
             let imported = id == "__imported__";
             json!({
                 "id": id.clone(), "label": label, "projectsDir": pd.to_string_lossy(),
@@ -741,6 +867,23 @@ pub(crate) fn read_import_meta(file: &str) -> Option<Value> {
 
 pub fn get_session(file: &str) -> Value {
     let path = Path::new(file);
+    // Foreign sources route by container shape BEFORE the text read — Antigravity sessions are
+    // SQLite, and grok/copilot jsonl would otherwise fall through to the Claude shaper.
+    match foreign_kind(path) {
+        Some(Foreign::Antigravity) => return crate::antigravity::session_from(file),
+        Some(fk) => {
+            let raw = match fs::read_to_string(path) {
+                Ok(s) => s,
+                Err(_) => return Value::Null,
+            };
+            let recs = parse_lines(&raw);
+            return match fk {
+                Foreign::Grok => crate::grok::session_from_recs(file, &recs),
+                _ => crate::copilot::session_from_recs(file, &recs),
+            };
+        }
+        None => {}
+    }
     let raw = match fs::read_to_string(path) {
         Ok(s) => s,
         Err(_) => return Value::Null,
@@ -964,7 +1107,7 @@ const SEARCH_CACHE_BUDGET: usize = 128 * 1024 * 1024;
 /// parses candidates — files that can't match are neither parsed nor cached.
 fn thread_scan(path: &Path, q: &str, raw_safe: bool) -> Option<(std::sync::Arc<String>, usize)> {
     let meta = fs::metadata(path).ok()?;
-    let (mt, sz) = (mtime_ms(path), meta.len());
+    let (mt, sz) = (cache_stamp_ms(path), meta.len());
     if let Ok(cache) = search_cache().lock() {
         if let Some((cmt, csz, text)) = cache.map.get(path) {
             if *cmt == mt && *csz == sz {
@@ -974,19 +1117,32 @@ fn thread_scan(path: &Path, q: &str, raw_safe: bool) -> Option<(std::sync::Arc<S
             }
         }
     }
-    let raw = fs::read_to_string(path).ok()?;
-    if raw_safe && ifind(&raw, q, 0).is_none() {
-        return None;
-    }
-    let recs = parse_lines(&raw);
-    let messages: Vec<Value> = if crate::codex::looks_codex(&recs) {
-        crate::codex::session_from_recs(&path.to_string_lossy(), &recs)
-            .get("messages")
-            .and_then(|v| v.as_array())
-            .cloned()
-            .unwrap_or_default()
+    let fk = foreign_kind(path);
+    let messages: Vec<Value> = if fk == Some(Foreign::Antigravity) {
+        // SQLite source: no raw-bytes prefilter (the payloads are binary) — extraction is
+        // cached, so the decode is paid once per file version.
+        crate::antigravity::normalize_db(path).messages
     } else {
-        shape_messages(&recs).messages
+        let raw = fs::read_to_string(path).ok()?;
+        if raw_safe && ifind(&raw, q, 0).is_none() {
+            return None;
+        }
+        let recs = parse_lines(&raw);
+        match fk {
+            Some(Foreign::Grok) => crate::grok::normalize(&recs, None).messages,
+            Some(Foreign::Copilot) => crate::copilot::normalize(&recs).messages,
+            _ => {
+                if crate::codex::looks_codex(&recs) {
+                    crate::codex::session_from_recs(&path.to_string_lossy(), &recs)
+                        .get("messages")
+                        .and_then(|v| v.as_array())
+                        .cloned()
+                        .unwrap_or_default()
+                } else {
+                    shape_messages(&recs).messages
+                }
+            }
+        }
     };
     let text = std::sync::Arc::new(extract_search_text(&messages));
     if let Ok(mut cache) = search_cache().lock() {
@@ -1136,6 +1292,21 @@ pub fn set_ccbud(file: &str, patch: &Value, config: &Value) -> Value {
     if !within_scope(target, config) {
         return json!({ "ok": false, "reason": "out-of-scope" });
     }
+    // Foreign-CLI sessions are other tools' files (one is SQLite): their title/tags/delete
+    // flag always live in the app-owned sidecar. Same cache-drop contract as the codex branch.
+    if let Some(fk) = foreign_kind(target) {
+        let r = match fk {
+            Foreign::Grok => crate::grok::set_meta(file, patch),
+            Foreign::Copilot => crate::copilot::set_meta(file, patch),
+            Foreign::Antigravity => crate::antigravity::set_meta(file, patch),
+        };
+        if r.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+            if let Ok(mut cache) = meta_cache().lock() {
+                cache.remove(target);
+            }
+        }
+        return r;
+    }
     let raw = match fs::read_to_string(file) {
         Ok(s) => s,
         Err(_) => return json!({ "ok": false, "reason": "read" }),
@@ -1240,7 +1411,10 @@ pub fn set_ccbud(file: &str, patch: &Value, config: &Value) -> Value {
 /// (projects/ AND sessions/) plus the imports store.
 fn within_scope(target: &Path, config: &Value) -> bool {
     all_dirs(config).iter().any(|(_, _, pd)| {
-        target.starts_with(pd) || sessions_dir(pd).map(|sd| target.starts_with(sd)).unwrap_or(false)
+        target.starts_with(pd)
+            || ["sessions", "session-state", "conversations"]
+                .iter()
+                .any(|n| sibling_dir(pd, n).map(|sd| target.starts_with(sd)).unwrap_or(false))
     })
 }
 
@@ -1252,10 +1426,14 @@ pub fn delete_session_file(file: &str, config: &Value) -> Value {
     if !target.is_file() {
         return json!({ "ok": false, "reason": "missing" });
     }
-    // A LIVE Codex rollout is another tool's file — the app only ever soft-deletes it via the
-    // sidecar and never rewrites it (see set_ccbud), so "delete forever" must not rm the source
-    // either. Imported codex COPIES (marked by an .import.json) are our own snapshots and stay
-    // hard-deletable, like Claude sessions the app manages in the configured dirs.
+    // A LIVE Codex rollout or foreign-CLI session is another tool's file — the app only ever
+    // soft-deletes those via the sidecar and never rewrites them (see set_ccbud), so "delete
+    // forever" must not rm the source either. Imported codex COPIES (marked by an .import.json)
+    // are our own snapshots and stay hard-deletable, like Claude sessions the app manages in
+    // the configured dirs.
+    if foreign_kind(target).is_some() {
+        return json!({ "ok": false, "reason": "foreign" });
+    }
     let head = parse_lines(&read_head(target, 131072));
     if crate::codex::looks_codex(&head) && read_import_meta(file).is_none() {
         return json!({ "ok": false, "reason": "foreign" });
@@ -1304,6 +1482,75 @@ pub fn history_selftest(base_dir: &Path) -> Value {
         "shownInTrash": shown_in_trash,
         "restored": restored,
     })
+}
+
+#[cfg(test)]
+mod foreign_probe {
+    use super::*;
+
+    // Diagnostic harness (not an assertion): list + open REAL foreign-CLI sessions so the
+    // shapers can be eyeballed against live ~/.grok, ~/.copilot, ~/.gemini/antigravity-cli.
+    // Run: CCBUD_PROBE_FOREIGN="~/.grok,~/.copilot,~/.gemini/antigravity-cli" \
+    //      cargo test --lib probe_foreign_dirs -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn probe_foreign_dirs() {
+        let Ok(dirs) = std::env::var("CCBUD_PROBE_FOREIGN") else {
+            eprintln!("set CCBUD_PROBE_FOREIGN=dir1,dir2,…");
+            return;
+        };
+        let list: Vec<&str> = dirs.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()).collect();
+        let config = json!({ "historyDirs": list });
+        let sessions = list_sessions(&config, "all", 500);
+        eprintln!("== {} sessions across {:?}", sessions.len(), list);
+        let mut by_source: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+        for s in &sessions {
+            *by_source
+                .entry(s.get("source").and_then(|v| v.as_str()).unwrap_or("?").to_string())
+                .or_insert(0) += 1;
+        }
+        eprintln!("== by source: {:?}", by_source);
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for s in &sessions {
+            let src = s.get("source").and_then(|v| v.as_str()).unwrap_or("?").to_string();
+            if !seen.insert(src.clone()) {
+                continue;
+            }
+            let file = s.get("file").and_then(|v| v.as_str()).unwrap_or("");
+            eprintln!(
+                "-- [{}] {} | cwd={} | title={:?}",
+                src,
+                file,
+                s.get("cwd").and_then(|v| v.as_str()).unwrap_or("-"),
+                s.get("title").and_then(|v| v.as_str()).unwrap_or("-")
+            );
+            let detail = get_session(file);
+            let meta = detail.get("meta").cloned().unwrap_or(Value::Null);
+            let msgs = detail.get("messages").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0);
+            eprintln!(
+                "   detail: assistant={:?} messages={} totals={} firstTs={:?}",
+                meta.get("assistant").and_then(|v| v.as_str()),
+                msgs,
+                meta.get("totals").map(|t| t.to_string()).unwrap_or_default(),
+                meta.get("firstTs").and_then(|v| v.as_str())
+            );
+            if let Some(arr) = detail.get("messages").and_then(|v| v.as_array()) {
+                for m in arr.iter().take(4) {
+                    let role = m.get("role").and_then(|v| v.as_str()).unwrap_or("?");
+                    let kinds: Vec<String> = m
+                        .get("content")
+                        .and_then(|c| c.as_array())
+                        .map(|a| {
+                            a.iter()
+                                .map(|b| b.get("type").and_then(|t| t.as_str()).unwrap_or("?").to_string())
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    eprintln!("   msg {} {:?}", role, kinds);
+                }
+            }
+        }
+    }
 }
 
 // ---- import (copy someone else's .jsonl into the app-managed store) ----
@@ -1405,15 +1652,42 @@ fn write_imported(raw: &str, original_path: &str, original_name: &str, subagents
 }
 
 /// Import a plain .jsonl transcript, bringing along its on-disk subagents dir if present.
+/// Foreign-CLI sources (Grok / Copilot / Antigravity) are intentionally not importable —
+/// their layouts/formats aren't Claude/Codex, and a Grok chat_history head would otherwise
+/// trip looks_codex (its `reasoning` lines look like old envelope-less Codex items).
 fn import_one(src: &str) -> i32 {
+    let src_path = Path::new(src);
+    if foreign_kind(src_path).is_some() {
+        return 0;
+    }
     let raw = match fs::read_to_string(src) {
         Ok(s) => s,
         Err(_) => return 0,
     };
-    let src_path = Path::new(src);
+    // Path-less copies of foreign transcripts: refuse anything whose head sniffs as Grok
+    // chat_history (type:system + later reasoning/tool_result) or Copilot events
+    // (type:session.start with producer copilot-agent).
+    let head: Vec<Value> = raw.lines().take(8).filter_map(|l| serde_json::from_str(l.trim()).ok()).collect();
+    if looks_foreign_jsonl(&head) {
+        return 0;
+    }
     let subs = read_subagent_files(src_path);
     let original_name = src_path.file_name().and_then(|n| n.to_str()).unwrap_or("");
     write_imported(&raw, src, original_name, &subs)
+}
+
+/// Content sniff for foreign CLI jsonl (used by import when the path no longer carries the
+/// original container shape — e.g. a bare chat_history.jsonl dropped into the import dialog).
+fn looks_foreign_jsonl(recs: &[Value]) -> bool {
+    recs.iter().take(8).any(|r| match r.get("type").and_then(|v| v.as_str()) {
+        // Copilot event stream
+        Some("session.start") | Some("user.message") | Some("assistant.message")
+        | Some("tool.execution_complete") | Some("tool.execution_start") => true,
+        // Grok chat_history: top-level system/reasoning/tool_result (Claude wraps these)
+        Some("reasoning") | Some("tool_result") if r.get("message").is_none() => true,
+        Some("system") if r.get("content").is_some() && r.get("message").is_none() => true,
+        _ => false,
+    })
 }
 
 /// Import a conversation-bundle .zip (main session + `subagents/`), restoring the subagent layout so
@@ -1527,6 +1801,148 @@ pub fn import_selftest(base_dir: &Path) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // One work dir carrying ALL foreign layouts (grok sessions/%2F…, copilot session-state/,
+    // antigravity conversations/*.db): each session must list under its own source with cwd,
+    // title and detail routed through its shaper, hard-delete must refuse, and content search
+    // must reach every format.
+    #[test]
+    fn foreign_sources_route_end_to_end() {
+        let base = std::env::temp_dir().join("ccbud-foreign-route-test");
+        let _ = fs::remove_dir_all(&base);
+
+        // grok: sessions/<enc-cwd>/<uuid>/chat_history.jsonl + summary.json
+        let gdir = base.join("sessions").join("%2Ftmp%2Fgproj").join("0199-grok-uuid");
+        fs::create_dir_all(&gdir).unwrap();
+        fs::write(
+            gdir.join("chat_history.jsonl"),
+            "{\"type\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"<user_query>grok needle walrus</user_query>\"}]}\n\
+             {\"type\":\"assistant\",\"content\":\"done\",\"tool_calls\":[{\"id\":\"c1\",\"name\":\"run_terminal_command\",\"arguments\":\"{\\\"command\\\":\\\"ls\\\"}\"}]}\n",
+        )
+        .unwrap();
+        fs::write(
+            gdir.join("summary.json"),
+            "{\"info\":{\"id\":\"0199-grok-uuid\",\"cwd\":\"/tmp/gproj\"},\"generated_title\":\"Grok 会话\",\"created_at\":\"2026-06-18T06:27:07.777Z\",\"current_model_id\":\"grok-build\"}",
+        )
+        .unwrap();
+        // …and a stray sidecar jsonl the codex walker must NOT sweep into a session row
+        fs::write(gdir.join("events.jsonl"), "{\"ts\":\"x\",\"type\":\"mcp_config_resolved\"}\n").unwrap();
+
+        // copilot: session-state/<uuid>/events.jsonl + workspace.yaml
+        let cdir = base.join("session-state").join("cp-uuid-1");
+        fs::create_dir_all(&cdir).unwrap();
+        fs::write(
+            cdir.join("events.jsonl"),
+            "{\"type\":\"session.start\",\"data\":{\"sessionId\":\"cp-uuid-1\",\"context\":{\"cwd\":\"/tmp/cproj\"}},\"timestamp\":\"2026-07-12T07:26:54.363Z\"}\n\
+             {\"type\":\"user.message\",\"data\":{\"content\":\"copilot needle pelican\"},\"timestamp\":\"2026-07-12T07:27:14.463Z\"}\n",
+        )
+        .unwrap();
+        fs::write(
+            cdir.join("workspace.yaml"),
+            "id: cp-uuid-1\ncwd: /tmp/cproj\nname: Copilot 会话\ncreated_at: 2026-07-12T07:26:54.368Z\n",
+        )
+        .unwrap();
+
+        // antigravity: conversations/<uuid>.db with one user step (hand-encoded wire format)
+        let adir = base.join("conversations");
+        fs::create_dir_all(&adir).unwrap();
+        let adb = adir.join("agy-uuid-1.db");
+        {
+            fn enc_varint(mut v: u64, out: &mut Vec<u8>) {
+                loop {
+                    let b = (v & 0x7f) as u8;
+                    v >>= 7;
+                    if v == 0 {
+                        out.push(b);
+                        break;
+                    }
+                    out.push(b | 0x80);
+                }
+            }
+            fn put_varint(field: u32, v: u64, out: &mut Vec<u8>) {
+                enc_varint(((field as u64) << 3) | 0, out);
+                enc_varint(v, out);
+            }
+            fn put_bytes(field: u32, data: &[u8], out: &mut Vec<u8>) {
+                enc_varint(((field as u64) << 3) | 2, out);
+                enc_varint(data.len() as u64, out);
+                out.extend_from_slice(data);
+            }
+            let mut ts = vec![];
+            put_varint(1, 1_783_811_237, &mut ts);
+            let mut meta5 = vec![];
+            put_bytes(1, &ts, &mut meta5);
+            let mut u19 = vec![];
+            put_bytes(2, "agy needle capybara".as_bytes(), &mut u19);
+            let mut step = vec![];
+            put_varint(1, 14, &mut step);
+            put_varint(4, 3, &mut step);
+            put_bytes(5, &meta5, &mut step);
+            put_bytes(19, &u19, &mut step);
+            let conn = rusqlite::Connection::open(&adb).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE steps (idx INTEGER PRIMARY KEY, step_type INTEGER NOT NULL DEFAULT 0, status INTEGER NOT NULL DEFAULT 0, step_payload BLOB);",
+            )
+            .unwrap();
+            conn.execute("INSERT INTO steps (idx, step_type, status, step_payload) VALUES (0, 14, 3, ?1)", [&step])
+                .unwrap();
+        }
+        {
+            let conn = rusqlite::Connection::open(base.join("conversation_summaries.db")).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE conversation_summaries (conversation_id TEXT PRIMARY KEY, title TEXT NOT NULL DEFAULT '', preview TEXT NOT NULL DEFAULT '', step_count INTEGER NOT NULL DEFAULT 0, last_modified_time DATETIME, workspace_uris TEXT NOT NULL DEFAULT '[]');",
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO conversation_summaries (conversation_id, title, preview, step_count, workspace_uris) VALUES ('agy-uuid-1', 'Agy 会话', 'p', 1, '[\"file:///tmp/aproj\"]')",
+                [],
+            )
+            .unwrap();
+        }
+
+        let config = json!({ "historyDirs": [ base.to_string_lossy() ] });
+        let rows = list_sessions(&config, "all", 50);
+        let by = |src: &str| {
+            rows.iter()
+                .find(|r| r.get("source").and_then(|v| v.as_str()) == Some(src))
+                .unwrap_or_else(|| panic!("no {} row in {:?}", src, rows))
+                .clone()
+        };
+        // exactly one row per source — the grok dir's stray events.jsonl must not add a fourth
+        assert_eq!(rows.len(), 3, "rows: {:?}", rows);
+        let (g, c, a) = (by("grok"), by("copilot"), by("antigravity"));
+        assert_eq!(g["cwd"], "/tmp/gproj");
+        assert_eq!(g["title"], "Grok 会话");
+        assert_eq!(g["model"], "grok-build");
+        assert_eq!(c["cwd"], "/tmp/cproj");
+        assert_eq!(c["title"], "Copilot 会话");
+        assert_eq!(a["cwd"], "/tmp/aproj");
+        assert_eq!(a["title"], "Agy 会话");
+
+        // detail routes through each shaper (assistant name is the renderer's header/stat hook)
+        for (row, assistant, first_text) in [
+            (&g, "Grok", "grok needle walrus"),
+            (&c, "Copilot", "copilot needle pelican"),
+            (&a, "Antigravity", "agy needle capybara"),
+        ] {
+            let file = row["file"].as_str().unwrap();
+            let d = get_session(file);
+            assert_eq!(d["meta"]["assistant"], assistant);
+            assert_eq!(d["messages"][0]["content"][0]["text"], first_text);
+            // another tool's live file: delete-forever must refuse and leave it on disk
+            let del = delete_session_file(file, &config);
+            assert_eq!(del["reason"], "foreign");
+            assert!(Path::new(file).is_file());
+        }
+
+        // content search reaches every format (agy has no raw-text prefilter path)
+        for needle in ["walrus", "pelican", "capybara"] {
+            let hits = search_sessions(&config, "all", needle, 10);
+            assert_eq!(hits.len(), 1, "search {}: {:?}", needle, hits);
+        }
+
+        let _ = fs::remove_dir_all(&base);
+    }
 
     // A live Codex rollout (a work dir's sessions/ tree, no .import.json) must NEVER be hard-deleted
     // by "delete forever" — it's another tool's file. delete_session_file must refuse and leave it on

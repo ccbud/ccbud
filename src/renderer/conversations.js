@@ -13,6 +13,10 @@
   const midEllip = (s, max) => { s = String(s == null ? '' : s); if (s.length <= max) return s; const k = max - 1, h = Math.ceil(k / 2), t = Math.floor(k / 2); return s.slice(0, h) + '…' + s.slice(s.length - t); };
   const ICN = window.ccbudIcons || {}; // SVG icon set (icons.js loads before this script)
   const localeTag = () => (window.I18n ? window.I18n.localeTag : 'en-US');
+  // Non-Claude session sources (meta.source): list-row chip label + assistant display name.
+  // Claude ('disk') deliberately has no chip — it's the app's home turf.
+  const SOURCE_NAMES = { codex: 'Codex', grok: 'Grok', copilot: 'Copilot', antigravity: 'Antigravity' };
+  const isForeignSource = (s) => !!SOURCE_NAMES[s];
 
   let projects = [];      // [{ cwd, name, sessions:[...], lastActivity }]
   let openId = null;
@@ -474,12 +478,16 @@
     const live = isLive(c.lastActivity) ? '<span class="conv-live w-1.25 h-1.25 rounded-full bg-green animate-[pulse_1.6s_infinite] shrink-0"></span>' : '';
     const sub = c.isSubagent ? `<span class="conv-badge text-[10.5px] px-1.5 py-0.25 rounded-full bg-chip-bg text-fg font-sans">${esc(L('conv.subagent'))}</span>` : '';
     const imp = c.imported ? `<span class="conv-badge conv-badge-import inline-flex items-center gap-1 text-[10.5px] px-1.5 py-0.25 rounded-full bg-brand-soft text-brand font-sans">${ICN.download || ''}${esc(L('conv.imported'))}</span>` : '';
+    // Non-Claude sources carry a small origin chip so a mixed project group stays readable.
+    const srcName = SOURCE_NAMES[c.source];
+    const srcBadge = srcName ? `<span class="conv-badge conv-badge-source text-[10.5px] px-1.5 py-0.25 rounded-full bg-chip-bg text-fg font-sans">${esc(srcName)}</span>` : '';
     // Recycle bin rows swap the import-remove affordance for restore + delete-forever; everywhere else
     // imported copies (which live only in the app store) keep their remove affordance.
     const inTrash = activeDir === '__trash__';
-    // A LIVE Codex session (source codex, not an imported copy) is another tool's file — it can be
-    // restored but NEVER permanently deleted, since the app must not rm ~/.codex's rollouts.
-    const foreign = c.source === 'codex' && !c.imported;
+    // A LIVE session of another CLI (codex/grok/copilot/antigravity, not an imported copy) is
+    // that tool's file — it can be restored but NEVER permanently deleted, since the app must
+    // not rm another tool's data.
+    const foreign = isForeignSource(c.source) && !c.imported;
     const restoreBtn = `<button class="conv-restore ml-auto shrink-0 opacity-55 group-hover:opacity-100 text-caption hover:text-brand hover:bg-chip-bg rounded text-[12px] leading-none w-[18px] h-[18px] flex items-center justify-center transition-all" data-restore="${esc(c.file || '')}" title="${esc(L('conv.restore'))}">${ICN.refresh || '↺'}</button>`;
     const deleteForeverBtn = `<button class="conv-delete-forever shrink-0 opacity-55 group-hover:opacity-100 text-caption hover:text-red hover:bg-chip-bg rounded text-[12px] leading-none w-[18px] h-[18px] flex items-center justify-center transition-all" data-delete-forever="${esc(c.file || '')}" title="${esc(L('conv.deleteForever'))}">${ICN.trash || '✕'}</button>`;
     const rm = inTrash
@@ -502,7 +510,7 @@
     const tip = (c.autoTitle && c.title && c.autoTitle !== c.title) ? (fullTitle + ' · ' + c.autoTitle) : fullTitle;
     return `<div class="conv-item group cursor-pointer flex flex-col gap-0.75 py-2.5 pr-3 pl-[22px] transition-colors duration-150 hover:bg-chip-bg border-0 ${c.id === openId ? 'active' : ''}" data-id="${esc(c.id)}" data-file="${esc(c.file || '')}">
       <div class="conv-item-top flex items-center gap-1.25">${live}<span class="conv-title text-[13.5px] font-semibold truncate min-w-0" data-tip="${esc(tip)}">${esc(fullTitle)}</span>${rm}</div>
-      <div class="conv-item-sub flex items-center gap-1.5 text-[11.5px] text-caption font-mono truncate">${model}${sub}${imp}</div>
+      <div class="conv-item-sub flex items-center gap-1.5 text-[11.5px] text-caption font-mono truncate">${model}${srcBadge}${sub}${imp}</div>
       ${snipRow}
       ${tagsRow}
       <div class="conv-item-meta flex items-center gap-1.5 text-[11px] text-caption">${metaTimes(c)}${c.sizeKB ? '<span>' + fmtSizeKB(c.sizeKB) + '</span>' : ''}</div>
@@ -1072,7 +1080,7 @@
       [L('conv.stat.input'), t.in != null ? fmtTok(t.in) : null],
       [L('conv.stat.output'), t.out != null ? fmtTok(t.out) : null],
       [L('conv.stat.cacheRead'), t.cacheRead ? fmtTok(t.cacheRead) : null],
-      [L('conv.stat.tool'), m.assistant === 'Codex' ? 'Codex' : 'Claude Code'],
+      [L('conv.stat.tool'), m.assistant || 'Claude Code'],
       [L('conv.stat.version'), m.version],
     ].filter((r) => r[1] != null && r[1] !== '');
     $('convStats').innerHTML = rows.map((r) => `<div class="stat-row flex justify-between gap-2 text-xs py-1.25 border-b border-border-custom last:border-b-0"><span class="k text-caption">${esc(r[0])}</span><span class="v font-mono text-[11.5px] text-fg truncate max-w-[120px]" data-tip="${esc(r[1])}">${esc(r[1])}</span></div>`).join('');
@@ -1343,10 +1351,10 @@
       });
     }
     ctxMenuEl._file = file; ctxMenuEl._id = id;
-    // A live Codex session can be restored but never permanently deleted (its rollout is another
-    // tool's file); imported copies live in our store and keep delete-forever.
+    // A live session of another CLI can be restored but never permanently deleted (the file
+    // belongs to that tool); imported copies live in our store and keep delete-forever.
     const s = findSession(id, file);
-    const foreign = s && s.source === 'codex' && !s.imported;
+    const foreign = s && isForeignSource(s.source) && !s.imported;
     // Recycle-bin rows offer restore / delete-forever; everywhere else it's rename / add-tag / delete.
     ctxMenuEl.innerHTML = (activeDir === '__trash__')
       ? `<button type="button" class="conv-ctx-item" data-ctx="restore">↺ ${esc(L('conv.restore'))}</button>` +

@@ -5,16 +5,20 @@
 // popover, updater, and self-check hooks.
 #![allow(unused_variables)]
 
+mod antigravity;
 mod claude;
 mod claudedesktop;
 mod codex;
 mod codexconnect;
+mod copilot;
 mod counttokens;
 mod exporthtml;
 mod gateway;
+mod grok;
 mod history;
 mod plugin;
 mod protocol;
+mod sidecar;
 mod store;
 mod usage;
 mod ziputil;
@@ -1149,6 +1153,29 @@ fn history_delete_forever(app: tauri::AppHandle, file: String) -> Value {
 #[tauri::command]
 async fn history_export_raw(file: String) -> Result<Value, String> {
     let base = exporthtml::export_base_name(&file);
+    // Antigravity sessions are SQLite DBs (not text) — export the raw bytes as .db so the
+    // original conversation remains intact. Other foreign sources and Claude/Codex stay
+    // verbatim text (.jsonl); sessions with subagents keep the existing zip bundle.
+    let path = std::path::Path::new(&file);
+    if matches!(
+        history::foreign_kind(path),
+        Some(history::Foreign::Antigravity)
+    ) {
+        let bytes = std::fs::read(&file).map_err(|e| e.to_string())?;
+        return match rfd::AsyncFileDialog::new()
+            .add_filter("SQLite", &["db"])
+            .set_file_name(format!("{}.db", base))
+            .save_file()
+            .await
+        {
+            Some(d) => {
+                let p = d.path().to_path_buf();
+                std::fs::write(&p, bytes).map_err(|e| e.to_string())?;
+                Ok(json!({ "canceled": false, "path": p.to_string_lossy(), "bundled": false }))
+            }
+            None => Ok(json!({ "canceled": true })),
+        };
+    }
     // A session with subagents exports as a .zip bundle (main .jsonl at the top level + subagents/);
     // a plain session stays a verbatim .jsonl. import_paths accepts either.
     if history::session_has_subagents(&file) {
@@ -1834,11 +1861,14 @@ pub fn run() {
                         .build(),
                 )?;
             }
-            // One-time migrations: a detected Codex install (~/.codex/sessions) and an XDG
-            // Claude tree (~/.config/claude/projects) join historyDirs as regular work dirs.
-            // Runs BEFORE the history watcher so their trees get watched.
+            // One-time migrations: detected installs of the other coding CLIs (Codex, Grok
+            // Build, Copilot CLI, Antigravity CLI) and an XDG Claude tree join historyDirs as
+            // regular work dirs. Runs BEFORE the history watcher so their trees get watched.
             store::ensure_codex_dir();
             store::ensure_xdg_claude_dir();
+            store::ensure_grok_dir();
+            store::ensure_copilot_dir();
+            store::ensure_antigravity_dir();
 
             // Start the localhost gateway on the configured port (proxy.js parity).
             let gw = gateway::GatewayState::new(app.handle().clone());

@@ -43,6 +43,9 @@ notify-debouncer-mini = "0.4"
 # Conversation-bundle ZIP (export/import subagents together). Pure-Rust miniz_oxide backend — no
 # system zlib, so it cross-compiles cleanly for every release target.
 flate2 = "1"
+# Antigravity CLI conversations are per-session SQLite files (steps table). Bundled engine so
+# release targets don't need a system sqlite.
+rusqlite = { version = "0.32", features = ["bundled"] }
 # Protocol translation (chat / responses / messages互转). Reused as the IR + OpenAI/Responses
 # codec engine; we add only the Anthropic server-side halves (request-decode / response-encode).
 # default-features off to avoid pulling a second reqwest/tls stack (we use our own client); keep
