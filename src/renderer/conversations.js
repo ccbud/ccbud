@@ -798,7 +798,8 @@
   function toolResultText(b) {
     const c = b && b.content;
     if (typeof c === 'string') return c;
-    if (Array.isArray(c)) return c.map((x) => (x && x.type === 'text' ? x.text : (x && x.text) || JSON.stringify(x))).join('\n');
+    // image blocks render separately (renderToolCard) — stringifying them would dump base64
+    if (Array.isArray(c)) return c.filter((x) => !(x && x.type === 'image')).map((x) => (x && x.type === 'text' ? x.text : (x && x.text) || JSON.stringify(x))).join('\n');
     return c == null ? '' : JSON.stringify(c);
   }
   function diff(oldS, newS) {
@@ -858,7 +859,7 @@
   function shortPath(p) { if (!p) return ''; const s = String(p).split('/'); return s.length > 3 ? '…/' + s.slice(-2).join('/') : p; }
   function resultSummary(txt) { const b = txt ? txt.length : 0; if (!b) return ''; return b < 1024 ? b + ' B' : (b / 1024).toFixed(1) + ' KB'; }
   const PRE = 'pre bg-[#0c0e12] border border-white/7 rounded-[7px] p-2.5 overflow-x-auto font-mono text-[11px] leading-[1.48] text-[#e8edf4] whitespace-pre-wrap break-all';
-  const TOOL_CLS = { Bash: 'exec', Read: 'read', Edit: 'write', MultiEdit: 'write', Write: 'write', ApplyPatch: 'write', Grep: 'search', Glob: 'search', TodoWrite: 'todo', Task: 'task', WebSearch: 'net', WebFetch: 'net' };
+  const TOOL_CLS = { Bash: 'exec', Script: 'exec', Read: 'read', Edit: 'write', MultiEdit: 'write', Write: 'write', ApplyPatch: 'write', Grep: 'search', Glob: 'search', TodoWrite: 'todo', Task: 'task', WebSearch: 'net', WebFetch: 'net' };
   // Codex apply_patch envelope: "*** Update File: x" headers → the card's target (file, or "N files").
   function patchTarget(patch) {
     const files = [];
@@ -875,6 +876,9 @@
     const cls = /^mcp__/.test(name) ? 'mcp' : (TOOL_CLS[name] || 'default');
     let icon = '🔧', label = name, target = '', bodyInput = '';
     if (name === 'Bash') { icon = '⌘'; label = 'Bash'; target = input.description || ''; bodyInput = codeBlock(input.command || '', 'bash'); }
+    // Codex code-mode orchestration scripts (multi-call / write_stdin / custom JS) — the plain
+    // shell-run shape is already mapped to Bash by the backend (codex.rs map_exec_script).
+    else if (name === 'Script') { icon = '📜'; label = 'Script'; bodyInput = codeBlock(truncate(input.code || '', 12000), 'javascript'); }
     else if (name === 'Read') { icon = '📖'; label = 'Read'; target = shortPath(input.file_path); }
     else if (name === 'Edit') { icon = '✏️'; label = 'Edit'; target = shortPath(input.file_path); bodyInput = diff(input.old_string, input.new_string); }
     else if (name === 'MultiEdit') { icon = '✏️'; label = 'MultiEdit'; target = shortPath(input.file_path); bodyInput = Array.isArray(input.edits) && input.edits.length ? input.edits.map((e) => diff(e.old_string, e.new_string)).join('') : `<div class="text-muted text-[11px]">${esc(L('conv.noEdits'))}</div>`; }
@@ -895,15 +899,22 @@
       const txt = toolResultText(resBlock);
       const size = resultSummary(txt);
       // Read shows the file's content → highlight by extension (+ our own gutter, stripping cat -n);
-      // other results stay plain text.
-      const resBody = name === 'Read'
+      // other results stay plain text. An empty text renders nothing (no bare empty code box).
+      const resBody = !txt ? '' : name === 'Read'
         ? (isMdPath(input.file_path)
           ? mdDoc(stripCatN(truncate(txt, 8000)))
           : codeBlock(stripCatN(truncate(txt, 8000)), langFromPath(input.file_path)))
         : name === 'Bash'
           ? codeBlock(truncate(txt, 8000), 'bash')
           : codeBlock(truncate(txt, 8000), '');
-      resHtml = `<details class="tool-result border-t border-border-custom ${isErr ? 'err' : ''}"${isErr ? ' open' : ''}><summary class="cursor-pointer py-1.25 px-2.5 text-[10.5px] font-semibold ${isErr ? 'text-red' : 'text-green'} outline-none list-none [&::-webkit-details-marker]:hidden flex items-center gap-1.5"><span>${isErr ? '✗ ' + esc(L('conv.errResult')) : '✓ ' + esc(L('conv.result'))}</span>${size ? `<span class="tool-res-size">${esc(size)}</span>` : ''}</summary><div class="tool-result-body mx-2.5 mb-2">${resBody}</div></details>`;
+      // Screenshot-carrying results (codex code-mode / grok): image blocks render as images.
+      const resImgs = Array.isArray(resBlock.content)
+        ? resBlock.content
+          .filter((x) => x && x.type === 'image' && x.source && x.source.data)
+          .map((x) => `<img class="msg-img max-w-[300px] rounded-lg border border-border-custom my-1" src="data:${esc(x.source.media_type || 'image/png')};base64,${esc(x.source.data)}" />`)
+          .join('')
+        : '';
+      resHtml = `<details class="tool-result border-t border-border-custom ${isErr ? 'err' : ''}"${isErr ? ' open' : ''}><summary class="cursor-pointer py-1.25 px-2.5 text-[10.5px] font-semibold ${isErr ? 'text-red' : 'text-green'} outline-none list-none [&::-webkit-details-marker]:hidden flex items-center gap-1.5"><span>${isErr ? '✗ ' + esc(L('conv.errResult')) : '✓ ' + esc(L('conv.result'))}</span>${size ? `<span class="tool-res-size">${esc(size)}</span>` : ''}</summary><div class="tool-result-body mx-2.5 mb-2">${resBody}${resImgs}</div></details>`;
     } else {
       resHtml = `<div class="tool-pending py-1.25 px-2.5 text-[10.5px] text-muted border-t border-border-custom">— ${esc(L('conv.noResult'))}</div>`;
     }

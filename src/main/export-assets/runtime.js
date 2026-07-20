@@ -82,7 +82,7 @@
   var USED = {}; // subagent keys embedded inline under their spawn tool
 
   var TOOL = {
-    Bash: ['⌘', 'exec'], Read: ['📖', 'read'], Edit: ['✏️', 'write'], MultiEdit: ['✏️', 'write'], Write: ['📝', 'write'], ApplyPatch: ['✏️', 'write'],
+    Bash: ['⌘', 'exec'], Script: ['📜', 'exec'], Read: ['📖', 'read'], Edit: ['✏️', 'write'], MultiEdit: ['✏️', 'write'], Write: ['📝', 'write'], ApplyPatch: ['✏️', 'write'],
     Grep: ['🔎', 'search'], Glob: ['🔎', 'search'], TodoWrite: ['✅', 'todo'], TaskCreate: ['✅', 'todo'], TaskUpdate: ['✅', 'todo'], TaskList: ['✅', 'todo'],
     Agent: ['🤖', 'agent'], Task: ['🤖', 'agent'], Workflow: ['🛠️', 'agent'], WebSearch: ['🌐', 'net'], WebFetch: ['🌐', 'net'], AskUserQuestion: ['❓', 'ask']
   };
@@ -114,6 +114,7 @@
     var label = /^mcp__/.test(name) ? ('MCP · ' + name.replace(/^mcp__/, '')) : name;
     var target = toolTarget(name, inp), body = '';
     if (name === 'Bash') body += '<pre class="code"><code>$ ' + esc(inp.command || '') + '</code></pre>';
+    else if (name === 'Script') body += codePre(inp.code || '', 'javascript');
     else if (name === 'ApplyPatch') body += codePre(inp.patch || '', 'diff');
     else if (name === 'Edit') body += diff(inp.old_string, inp.new_string);
     else if (name === 'MultiEdit') body += (Array.isArray(inp.edits) ? inp.edits : []).map(function (e) { return diff(e.old_string, e.new_string); }).join('');

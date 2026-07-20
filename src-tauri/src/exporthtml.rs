@@ -83,6 +83,10 @@ fn cap_content(content: &Value) -> Value {
                             let c = cap(p, CAP_CONTENT); // codex ApplyPatch envelopes can be huge
                             obj.insert("patch".into(), json!(c));
                         }
+                        if let Some(p) = obj.get("code").and_then(|v| v.as_str()) {
+                            let c = cap(p, CAP_CONTENT); // code-mode Script bodies
+                            obj.insert("code".into(), json!(c));
+                        }
                     }
                     json!({ "type": "tool_use", "id": b.get("id").cloned().unwrap_or(Value::Null), "name": b.get("name").cloned().unwrap_or(Value::Null), "input": input })
                 }

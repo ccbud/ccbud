@@ -203,6 +203,194 @@ fn map_tool(name: &str, args: &Value) -> (String, Value) {
     }
 }
 
+// ---- code-mode `exec` scripts (custom_tool_call name "exec") ----
+//
+// Codex code-mode (gpt-*-sol) emits one custom tool named `exec` whose input is JavaScript
+// calling `tools.*` (exec_command / write_stdin / …). The dominant shape by far is a single
+// `tools.exec_command({cmd, workdir, …})` plus print plumbing (`text(r.output);` and friends) —
+// semantically just a shell run, so it renders as the familiar Bash card (command + workdir).
+// Anything else (write_stdin, Promise.all batches, real orchestration code) keeps the whole
+// script as a `Script` card the renderer shows as highlighted JavaScript. Extraction is
+// conservative: any parse doubt falls back to the Script card, never to a wrong command.
+
+/// First `{…}` object literal at/after `from`, brace-matched with double-quoted strings (and
+/// their escapes) treated as opaque — shell commands are full of braces and quotes.
+fn extract_object(s: &str, from: usize) -> Option<(usize, usize)> {
+    let start = from + s[from..].find('{')?;
+    let (mut depth, mut in_str, mut esc) = (0i32, false, false);
+    for (i, &b) in s.as_bytes().iter().enumerate().skip(start) {
+        if in_str {
+            if esc {
+                esc = false;
+            } else if b == b'\\' {
+                esc = true;
+            } else if b == b'"' {
+                in_str = false;
+            }
+            continue;
+        }
+        match b {
+            b'"' => in_str = true,
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some((start, i));
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Quote bare JS object keys (`{cmd: …}` → `{"cmd": …}`) outside string context so serde can
+/// parse code-mode's object-literal arguments; double-quoted string contents pass verbatim.
+fn quote_js_keys(s: &str) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    let mut out = String::with_capacity(s.len() + 16);
+    let (mut in_str, mut esc) = (false, false);
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        if in_str {
+            if esc {
+                esc = false;
+            } else if c == '\\' {
+                esc = true;
+            } else if c == '"' {
+                in_str = false;
+            }
+            out.push(c);
+            i += 1;
+            continue;
+        }
+        if c == '"' {
+            in_str = true;
+            out.push(c);
+            i += 1;
+            continue;
+        }
+        if c == '{' || c == ',' {
+            out.push(c);
+            i += 1;
+            while i < chars.len() && chars[i].is_whitespace() {
+                out.push(chars[i]);
+                i += 1;
+            }
+            let start = i;
+            while i < chars.len() && (chars[i].is_ascii_alphanumeric() || chars[i] == '_' || chars[i] == '$') {
+                i += 1;
+            }
+            if i > start {
+                let mut j = i;
+                while j < chars.len() && chars[j].is_whitespace() {
+                    j += 1;
+                }
+                let ident: String = chars[start..i].iter().collect();
+                if j < chars.len() && chars[j] == ':' {
+                    out.push('"');
+                    out.push_str(&ident);
+                    out.push('"');
+                } else {
+                    out.push_str(&ident);
+                }
+            }
+            continue;
+        }
+        out.push(c);
+        i += 1;
+    }
+    out
+}
+
+/// The `{…}` argument of a tools.* call: strict JSON first (code-mode usually emits JSON),
+/// then a bare-key-quoted retry for JS object literals.
+fn parse_call_args(obj: &str) -> Option<Value> {
+    serde_json::from_str::<Value>(obj)
+        .ok()
+        .or_else(|| serde_json::from_str::<Value>(&quote_js_keys(obj)).ok())
+        .filter(|v| v.is_object())
+}
+
+/// Code-mode exec script → renderer tool card (see module comment above).
+fn map_exec_script(script: &str) -> (String, Value) {
+    let fallback = || ("Script".to_string(), json!({ "code": script }));
+    // exactly one tools.* call, and it must be exec_command (a cmd string that itself mentions
+    // "tools." trips the count — conservative fallback, never a wrong command)
+    if script.matches("tools.").count() != 1 {
+        return fallback();
+    }
+    let call = match script.find("tools.exec_command(") {
+        Some(i) => i,
+        None => return fallback(),
+    };
+    // prefix must be assignment/await plumbing only: `const r = await` / `let out = await` / `await`
+    let prefix: Vec<&str> = script[..call].split_whitespace().collect();
+    let prefix_ok = match prefix.as_slice() {
+        [] | ["await"] => true,
+        [kw, _name, "=", "await"] => matches!(*kw, "const" | "let" | "var"),
+        _ => false,
+    };
+    if !prefix_ok {
+        return fallback();
+    }
+    let after = call + "tools.exec_command(".len();
+    let (ostart, oend) = match extract_object(script, after) {
+        Some(span) => span,
+        None => return fallback(),
+    };
+    if !script[after..ostart].trim().is_empty() {
+        return fallback();
+    }
+    let args = match parse_call_args(&script[ostart..=oend]) {
+        Some(a) => a,
+        None => return fallback(),
+    };
+    let cmd = args
+        .get("cmd")
+        .or_else(|| args.get("command"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    if cmd.is_empty() {
+        return fallback();
+    }
+    // tail must close the call, then carry only print plumbing
+    let rest = script[oend + 1..].trim_start();
+    let rest = match rest.strip_prefix(')') {
+        Some(r) => r,
+        None => return fallback(),
+    };
+    let rest = rest.strip_prefix(';').unwrap_or(rest);
+    let plumbing = rest.lines().all(|l| {
+        let l = l.trim();
+        l.is_empty() || l.starts_with("text(") || l.starts_with("if (") || l.starts_with("//")
+    });
+    if !plumbing {
+        return fallback();
+    }
+    let mut input = json!({ "command": cmd });
+    if let Some(wd) = args.get("workdir").and_then(|v| v.as_str()) {
+        if !wd.is_empty() {
+            input["description"] = json!(wd);
+        }
+    }
+    ("Bash".into(), input)
+}
+
+/// Error heuristic for code-mode exec output text: the runner's own status header
+/// ("Script failed…" / "Exit code: N…").
+fn exec_text_err(text: &str) -> bool {
+    if text.starts_with("Script failed") {
+        return true;
+    }
+    if let Some(rest) = text.strip_prefix("Exit code: ") {
+        let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+        return digits.parse::<i64>().map(|c| c != 0).unwrap_or(false);
+    }
+    false
+}
+
 /// Tool output payload → (display text, is_error). Unwraps codex's JSON-wrapped shell output
 /// ({"output","metadata":{exit_code}}) and reads exec_command's "exited with code N" header.
 fn shape_output(out: &Value) -> (String, bool) {
@@ -232,6 +420,11 @@ fn shape_output(out: &Value) -> (String, bool) {
                 return (c.to_string(), err);
             }
         }
+    }
+    // code-mode runner header (older builds wrote it as a plain string): "Exit code: N…" /
+    // "Script failed…"
+    if exec_text_err(&s) {
+        return (s, true);
     }
     // exec_command header: "…\nProcess exited with code N\n…" near the top
     let head: String = s.chars().take(240).collect();
@@ -446,6 +639,8 @@ pub fn normalize(recs: &[Value]) -> Norm {
                         let input_s = p.get("input").and_then(|v| v.as_str()).unwrap_or("");
                         let (tname, input) = if name == "apply_patch" {
                             ("ApplyPatch".to_string(), json!({ "patch": input_s }))
+                        } else if name == "exec" {
+                            map_exec_script(input_s)
                         } else {
                             (name.to_string(), json!({ "input": input_s }))
                         };
@@ -464,9 +659,40 @@ pub fn normalize(recs: &[Value]) -> Norm {
                         messages.push(with_ts(m));
                     }
                     "function_call_output" | "custom_tool_call_output" => {
-                        let (text, err) = shape_output(p.get("output").unwrap_or(&Value::Null));
+                        let out = p.get("output").cloned().unwrap_or(Value::Null);
                         let id = p.get("call_id").and_then(|v| v.as_str()).unwrap_or("");
-                        let mut tr = json!({ "type": "tool_result", "tool_use_id": id, "content": text });
+                        // Newer code-mode outputs are block ARRAYS — {input_text} chunks (status
+                        // header + stdout, concatenated verbatim) plus optional {input_image}
+                        // screenshots, which become renderer image blocks.
+                        let (content, err) = if let Some(arr) = out.as_array() {
+                            let text: String = arr
+                                .iter()
+                                .filter(|b| {
+                                    matches!(
+                                        b.get("type").and_then(|t| t.as_str()),
+                                        Some("input_text") | Some("output_text") | Some("text")
+                                    )
+                                })
+                                .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
+                                .collect();
+                            let images: Vec<Value> = arr
+                                .iter()
+                                .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("input_image"))
+                                .filter_map(|b| b.get("image_url").and_then(|u| u.as_str()).and_then(image_block))
+                                .collect();
+                            let err = exec_text_err(&text);
+                            if images.is_empty() {
+                                (json!(text), err)
+                            } else {
+                                let mut blocks = vec![json!({ "type": "text", "text": text })];
+                                blocks.extend(images);
+                                (Value::Array(blocks), err)
+                            }
+                        } else {
+                            let (text, err) = shape_output(&out);
+                            (json!(text), err)
+                        };
+                        let mut tr = json!({ "type": "tool_result", "tool_use_id": id, "content": content });
                         if err {
                             tr["is_error"] = json!(true);
                         }
@@ -857,5 +1083,70 @@ mod tests {
         assert_eq!(n.messages[0]["content"][0]["name"], "WebSearch");
         assert_eq!(n.messages[0]["content"][0]["input"]["query"], "rust serde");
         assert!(n.messages[1]["content"][0]["text"].as_str().unwrap().starts_with("[Request interrupted"));
+    }
+
+    #[test]
+    fn maps_code_mode_exec_scripts() {
+        // canonical single exec_command + print plumbing → Bash card (command + workdir)
+        let (n, i) = map_exec_script(
+            "const r = await tools.exec_command({\"cmd\":\"ls -la\",\"workdir\":\"/tmp/p\",\"yield_time_ms\":10000,\"max_output_tokens\":30000});\ntext(r.output);",
+        );
+        assert_eq!(n, "Bash");
+        assert_eq!(i["command"], "ls -la");
+        assert_eq!(i["description"], "/tmp/p");
+        // bare JS object keys (code-mode literal) parse via the quoting retry; braces/quotes
+        // inside the command string stay opaque
+        let (n, i) = map_exec_script(
+            "const r = await tools.exec_command({cmd:\"awk '{print: $1}' a.txt\",workdir:\"/w\"});\ntext(JSON.stringify(r));",
+        );
+        assert_eq!(n, "Bash");
+        assert_eq!(i["command"], "awk '{print: $1}' a.txt");
+        // SESSION_ID echo tail is still plumbing
+        let (n, _) = map_exec_script(
+            "const r = await tools.exec_command({\"cmd\":\"sleep 1\"});\ntext(r.output);\nif (r.session_id) text(`SESSION_ID=${r.session_id}`);",
+        );
+        assert_eq!(n, "Bash");
+        // write_stdin / multi-call orchestration keep the script verbatim
+        let (n, i) = map_exec_script("const r = await tools.write_stdin({\"session_id\":40352,\"chars\":\"\"});\ntext(r.output);");
+        assert_eq!(n, "Script");
+        assert!(i["code"].as_str().unwrap().contains("write_stdin"));
+        let (n, _) = map_exec_script(
+            "const a = await Promise.all([tools.exec_command({\"cmd\":\"x\"}), tools.exec_command({\"cmd\":\"y\"})]);\ntext(a.map(r => r.output).join());",
+        );
+        assert_eq!(n, "Script");
+    }
+
+    #[test]
+    fn shapes_code_mode_block_array_outputs() {
+        let recs = vec![
+            json!({ "type": "custom_tool_call", "name": "exec", "call_id": "c1",
+                    "input": "const r = await tools.exec_command({\"cmd\":\"ls\"});\ntext(r.output);" }),
+            json!({ "type": "custom_tool_call_output", "call_id": "c1", "output": [
+                { "type": "input_text", "text": "Script completed\nWall time 0.1 seconds\nOutput:\n" },
+                { "type": "input_text", "text": "a.txt\n" },
+                { "type": "input_image", "image_url": "data:image/png;base64,QUJD", "detail": "high" }
+            ] }),
+            json!({ "type": "custom_tool_call", "name": "exec", "call_id": "c2",
+                    "input": "const r = await tools.exec_command({\"cmd\":\"boom\"});\ntext(r.output);" }),
+            json!({ "type": "custom_tool_call_output", "call_id": "c2", "output": [
+                { "type": "input_text", "text": "Script failed\nWall time 0.0 seconds\nOutput:\nerr" }
+            ] }),
+        ];
+        let n = normalize(&recs);
+        assert_eq!(n.messages.len(), 4);
+        let tu = &n.messages[0]["content"][0];
+        assert_eq!(tu["name"], "Bash");
+        assert_eq!(tu["input"]["command"], "ls");
+        // text chunks concatenate VERBATIM (no injected separators); screenshot rides along
+        let tr = &n.messages[1]["content"][0];
+        assert_eq!(tr["tool_use_id"], "c1");
+        assert_eq!(tr["content"][0]["text"], "Script completed\nWall time 0.1 seconds\nOutput:\na.txt\n");
+        assert_eq!(tr["content"][1]["type"], "image");
+        assert_eq!(tr["content"][1]["source"]["data"], "QUJD");
+        assert!(tr.get("is_error").is_none());
+        // "Script failed" header marks the result as an error; plain-text output stays a string
+        let tr2 = &n.messages[3]["content"][0];
+        assert_eq!(tr2["content"].as_str().unwrap(), "Script failed\nWall time 0.0 seconds\nOutput:\nerr");
+        assert_eq!(tr2["is_error"], true);
     }
 }
