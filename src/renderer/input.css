@@ -1876,7 +1876,7 @@ body {
 .conv-detail table {
   border-collapse: collapse;
   margin: 10px 0;
-  font-size: 12.5px;
+  font-size: calc(12.5px * var(--conv-fs, 1));
   display: block;            /* scroll wide tables instead of overflowing the message column */
   width: fit-content;
   max-width: 100%;
@@ -1925,7 +1925,7 @@ body {
 }
 
 .msg-role {
-  font-size: 10px;
+  font-size: calc(10px * var(--conv-fs, 1));
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.05em;
@@ -1960,19 +1960,26 @@ body {
   text-transform: none;
 }
 
-.msg-body { font-size: 13px; line-height: 1.58; }
+/* 会话正文字号 (设置 › 常规 › 会话): --conv-fs is a scale factor set on :root by the renderer
+   (13px body == 1, absent == default). Every reading-surface size in the message timeline
+   multiplies by it, so 大/特大/自定义 scale the whole log proportionally — layout stays real px
+   (no zoom), keeping the scroll/anchor math exact. */
+.msg-body { font-size: calc(13px * var(--conv-fs, 1)); line-height: 1.58; }
 
 .blk-text p { margin-bottom: 8px; }
 .blk-text p:last-child { margin-bottom: 0; }
-.blk-text h1, .blk-text h2, .blk-text h3 { font-size: 14px; font-weight: 700; margin: 14px 0 6px; }
+.blk-text h1, .blk-text h2, .blk-text h3 { font-size: calc(14px * var(--conv-fs, 1)); font-weight: 700; margin: 14px 0 6px; }
 .blk-text ul, .blk-text ol { margin: 6px 0; padding-left: 18px; }
-.blk-text code { font-family: var(--mono); font-size: 11px; background: var(--chip-bg); padding: 1px 4px; border-radius: 3px; }
+.blk-text code { font-family: var(--mono); font-size: calc(11px * var(--conv-fs, 1)); background: var(--chip-bg); padding: 1px 4px; border-radius: 3px; }
 .blk-text pre { margin: 8px 0; }
+
+/* The settings-page live preview reads the same var, so it always matches the real timeline. */
+.conv-font-preview-text { font-size: calc(13px * var(--conv-fs, 1)); line-height: 1.58; color: var(--fg); }
 
 .msg-img { max-width: 300px; border-radius: 8px; border: 1px solid var(--border); margin: 4px 0; }
 
 .img-redacted {
-  font-size: 11px;
+  font-size: calc(11px * var(--conv-fs, 1));
   color: var(--muted);
   padding: 7px 9px;
   background: var(--chip-bg);
@@ -1988,7 +1995,7 @@ body {
 }
 
 .turn-meta span {
-  font-size: 9.5px;
+  font-size: calc(9.5px * var(--conv-fs, 1));
   font-family: var(--mono);
   color: var(--caption);
   background: var(--chip-bg);
@@ -2056,7 +2063,7 @@ pre.cb-has-gutter > code { flex: 1 1 auto; min-width: 0; overflow-x: auto; paddi
   background: var(--bg-elev);
   border: 1px solid var(--border);
   border-radius: 8px;
-  font-size: 12.5px;
+  font-size: calc(12.5px * var(--conv-fs, 1));
   line-height: 1.6;
   overflow-x: auto;
 }
@@ -2074,6 +2081,11 @@ pre.cb-has-gutter > code { flex: 1 1 auto; min-width: 0; overflow-x: auto; paddi
   border-color: var(--border);
 }
 
+/* Code blocks in the timeline follow the 会话正文字号 factor too — `pre` is global (drawer,
+   settings export block keep their own sizes), so the scale is scoped to .conv-detail. */
+.conv-detail pre { font-size: calc(11px * var(--conv-fs, 1)); }
+.conv-detail pre.cb { font-size: calc(11.5px * var(--conv-fs, 1)); }
+
 .thinking {
   background: rgba(255, 159, 10, 0.04);
   border: 1px solid rgba(255, 159, 10, 0.12);
@@ -2084,7 +2096,7 @@ pre.cb-has-gutter > code { flex: 1 1 auto; min-width: 0; overflow-x: auto; paddi
 .thinking summary {
   padding: 7px 10px;
   cursor: pointer;
-  font-size: 11px;
+  font-size: calc(11px * var(--conv-fs, 1));
   font-weight: 500;
   color: var(--amber-text);
   outline: none;
@@ -2092,7 +2104,7 @@ pre.cb-has-gutter > code { flex: 1 1 auto; min-width: 0; overflow-x: auto; paddi
 
 .thinking-body {
   padding: 0 10px 8px;
-  font-size: 11.5px;
+  font-size: calc(11.5px * var(--conv-fs, 1));
   color: var(--muted);
   line-height: 1.48;
   border-top: 1px solid rgba(255, 159, 10, 0.08);
@@ -2142,24 +2154,24 @@ pre.cb-has-gutter > code { flex: 1 1 auto; min-width: 0; overflow-x: auto; paddi
   padding: 7px 10px;
   background: var(--chip-bg);
   border-bottom: 1px solid var(--border);
-  font-size: 11px;
+  font-size: calc(11px * var(--conv-fs, 1));
   font-weight: 600;
 }
 
-.tool-icon { font-size: 11px; }
+.tool-icon { font-size: calc(11px * var(--conv-fs, 1)); }
 .tool-name { font-family: var(--mono); font-weight: 600; }
 .tool-input { padding: 8px 10px; }
 .tool-input pre { margin: 0; }
 
 .tool-result { border-top: 1px solid var(--border); }
-.tool-result summary { padding: 5px 10px; cursor: pointer; font-size: 10.5px; font-weight: 600; color: var(--green-text); outline: none; }
+.tool-result summary { padding: 5px 10px; cursor: pointer; font-size: calc(10.5px * var(--conv-fs, 1)); font-weight: 600; color: var(--green-text); outline: none; }
 .tool-result.err summary { color: var(--red-text); }
 .tool-result pre { margin: 0 10px 8px; }
-.tool-pending { padding: 5px 10px; font-size: 10.5px; color: var(--muted); border-top: 1px solid var(--border); }
+.tool-pending { padding: 5px 10px; font-size: calc(10.5px * var(--conv-fs, 1)); color: var(--muted); border-top: 1px solid var(--border); }
 
 .diff {
   font-family: var(--mono);
-  font-size: 10.5px;
+  font-size: calc(10.5px * var(--conv-fs, 1));
   border-radius: 5px;
   overflow: hidden;
   border: 1px solid var(--border);
@@ -2170,7 +2182,7 @@ pre.cb-has-gutter > code { flex: 1 1 auto; min-width: 0; overflow-x: auto; paddi
 .d-add { background: var(--green-soft); color: var(--green-text); padding: 2px 7px; white-space: pre-wrap; }
 
 .todos { display: flex; flex-direction: column; gap: 2px; margin-top: 3px; }
-.todo { font-size: 11.5px; display: flex; gap: 7px; }
+.todo { font-size: calc(11.5px * var(--conv-fs, 1)); display: flex; gap: 7px; }
 .todo.completed { color: var(--muted); text-decoration: line-through; }
 .todo.in_progress { color: var(--primary); font-weight: 600; }
 .todo-box { width: 13px; }

@@ -581,6 +581,9 @@
   .w-\[52px\] {
     width: 52px;
   }
+  .w-\[56px\] {
+    width: 56px;
+  }
   .w-\[72px\] {
     width: 72px;
   }
@@ -829,6 +832,9 @@
   }
   .gap-y-2 {
     row-gap: calc(var(--spacing) * 2);
+  }
+  .gap-y-3 {
+    row-gap: calc(var(--spacing) * 3);
   }
   .gap-y-4 {
     row-gap: calc(var(--spacing) * 4);
@@ -4832,7 +4838,7 @@ body {
 .conv-detail table {
   border-collapse: collapse;
   margin: 10px 0;
-  font-size: 12.5px;
+  font-size: calc(12.5px * var(--conv-fs, 1));
   display: block;
   width: fit-content;
   max-width: 100%;
@@ -4890,7 +4896,7 @@ body {
   animation: panelIn 0.18s var(--ease);
 }
 .msg-role {
-  font-size: 10px;
+  font-size: calc(10px * var(--conv-fs, 1));
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.05em;
@@ -4923,7 +4929,7 @@ body {
   text-transform: none;
 }
 .msg-body {
-  font-size: 13px;
+  font-size: calc(13px * var(--conv-fs, 1));
   line-height: 1.58;
 }
 .blk-text p {
@@ -4933,7 +4939,7 @@ body {
   margin-bottom: 0;
 }
 .blk-text h1, .blk-text h2, .blk-text h3 {
-  font-size: 14px;
+  font-size: calc(14px * var(--conv-fs, 1));
   font-weight: 700;
   margin: 14px 0 6px;
 }
@@ -4943,13 +4949,18 @@ body {
 }
 .blk-text code {
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: calc(11px * var(--conv-fs, 1));
   background: var(--chip-bg);
   padding: 1px 4px;
   border-radius: 3px;
 }
 .blk-text pre {
   margin: 8px 0;
+}
+.conv-font-preview-text {
+  font-size: calc(13px * var(--conv-fs, 1));
+  line-height: 1.58;
+  color: var(--fg);
 }
 .msg-img {
   max-width: 300px;
@@ -4958,7 +4969,7 @@ body {
   margin: 4px 0;
 }
 .img-redacted {
-  font-size: 11px;
+  font-size: calc(11px * var(--conv-fs, 1));
   color: var(--muted);
   padding: 7px 9px;
   background: var(--chip-bg);
@@ -4972,7 +4983,7 @@ body {
   margin-top: 6px;
 }
 .turn-meta span {
-  font-size: 9.5px;
+  font-size: calc(9.5px * var(--conv-fs, 1));
   font-family: var(--mono);
   color: var(--caption);
   background: var(--chip-bg);
@@ -5076,7 +5087,7 @@ pre.cb-has-gutter > code {
   background: var(--bg-elev);
   border: 1px solid var(--border);
   border-radius: 8px;
-  font-size: 12.5px;
+  font-size: calc(12.5px * var(--conv-fs, 1));
   line-height: 1.6;
   overflow-x: auto;
 }
@@ -5091,6 +5102,12 @@ pre.cb-has-gutter > code {
   color: #24292e;
   border-color: var(--border);
 }
+.conv-detail pre {
+  font-size: calc(11px * var(--conv-fs, 1));
+}
+.conv-detail pre.cb {
+  font-size: calc(11.5px * var(--conv-fs, 1));
+}
 .thinking {
   background: rgba(255, 159, 10, 0.04);
   border: 1px solid rgba(255, 159, 10, 0.12);
@@ -5100,14 +5117,14 @@ pre.cb-has-gutter > code {
 .thinking summary {
   padding: 7px 10px;
   cursor: pointer;
-  font-size: 11px;
+  font-size: calc(11px * var(--conv-fs, 1));
   font-weight: 500;
   color: var(--amber-text);
   outline: none;
 }
 .thinking-body {
   padding: 0 10px 8px;
-  font-size: 11.5px;
+  font-size: calc(11.5px * var(--conv-fs, 1));
   color: var(--muted);
   line-height: 1.48;
   border-top: 1px solid rgba(255, 159, 10, 0.08);
@@ -5180,11 +5197,11 @@ pre.cb-has-gutter > code {
   padding: 7px 10px;
   background: var(--chip-bg);
   border-bottom: 1px solid var(--border);
-  font-size: 11px;
+  font-size: calc(11px * var(--conv-fs, 1));
   font-weight: 600;
 }
 .tool-icon {
-  font-size: 11px;
+  font-size: calc(11px * var(--conv-fs, 1));
 }
 .tool-name {
   font-family: var(--mono);
@@ -5202,7 +5219,7 @@ pre.cb-has-gutter > code {
 .tool-result summary {
   padding: 5px 10px;
   cursor: pointer;
-  font-size: 10.5px;
+  font-size: calc(10.5px * var(--conv-fs, 1));
   font-weight: 600;
   color: var(--green-text);
   outline: none;
@@ -5215,13 +5232,13 @@ pre.cb-has-gutter > code {
 }
 .tool-pending {
   padding: 5px 10px;
-  font-size: 10.5px;
+  font-size: calc(10.5px * var(--conv-fs, 1));
   color: var(--muted);
   border-top: 1px solid var(--border);
 }
 .diff {
   font-family: var(--mono);
-  font-size: 10.5px;
+  font-size: calc(10.5px * var(--conv-fs, 1));
   border-radius: 5px;
   overflow: hidden;
   border: 1px solid var(--border);
@@ -5246,7 +5263,7 @@ pre.cb-has-gutter > code {
   margin-top: 3px;
 }
 .todo {
-  font-size: 11.5px;
+  font-size: calc(11.5px * var(--conv-fs, 1));
   display: flex;
   gap: 7px;
 }
