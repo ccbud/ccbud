@@ -112,7 +112,7 @@
     'settings.convFontLarge': 'Large',
     'settings.convFontXlarge': 'X-Large',
     'settings.convFontCustom': 'Custom',
-    'settings.convFontPreview': 'Message text will render at this size — fix the login bug and add tests.',
+    'settings.convFontPreview': 'Message text will render at this size — The quick brown fox jumps over the lazy dog.',
     'err.noProvider': 'Add and select a service first.',
     'settings.copy': 'Copy',
     'settings.port': 'Port',
@@ -549,7 +549,7 @@
     'settings.convFontLarge': '大',
     'settings.convFontXlarge': '特大',
     'settings.convFontCustom': '自定义',
-    'settings.convFontPreview': '会话正文将以这个大小显示 — 修复登录问题并补充测试。',
+    'settings.convFontPreview': '会话正文将以这个大小显示 — 这是一段用于预览的示例文字。',
     'err.noProvider': '请先添加并选择一个服务。',
     'settings.copy': '复制',
     'settings.port': '端口',
@@ -1319,7 +1319,7 @@
     'settings.convFontLarge': '大',
     'settings.convFontXlarge': '特大',
     'settings.convFontCustom': '自訂',
-    'settings.convFontPreview': '會話內文將以這個大小顯示 — 修復登入問題並補充測試。',
+    'settings.convFontPreview': '會話內文將以這個大小顯示 — 這是一段用於預覽的範例文字。',
     'err.noProvider': '請先新增並選擇一個服務。',
   };
 
@@ -1756,7 +1756,7 @@
     'settings.convFontLarge': '大',
     'settings.convFontXlarge': '特大',
     'settings.convFontCustom': 'カスタム',
-    'settings.convFontPreview': 'セッション本文はこのサイズで表示されます — ログインの不具合を修正しテストを追加。',
+    'settings.convFontPreview': 'セッション本文はこのサイズで表示されます — これはプレビュー用のサンプルテキストです。',
     'err.noProvider': '先にサービスを追加して選択してください。',
   };
 
@@ -2193,7 +2193,7 @@
     'settings.convFontLarge': '크게',
     'settings.convFontXlarge': '아주 크게',
     'settings.convFontCustom': '사용자 지정',
-    'settings.convFontPreview': '세션 본문이 이 크기로 표시됩니다 — 로그인 버그를 수정하고 테스트를 추가.',
+    'settings.convFontPreview': '세션 본문이 이 크기로 표시됩니다 — 미리보기용 샘플 텍스트입니다.',
     'err.noProvider': '먼저 서비스를 추가하고 선택하세요.',
   };
 
