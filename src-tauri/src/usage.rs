@@ -464,6 +464,13 @@ fn codex_files(root: &Path) -> Vec<PathBuf> {
         collect_jsonl(&dir, 0, &mut files);
         files.sort();
         for f in files {
+            // Grok Build shares the sessions/ root but keys children by percent-encoded cwd
+            // (`%2FUsers%2F…/<uuid>/chat_history.jsonl` + events/updates sidecar jsonl). Those
+            // must never hit the Codex token parser — wasteful and would mix formats if a line
+            // ever looked like a token_count event. Skip any path under a Grok-encoded dir.
+            if f.components().any(|c| crate::grok::is_cwd_dir_name(&c.as_os_str().to_string_lossy())) {
+                continue;
+            }
             let rel = f.strip_prefix(&dir).map(|p| p.to_path_buf()).unwrap_or_else(|_| f.clone());
             if seen_rel.insert(rel) {
                 out.push(f);

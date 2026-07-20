@@ -25,14 +25,13 @@ use tokio::sync::{oneshot, Mutex};
 use crate::protocol::codex_history::{HistoryResolution, ResponseOrigin};
 use crate::store;
 
-/// Default Claude tier models ccbud advertises to Claude-family clients (Claude Code,
-/// Claude Desktop). Second field is the Claude Desktop `anthropicFamilyTier` keyword.
-pub const CLAUDE_TIER_MODELS: &[(&str, &str)] = &[
-    ("claude-fable-5", "opus"),
-    ("claude-opus-4-8", "opus"),
-    ("claude-sonnet-5", "sonnet"),
-    ("claude-haiku-4-5", "haiku"),
-    ("claude-haiku-4-5-20251001", "haiku"),
+/// Default Claude tier models ccbud advertises to Claude-family clients (Claude Code).
+pub const CLAUDE_TIER_MODELS: &[&str] = &[
+    "claude-fable-5",
+    "claude-opus-4-8",
+    "claude-sonnet-5",
+    "claude-haiku-4-5",
+    "claude-haiku-4-5-20251001",
 ];
 
 /// Stable Codex model identities advertised by the gateway. These names are understood by the
@@ -1117,7 +1116,7 @@ fn tier_entries(is_codex: bool) -> Vec<Value> {
     if is_codex {
         CODEX_TIER_MODELS.iter().map(|n| model_entry(n)).collect()
     } else {
-        CLAUDE_TIER_MODELS.iter().map(|(n, _)| model_entry(n)).collect()
+        CLAUDE_TIER_MODELS.iter().map(|n| model_entry(n)).collect()
     }
 }
 fn merge_models(upstream: &Value, config: &Value, is_codex: bool) -> Value {

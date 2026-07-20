@@ -249,7 +249,7 @@ async function toggleTarget(target, on) {
   try { res = await api.setConnectTarget(target, on); } catch (_) { res = null; }
   if (res && res.ok === false) {
     // couldn't turn on (no provider / port) → revert the switch + surface the reason
-    const msg = res.reason === 'noProvider' ? I18n.t('settings.desktopNoProvider') : (res.message || I18n.t('err.opFailed'));
+    const msg = res.reason === 'noProvider' ? I18n.t('err.noProvider') : (res.message || I18n.t('err.opFailed'));
     try { showHeroNote(msg, true); } catch (_) {}
     const el = target === 'codex' ? $('fTargetCodex') : $('fTargetClaude');
     if (el) el.checked = !on;
@@ -288,51 +288,48 @@ function renderConnect() {
   if (status.lastStartError) { se.textContent = status.lastStartError; se.classList.remove('hidden'); }
   else se.classList.add('hidden');
   renderHistoryDirs();
-  renderDesktopCard();
+  applyConvFont();
+  renderConvFontControl();
 }
 
-/* ---------- Claude Desktop ("Third-Party Inference") integration ---------- */
-async function renderDesktopCard() {
-  const card = $('desktopCard');
-  if (!card || !api.desktopStatus) return;
-  let st;
-  try { st = await api.desktopStatus(); } catch (_) { return; }
-  const chip = $('desktopStatusChip');
-  const btn = $('btnDesktopConnect');
-  const note = $('desktopNote');
-  if (!chip || !btn || !note) return;
-  chip.className = 'desktop-chip text-[10.5px] font-semibold rounded-full px-2 py-0.25 ' + (st.connected ? 'bg-green-soft text-green' : 'bg-chip-bg text-muted');
-  if (!st.supported || !st.installed) {
-    card.classList.add('opacity-60');
-    btn.disabled = true;
-    btn.dataset.connected = '';
-    btn.textContent = I18n.t('settings.desktopConnect');
-    chip.textContent = I18n.t(st.supported ? 'settings.desktopNotInstalled' : 'settings.desktopUnsupported');
-    delete note.dataset.transient;
-    note.textContent = I18n.t(st.supported ? 'settings.desktopNote' : 'settings.desktopUnsupportedNote');
-    return;
-  }
-  card.classList.remove('opacity-60');
-  btn.disabled = false;
-  btn.dataset.connected = st.connected ? '1' : '';
-  btn.textContent = I18n.t(st.connected ? 'settings.desktopRestore' : 'settings.desktopConnect');
-  chip.textContent = I18n.t(st.connected ? 'settings.desktopConnected' : 'settings.desktopDisconnected');
-  // The post-action guidance (steps / restored) is marked transient so a status re-render
-  // doesn't wipe it before the user has gone to System Settings.
-  if (st.connected) { delete note.dataset.transient; note.textContent = I18n.t('settings.desktopConnectedNote'); }
-  else if (!note.dataset.transient) { note.textContent = I18n.t('settings.desktopNote'); }
-}
+/* ---------- 会话正文字号 (Sessions message text size) ---------- */
+// The 对话 message timeline scales through one root CSS var (--conv-fs, a factor of the 13px
+// base — see input.css). Persisted as config.convFontPx: absent/13 = default, 15 = 大,
+// 17 = 特大, anything else = custom.
+const CONV_FONT_BASE = 13;
+const CONV_FONT_PRESETS = { large: 15, xlarge: 17 };
+const CONV_FONT_MIN = 10, CONV_FONT_MAX = 24;
+let convFontCustomOpen = false; // 自定义 clicked but value not (yet) diverging from a preset
 
-// The Claude Desktop status is read from the installed system profile (not a live event), so
-// poll lightly while the Settings view is open — picks up an install/removal within a few seconds.
-let desktopPollTimer = null;
-function startDesktopPoll() {
-  stopDesktopPoll();
-  renderDesktopCard();
-  desktopPollTimer = setInterval(() => { renderDesktopCard(); }, 4000);
+function convFontPx() {
+  const v = config.convFontPx;
+  const n = Number(v);
+  if (v == null || v === '' || !Number.isFinite(n) || n <= 0) return CONV_FONT_BASE;
+  return Math.min(CONV_FONT_MAX, Math.max(CONV_FONT_MIN, Math.round(n)));
 }
-function stopDesktopPoll() {
-  if (desktopPollTimer) { clearInterval(desktopPollTimer); desktopPollTimer = null; }
+function applyConvFont() {
+  const px = convFontPx();
+  if (px === CONV_FONT_BASE) document.documentElement.style.removeProperty('--conv-fs');
+  else document.documentElement.style.setProperty('--conv-fs', String(px / CONV_FONT_BASE));
+}
+function convFontMode(px) {
+  if (convFontCustomOpen) return 'custom';
+  if (px === CONV_FONT_PRESETS.large) return 'large';
+  if (px === CONV_FONT_PRESETS.xlarge) return 'xlarge';
+  return px === CONV_FONT_BASE ? 'default' : 'custom';
+}
+function renderConvFontControl() {
+  const seg = $('fConvFontSeg');
+  if (!seg) return;
+  const px = convFontPx();
+  const mode = convFontMode(px);
+  seg.querySelectorAll('.seg-btn').forEach((b) => b.classList.toggle('active', b.dataset.cfs === mode));
+  const row = $('convFontCustomRow');
+  if (row) row.classList.toggle('hidden', mode !== 'custom');
+  const input = $('fConvFontPx');
+  if (input && document.activeElement !== input) input.value = px;
+  const chip = $('convFontPreviewPx');
+  if (chip) chip.textContent = px + 'px';
 }
 
 async function renderHistoryDirs() {
@@ -1378,7 +1375,6 @@ function switchView(view) {
     if (view === 'conversations' && window.ccbudConversations) window.ccbudConversations.onShow();
     if (view === 'plugins') loadPlugins();
     if (view === 'monitor') refreshGatewayLog();
-    if (view === 'settings') startDesktopPoll(); else stopDesktopPoll();
     // Lock the window to a fixed, non-resizable size on Settings; restore it elsewhere.
     if (api.setSettingsMode) api.setSettingsMode(view === 'settings');
     // 对话 needs the wide 3-column layout (min 1300); other views can be narrower (900) so a wide
@@ -1453,7 +1449,6 @@ function switchSettings(pane) {
   const panes = $('settingsPanes');
   if (panes) panes.querySelectorAll('[data-pane]').forEach((p) => p.classList.toggle('hidden', p.dataset.pane !== pane));
   // Refresh the live cards the moment their section is revealed.
-  if (pane === 'desktop') renderDesktopCard();
   if (pane === 'about') loadUpdateState();
 }
 
@@ -1591,42 +1586,36 @@ function bind() {
     await persist({ historyDirs: dirs.length ? dirs : ['~/.claude'] });
   });
 
-  const btnDesktop = $('btnDesktopConnect');
-  if (btnDesktop) btnDesktop.addEventListener('click', async () => {
-    const note = $('desktopNote');
-    const wasConnected = btnDesktop.dataset.connected === '1';
-    btnDesktop.disabled = true;
-    btnDesktop.textContent = I18n.t(wasConnected ? 'settings.desktopRestoring' : 'settings.desktopConnecting');
-    let res;
-    try { res = wasConnected ? await api.desktopDisconnect() : await api.desktopConnect(); }
-    catch (e) { res = { ok: false, message: (e && e.message) || '' }; }
-    if (note) {
-      note.dataset.transient = '1';
-      if (wasConnected) {
-        if (res && res.cancelled) { delete note.dataset.transient; }
-        else note.textContent = I18n.t(res && res.removed ? 'settings.desktopRestored' : 'settings.desktopRestoreSteps');
-      } else if (res && res.ok) {
-        note.textContent = I18n.t('settings.desktopSteps');
-      } else {
-        const reason = res && res.reason;
-        note.textContent = reason === 'noProvider' ? I18n.t('settings.desktopNoProvider')
-          : reason === 'notInstalled' ? I18n.t('settings.desktopNotInstalled')
-          : (res && res.message) || I18n.t('err.opFailed');
-        delete note.dataset.transient;
-      }
+  // 会话正文字号: preset segments persist directly; 自定义 opens the px input (which persists
+  // on change). The preview + open Sessions view update live through the --conv-fs root var.
+  const convFontSeg = $('fConvFontSeg');
+  if (convFontSeg) convFontSeg.addEventListener('click', (e) => {
+    const b = e.target.closest('.seg-btn');
+    if (!b) return;
+    const mode = b.dataset.cfs;
+    if (mode === 'custom') {
+      convFontCustomOpen = true;
+      renderConvFontControl();
+      const input = $('fConvFontPx');
+      if (input) { input.focus(); input.select(); }
+      return;
     }
-    btnDesktop.disabled = false;
-    setTimeout(renderDesktopCard, 1800);
+    convFontCustomOpen = false;
+    const px = mode === 'large' ? CONV_FONT_PRESETS.large : mode === 'xlarge' ? CONV_FONT_PRESETS.xlarge : CONV_FONT_BASE;
+    persist({ convFontPx: px === CONV_FONT_BASE ? null : px });
   });
-  const btnDesktopRefresh = $('btnDesktopRefresh');
-  if (btnDesktopRefresh) btnDesktopRefresh.addEventListener('click', () => {
-    const n = $('desktopNote');
-    if (n) delete n.dataset.transient; // show the true current state, not a lingering action note
-    renderDesktopCard();
-  });
-  // Re-check the moment the window regains focus (e.g. right after approving in System Settings),
-  // in case the background poll was throttled while ccbud was in the background.
-  window.addEventListener('focus', () => { if (desktopPollTimer) { renderDesktopCard(); } });
+  const fConvFontPx = $('fConvFontPx');
+  if (fConvFontPx) {
+    const commit = () => {
+      const n = Math.round(Number(fConvFontPx.value));
+      if (!Number.isFinite(n)) { fConvFontPx.value = convFontPx(); return; }
+      const px = Math.min(CONV_FONT_MAX, Math.max(CONV_FONT_MIN, n));
+      fConvFontPx.value = px;
+      persist({ convFontPx: px === CONV_FONT_BASE ? null : px });
+    };
+    fConvFontPx.addEventListener('change', commit);
+    fConvFontPx.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); commit(); } });
+  }
 
   $('btnAdd').addEventListener('click', () => openModal(null));
   const btnAddEmpty = $('btnAddEmpty');

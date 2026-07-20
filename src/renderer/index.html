@@ -179,10 +179,6 @@
                 <span class="w-4 h-4 flex items-center justify-center opacity-80 [.active_&]:opacity-100" data-icon="gateway"></span>
                 <span class="settings-subnav-label" data-i18n="settings.nav.gateway">网关</span>
               </button>
-              <button type="button" data-settings="desktop" class="settings-subnav-item flex items-center gap-2.5 w-full px-2.5 py-2 rounded-[9px] border-none bg-transparent text-muted font-medium text-[13px] leading-tight cursor-pointer text-left transition-all duration-150 hover:bg-chip-bg hover:text-fg active:scale-[0.985] [&.active]:bg-brand-soft [&.active]:text-brand [&.active]:font-semibold">
-                <span class="w-4 h-4 flex items-center justify-center opacity-80 [.active_&]:opacity-100" data-icon="desktop"></span>
-                <span class="settings-subnav-label" data-i18n="settings.nav.desktop">桌面版</span>
-              </button>
               <button type="button" data-settings="general" class="settings-subnav-item flex items-center gap-2.5 w-full px-2.5 py-2 rounded-[9px] border-none bg-transparent text-muted font-medium text-[13px] leading-tight cursor-pointer text-left transition-all duration-150 hover:bg-chip-bg hover:text-fg active:scale-[0.985] [&.active]:bg-brand-soft [&.active]:text-brand [&.active]:font-semibold">
                 <span class="w-4 h-4 flex items-center justify-center opacity-80 [.active_&]:opacity-100" data-icon="sliders"></span>
                 <span class="settings-subnav-label" data-i18n="settings.nav.general">常规</span>
@@ -243,20 +239,7 @@
               </div>
             </div>
             </div>
-            <div data-pane="desktop" class="hidden">
-            <div class="settings-card bg-bg-elev border border-border-custom rounded-xl shadow-card p-7 flex flex-col gap-6 transition-all duration-300" id="desktopCard">
-              <div class="settings-card-header flex justify-between items-center gap-3">
-                <h3 class="settings-card-title text-[13px] font-semibold text-fg flex items-center gap-2"><span data-i18n="settings.desktop">Claude 桌面版</span><span id="desktopStatusChip" class="desktop-chip text-[10.5px] font-semibold rounded-full px-2 py-0.25 bg-chip-bg text-muted"></span></h3>
-                <div class="flex items-center gap-1.5 shrink-0">
-                  <button id="btnDesktopRefresh" class="tool-btn w-[26px] h-[26px] border border-border-custom rounded-[7px] bg-bg-elev text-muted cursor-pointer flex items-center justify-center transition-all duration-140 hover:text-fg hover:bg-chip-bg hover:border-border-strong" type="button" data-i18n-title="settings.desktopRefresh" title="刷新状态"><span data-icon="refresh"></span></button>
-                  <button class="btn btn-sm btn-primary bg-primary text-white border-none rounded-md px-2.25 py-1.25 font-semibold text-[11px] leading-none cursor-pointer transition-all duration-140 hover:bg-primary-hover active:scale-[0.985]" id="btnDesktopConnect" type="button" data-i18n="settings.desktopConnect">接入</button>
-                </div>
-              </div>
-              <p class="caption text-[12px] text-caption" data-i18n="settings.desktopDesc">把 Claude 桌面版的模型推理也指向本地网关，和 Claude Code 共用同一套服务与模型映射。</p>
-              <p class="caption text-[12px] text-caption leading-[1.5] [&_b]:text-fg [&_b]:font-medium" id="desktopNote" data-i18n="settings.desktopNote">macOS 要求你在「系统设置 › 描述文件」里手动批准一次（输管理员密码）。这不是高危操作 —— 只是把推理指向本地网关，系统出于安全要求必须你亲自确认。还原同理。</p>
-            </div>
-            </div>
-            <div data-pane="general" class="hidden">
+            <div data-pane="general" class="hidden flex flex-col gap-7">
             <div class="settings-card bg-bg-elev border border-border-custom rounded-xl shadow-card p-7 flex flex-col gap-6 transition-all duration-300">
               <h3 class="settings-card-title text-[13px] font-semibold text-fg" data-i18n="settings.app">应用</h3>
               <div class="settings-row no-border flex items-center gap-x-6 gap-y-4 flex-wrap pt-0 border-t-0">
@@ -301,6 +284,31 @@
                 </select>
               </div>
             </div>
+            <div class="settings-card bg-bg-elev border border-border-custom rounded-xl shadow-card p-7 flex flex-col gap-6 transition-all duration-300">
+              <h3 class="settings-card-title text-[13px] font-semibold text-fg" data-i18n="settings.sessionsCard">会话</h3>
+              <div class="flex items-center justify-between gap-x-6 gap-y-3 flex-wrap">
+                <div class="min-w-0">
+                  <div class="text-[12.5px] font-medium text-fg" data-i18n="settings.convFont">正文字号</div>
+                  <div class="text-[11.5px] text-caption mt-0.5" data-i18n="settings.convFontDesc">「会话」页消息正文的字体大小 — 看长日志觉得密集时可以调大。</div>
+                </div>
+                <div class="flex items-center gap-2 shrink-0">
+                  <div class="inline-flex gap-0.5 p-0.5 bg-chip-bg rounded-[7px]" id="fConvFontSeg">
+                    <button type="button" class="seg-btn border-0 bg-transparent text-muted text-[11px] font-medium px-2.5 py-0.75 rounded-[5px] cursor-pointer hover:text-fg [.active]:bg-bg-elev [.active]:text-fg [.active]:shadow-sm transition-all duration-150" data-cfs="default" data-i18n="settings.convFontDefault">默认</button>
+                    <button type="button" class="seg-btn border-0 bg-transparent text-muted text-[11px] font-medium px-2.5 py-0.75 rounded-[5px] cursor-pointer hover:text-fg [.active]:bg-bg-elev [.active]:text-fg [.active]:shadow-sm transition-all duration-150" data-cfs="large" data-i18n="settings.convFontLarge">大</button>
+                    <button type="button" class="seg-btn border-0 bg-transparent text-muted text-[11px] font-medium px-2.5 py-0.75 rounded-[5px] cursor-pointer hover:text-fg [.active]:bg-bg-elev [.active]:text-fg [.active]:shadow-sm transition-all duration-150" data-cfs="xlarge" data-i18n="settings.convFontXlarge">特大</button>
+                    <button type="button" class="seg-btn border-0 bg-transparent text-muted text-[11px] font-medium px-2.5 py-0.75 rounded-[5px] cursor-pointer hover:text-fg [.active]:bg-bg-elev [.active]:text-fg [.active]:shadow-sm transition-all duration-150" data-cfs="custom" data-i18n="settings.convFontCustom">自定义</button>
+                  </div>
+                  <span id="convFontCustomRow" class="hidden inline-flex items-center gap-1.25 [&.hidden]:hidden">
+                    <input id="fConvFontPx" class="port-input w-[56px] px-1.75 py-1.25 bg-bg-input border border-border-custom rounded-md text-fg font-mono text-[12px] outline-none focus:border-primary" type="number" min="10" max="24" step="1" />
+                    <span class="text-[11px] text-caption">px</span>
+                  </span>
+                </div>
+              </div>
+              <div class="conv-font-preview flex items-center justify-between gap-4 bg-bg-input border border-border-custom rounded-[9px] px-4 py-3">
+                <span class="conv-font-preview-text min-w-0" data-i18n="settings.convFontPreview">会话正文将以这个大小显示 — 这是一段用于预览的示例文字。</span>
+                <span id="convFontPreviewPx" class="text-[10.5px] font-semibold font-mono text-caption bg-chip-bg rounded-full px-2 py-0.25 shrink-0">13px</span>
+              </div>
+            </div>
             </div>
             <div data-pane="data" class="hidden">
             <div class="settings-card bg-bg-elev border border-border-custom rounded-xl shadow-card p-7 flex flex-col gap-6 transition-all duration-300">
@@ -315,7 +323,7 @@
             <div data-pane="about" class="hidden">
             <div class="settings-card bg-bg-elev border border-border-custom rounded-xl shadow-card p-7 flex flex-col gap-6 transition-all duration-300">
               <div class="settings-card-header flex justify-between items-center gap-3">
-                <h3 class="settings-card-title text-[13px] font-semibold text-fg flex items-center gap-2"><span data-i18n="about.title">检查更新</span><span id="updateChip" class="desktop-chip text-[10.5px] font-semibold rounded-full px-2 py-0.25 bg-chip-bg text-muted hidden"></span></h3>
+                <h3 class="settings-card-title text-[13px] font-semibold text-fg flex items-center gap-2"><span data-i18n="about.title">检查更新</span><span id="updateChip" class="update-chip text-[10.5px] font-semibold rounded-full px-2 py-0.25 bg-chip-bg text-muted hidden"></span></h3>
                 <button id="btnUpdateCheck" type="button" class="btn btn-sm btn-primary bg-primary text-white border-none rounded-md px-2.25 py-1.25 font-semibold text-[11px] leading-none cursor-pointer transition-all duration-140 hover:bg-primary-hover active:scale-[0.985]" data-i18n="about.check">检查更新</button>
               </div>
               <div class="flex items-center gap-x-8 gap-y-2 flex-wrap">

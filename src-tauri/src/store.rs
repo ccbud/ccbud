@@ -385,6 +385,48 @@ pub fn ensure_codex_dir() -> bool {
     true
 }
 
+/// Shared body of the ensure_*_dir migrations: when `exists` and the run-once `flag` hasn't
+/// fired, add `label` to historyDirs (dedup) and set the flag. Returns true when the config
+/// changed (caller refreshes the history views). A user who later REMOVES the dir isn't
+/// fighting an auto-re-add; a missing install keeps probing on future launches.
+fn ensure_history_dir(flag: &str, exists: bool, label: String) -> bool {
+    let mut cfg = read_config();
+    if cfg.get(flag).and_then(|v| v.as_bool()).unwrap_or(false) {
+        return false;
+    }
+    if !exists {
+        return false; // nothing there yet — keep probing on future launches
+    }
+    let obj = cfg.as_object_mut().unwrap();
+    let mut dirs: Vec<String> = obj
+        .get("historyDirs")
+        .and_then(|v| v.as_array())
+        .map(|a| a.iter().filter_map(|d| d.as_str().map(|s| s.to_string())).collect())
+        .unwrap_or_default();
+    if !dirs.iter().any(|d| *d == label) {
+        dirs.push(label);
+    }
+    obj.insert("historyDirs".into(), json!(dirs));
+    obj.insert(flag.into(), json!(true));
+    write_config(cfg);
+    true
+}
+
+/// One-time startup migrations for the other coding CLIs whose sessions the 对话 view can
+/// browse: Grok Build (~/.grok, GROK_HOME-aware), GitHub Copilot CLI (~/.copilot), and the
+/// Antigravity CLI (~/.gemini/antigravity-cli). Same run-once contract as ensure_codex_dir.
+pub fn ensure_grok_dir() -> bool {
+    ensure_history_dir("grokDirAutoAdded", crate::grok::root_exists(), crate::grok::grok_label())
+}
+
+pub fn ensure_copilot_dir() -> bool {
+    ensure_history_dir("copilotDirAutoAdded", crate::copilot::root_exists(), crate::copilot::copilot_label())
+}
+
+pub fn ensure_antigravity_dir() -> bool {
+    ensure_history_dir("antigravityDirAutoAdded", crate::antigravity::root_exists(), crate::antigravity::agy_label())
+}
+
 /// One-time startup migration (ccusage parity): Claude Code also writes history under the XDG
 /// config dir (`$XDG_CONFIG_HOME/claude`, default `~/.config/claude`) — when that tree exists,
 /// add it to historyDirs so its sessions count toward conversations and usage. Same run-once

@@ -56,9 +56,6 @@
     disconnect: () => inv('claude_disconnect'),
     setConnectTarget: (target, on) => inv('set_connect_target', { target, on }),
 
-    desktopStatus: () => inv('desktop_status'),
-    desktopConnect: () => inv('desktop_connect'),
-    desktopDisconnect: () => inv('desktop_disconnect'),
     desktopReplay: (file, prompt) => inv('desktop_replay', { file, prompt }),
     chatgptReplay: (file, prompt) => inv('chatgpt_replay', { file, prompt }),
 

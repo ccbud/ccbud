@@ -96,7 +96,6 @@
   var FUNNEL = {
     btnConnect: 'connect-toggle',
     popConnect: 'connect-toggle',
-    btnDesktopConnect: 'desktop-connect',
     btnAdd: 'provider-add',
     btnAddEmpty: 'provider-add',
     btnSave: 'provider-save',

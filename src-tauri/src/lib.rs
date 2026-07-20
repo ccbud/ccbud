@@ -5,16 +5,19 @@
 // popover, updater, and self-check hooks.
 #![allow(unused_variables)]
 
+mod antigravity;
 mod claude;
-mod claudedesktop;
 mod codex;
 mod codexconnect;
+mod copilot;
 mod counttokens;
 mod exporthtml;
 mod gateway;
+mod grok;
 mod history;
 mod plugin;
 mod protocol;
+mod sidecar;
 mod store;
 mod usage;
 mod ziputil;
@@ -416,7 +419,7 @@ async fn provider_test(app: tauri::AppHandle, p: Value) -> Value {
     }
 }
 
-// ---- claude code / desktop integration ----
+// ---- coding CLI connect / replay ----
 /// The literal selected CLIs from config `connectTargets` (subset of {claude, codex}, deduped).
 /// Empty is a valid state ("nothing connected") — the hero Connect button substitutes a default.
 fn connect_targets(cfg: &Value) -> Vec<String> {
@@ -599,32 +602,6 @@ async fn set_connect_target(
     gw.emit("gateway:status", status);
     refresh_tray_menu(&app);
     Ok(json!({ "ok": true }))
-}
-#[tauri::command]
-async fn desktop_status(
-    gw: tauri::State<'_, std::sync::Arc<gateway::GatewayState>>,
-) -> Result<Value, String> {
-    let port = gw
-        .current_port()
-        .await
-        .unwrap_or_else(|| store::read_config().get("port").and_then(|v| v.as_u64()).unwrap_or(8788) as u16);
-    Ok(claudedesktop::status(port))
-}
-#[tauri::command]
-async fn desktop_connect(
-    gw: tauri::State<'_, std::sync::Arc<gateway::GatewayState>>,
-) -> Result<Value, String> {
-    let cfg = store::read_config();
-    let port = cfg.get("port").and_then(|v| v.as_u64()).unwrap_or(8788) as u16;
-    if cfg.get("providers").and_then(|v| v.as_array()).map(|a| a.is_empty()).unwrap_or(true) {
-        return Ok(json!({ "ok": false, "reason": "noProvider" }));
-    }
-    let _ = gw.start(port).await;
-    Ok(claudedesktop::connect(port, &claude::current_token(&cfg)))
-}
-#[tauri::command]
-fn desktop_disconnect() -> Value {
-    claudedesktop::disconnect()
 }
 fn pct(s: &str) -> String {
     s.bytes()
@@ -1149,6 +1126,29 @@ fn history_delete_forever(app: tauri::AppHandle, file: String) -> Value {
 #[tauri::command]
 async fn history_export_raw(file: String) -> Result<Value, String> {
     let base = exporthtml::export_base_name(&file);
+    // Antigravity sessions are SQLite DBs (not text) — export the raw bytes as .db so the
+    // original conversation remains intact. Other foreign sources and Claude/Codex stay
+    // verbatim text (.jsonl); sessions with subagents keep the existing zip bundle.
+    let path = std::path::Path::new(&file);
+    if matches!(
+        history::foreign_kind(path),
+        Some(history::Foreign::Antigravity)
+    ) {
+        let bytes = std::fs::read(&file).map_err(|e| e.to_string())?;
+        return match rfd::AsyncFileDialog::new()
+            .add_filter("SQLite", &["db"])
+            .set_file_name(format!("{}.db", base))
+            .save_file()
+            .await
+        {
+            Some(d) => {
+                let p = d.path().to_path_buf();
+                std::fs::write(&p, bytes).map_err(|e| e.to_string())?;
+                Ok(json!({ "canceled": false, "path": p.to_string_lossy(), "bundled": false }))
+            }
+            None => Ok(json!({ "canceled": true })),
+        };
+    }
     // A session with subagents exports as a .zip bundle (main .jsonl at the top level + subagents/);
     // a plain session stays a verbatim .jsonl. import_paths accepts either.
     if history::session_has_subagents(&file) {
@@ -1538,17 +1538,6 @@ fn selfcheck_history() -> Value {
     history::history_selftest(&store::ccbud_home())
 }
 #[tauri::command]
-fn selfcheck_desktop() -> Value {
-    let p = claudedesktop::build_profile(18799, "tok");
-    json!({
-        "hasBaseUrl": p.contains("http://localhost:18799"),
-        "hasProvider": p.contains("inferenceProvider") && p.contains("gateway"),
-        "hasModels": p.contains("claude-sonnet-5") && p.contains("anthropicFamilyTier") && p.contains("isFamilyDefault"),
-        "hasBundleId": p.contains("com.anthropic.claudefordesktop"),
-        "validXml": p.starts_with("<?xml") && p.contains("</plist>"),
-    })
-}
-#[tauri::command]
 fn selfcheck_import() -> Value {
     history::import_selftest(&store::ccbud_home())
 }
@@ -1700,7 +1689,6 @@ const SELFCHECK_JS: &str = r#"
       try{ var cc=await window.ccbud.connect(); var s1=await window.ccbud.serverStatus(); var dd=await window.ccbud.disconnect(); var s2=await window.ccbud.serverStatus(); o.claude={connOk:cc&&cc.ok,connected:s1.connected,discOk:dd&&dd.ok,afterDisc:s2.connected}; }catch(e){ o.claudeErr=String(e); }
       try{ o.copyOk=await window.ccbud.copy('selfcheck-clip'); }catch(e){ o.copyErr=String(e); }
       try{ o.histMeta=await window.__TAURI__.core.invoke('selfcheck_history'); }catch(e){ o.histMetaErr=String(e); }
-      try{ o.desktop=await window.__TAURI__.core.invoke('selfcheck_desktop'); }catch(e){ o.desktopErr=String(e); }
       try{ o.export=await window.__TAURI__.core.invoke('selfcheck_export'); }catch(e){ o.exportErr=String(e); }
       try{ o.import=await window.__TAURI__.core.invoke('selfcheck_import'); }catch(e){ o.importErr=String(e); }
       try{ var us=await window.ccbud.updateState(); var sa=await window.ccbud.updateSetAuto({check:false}); o.update={current:us.current,status:us.status,setAutoCheck:sa.check}; }catch(e){ o.updateErr=String(e); }
@@ -1834,11 +1822,14 @@ pub fn run() {
                         .build(),
                 )?;
             }
-            // One-time migrations: a detected Codex install (~/.codex/sessions) and an XDG
-            // Claude tree (~/.config/claude/projects) join historyDirs as regular work dirs.
-            // Runs BEFORE the history watcher so their trees get watched.
+            // One-time migrations: detected installs of the other coding CLIs (Codex, Grok
+            // Build, Copilot CLI, Antigravity CLI) and an XDG Claude tree join historyDirs as
+            // regular work dirs. Runs BEFORE the history watcher so their trees get watched.
             store::ensure_codex_dir();
             store::ensure_xdg_claude_dir();
+            store::ensure_grok_dir();
+            store::ensure_copilot_dir();
+            store::ensure_antigravity_dir();
 
             // Start the localhost gateway on the configured port (proxy.js parity).
             let gw = gateway::GatewayState::new(app.handle().clone());
@@ -2243,14 +2234,14 @@ pub fn run() {
             plugin_action, plugin_action_load,
             plugin_install, plugin_uninstall, plugin_open_dir,
             plugin_install_git, plugin_check_update, plugin_update,
-            claude_connect, claude_disconnect, set_connect_target, desktop_status, desktop_connect, desktop_disconnect, desktop_replay, chatgpt_replay,
+            claude_connect, claude_disconnect, set_connect_target, desktop_replay, chatgpt_replay,
             server_status, gateway_set_enabled, usage_get, monitor_get, monitor_clear, logs_get, logs_clear,
             app_open_main, app_quit, window_settings_mode, window_view_min_width,
             history_projects, history_list, history_get, history_search, history_dirs, history_pick_dir, history_set_active,
             history_import, history_import_paths, history_remove_import, history_set_meta, history_delete_forever, history_export_raw, history_export_html,
             util_copy, util_open_external,
             update_state, update_check, update_download, update_apply, update_set_auto,
-            selfcheck_report, selfcheck_routing, selfcheck_gateway, selfcheck_history, selfcheck_desktop, selfcheck_export, selfcheck_import, selfcheck_popover
+            selfcheck_report, selfcheck_routing, selfcheck_gateway, selfcheck_history, selfcheck_export, selfcheck_import, selfcheck_popover
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

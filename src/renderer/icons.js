@@ -49,7 +49,6 @@ window.ccbudIcons = {
   /* settings sub-nav */
   gateway: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><rect x="2.5" y="2.5" width="11" height="4.2" rx="1.2" stroke="currentColor" stroke-width="1.3"/><rect x="2.5" y="9.3" width="11" height="4.2" rx="1.2" stroke="currentColor" stroke-width="1.3"/><path d="M5 4.6h.01M5 11.4h.01" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>',
 
-  desktop: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><rect x="2" y="3" width="12" height="8" rx="1.3" stroke="currentColor" stroke-width="1.3"/><path d="M6 13.5h4M8 11v2.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>',
 
   shield: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M8 2l4.5 1.8v3.1c0 3-2 5.3-4.5 6.3-2.5-1-4.5-3.3-4.5-6.3V3.8L8 2z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><path d="M6 8l1.4 1.4L10.4 6.5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/></svg>',
 
