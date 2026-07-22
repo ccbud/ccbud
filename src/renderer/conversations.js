@@ -925,6 +925,9 @@
   }
 
   // ---------- inline subagents (expand-at-call-site) ----------
+  // Display name of a subagent: its agent type, suffixed with the skill that invoked it
+  // (`type:skill`) when the backend attributed one (Skill tool_use / transcript sentinel).
+  function subName(s) { return (s.type || 'agent') + (s.skill ? ':' + s.skill : ''); }
   // A subagent dialogue is keyed by the tool_use id that spawned it (history.readSubagents). We render it
   // as a lazily-filled disclosure directly under that call — at any nesting depth, since a subagent's own
   // tool cards run through this same path. Body stays empty until opened (see fillSubBody) to bound the DOM.
@@ -936,7 +939,7 @@
     const out = (s.totals && s.totals.out) || 0;
     const meta = `${esc(L('conv.subagentMsgs', { n: cnt }))} · ${fmtTok(out)}↓`;
     const desc = s.description ? ` · <span class="font-normal text-muted">${esc(s.description)}</span>` : '';
-    return `<details class="subagent-inline" data-sub="${esc(id)}"><summary class="cursor-pointer py-2 px-2.5 text-[11px] font-semibold text-brand outline-none list-none [&::-webkit-details-marker]:hidden flex items-center gap-1.5 bg-brand-soft hover:brightness-105"><span class="sub-caret shrink-0 transition-transform">▸</span><span class="shrink-0">🤖 ${esc(L('conv.subagent'))} · ${esc(s.type || 'agent')}</span><span class="truncate min-w-0 flex-1">${desc}</span><span class="text-caption font-mono font-normal shrink-0">${meta}</span></summary><div class="subagent-inline-body pl-3 pr-1 py-1.5 bg-brand-soft/10" data-sub-body="${esc(id)}"></div></details>`;
+    return `<details class="subagent-inline" data-sub="${esc(id)}"><summary class="cursor-pointer py-2 px-2.5 text-[11px] font-semibold text-brand outline-none list-none [&::-webkit-details-marker]:hidden flex items-center gap-1.5 bg-brand-soft hover:brightness-105"><span class="sub-caret shrink-0 transition-transform">▸</span><span class="shrink-0">🤖 ${esc(L('conv.subagent'))} · ${esc(subName(s))}</span><span class="truncate min-w-0 flex-1">${desc}</span><span class="text-caption font-mono font-normal shrink-0">${meta}</span></summary><div class="subagent-inline-body pl-3 pr-1 py-1.5 bg-brand-soft/10" data-sub-body="${esc(id)}"></div></details>`;
   }
   // Render one subagent's whole thread (recursively wiring its own inline subagents via renderMessage →
   // renderToolCard). idx=null so nested turns carry no data-mi (they're outside main-window navigation).
@@ -971,7 +974,7 @@
     const activeSub = !mainActive && subs[activeAgent] ? subs[activeAgent] : null;
     const seg = (active) => `inline-flex items-center gap-1.5 h-[28px] px-3 rounded-[8px] text-[12px] font-semibold cursor-pointer border transition-colors whitespace-nowrap ${active ? 'bg-brand-soft text-brand border-brand/25' : 'bg-bg-elev text-muted border-border-custom hover:text-fg hover:bg-chip-bg'}`;
     const mainTab = `<button type="button" data-agent="main" class="${seg(mainActive)}">👤 ${esc(L('conv.mainSession'))}</button>`;
-    const ddLabel = activeSub ? `🤖 ${esc(activeSub.type || 'agent')}` : `🤖 ${esc(L('conv.stat.subagents'))} (${keys.length})`;
+    const ddLabel = activeSub ? `🤖 ${esc(subName(activeSub))}` : `🤖 ${esc(L('conv.stat.subagents'))} (${keys.length})`;
     const items = keys.map((k) => {
       const s = subs[k] || {};
       const out = (s.totals && s.totals.out) || 0;
@@ -979,7 +982,7 @@
       const active = activeAgent === k;
       const desc = s.description ? `<div class="text-[10.5px] text-muted truncate pl-[18px]">${esc(s.description)}</div>` : '';
       return `<button type="button" data-agent="${esc(k)}" class="conv-agent-menu-item w-full flex flex-col gap-0.25 text-left px-2 py-1.5 rounded-[6px] cursor-pointer border border-transparent transition-colors ${active ? 'bg-brand-soft text-brand' : 'hover:bg-chip-bg text-fg'}">
-        <div class="flex items-center gap-1.25 min-w-0"><span class="shrink-0 text-[11px]">🤖</span><span class="font-mono text-[11.5px] font-semibold truncate">${esc(s.type || 'agent')}</span></div>
+        <div class="flex items-center gap-1.25 min-w-0"><span class="shrink-0 text-[11px]">🤖</span><span class="font-mono text-[11.5px] font-semibold truncate">${esc(subName(s))}</span></div>
         ${desc}
         <div class="text-[10px] text-caption font-mono pl-[18px]">${esc(L('conv.subagentMsgs', { n: cnt }))} · ${fmtTok(out)}↓</div>
       </button>`;
@@ -1078,9 +1081,14 @@
   function renderSidePanels(detail) {
     const m = detail.meta || {};
     const t = m.totals || {};
+    // Invoking skill of the session in the panel: the active subagent's when one is selected,
+    // else the session's own (a standalone subagent transcript). Absent → row filtered out.
+    const panelSub = activeAgent !== 'main' && detail.subagents ? detail.subagents[activeAgent] : null;
+    const skill = panelSub ? panelSub.skill : m.skill;
     const rows = [
       [L('conv.stat.title'), m.title],
       [L('conv.stat.model'), m.model],
+      [L('conv.stat.skill'), skill || null],
       ...(m.isSubagent ? [[L('conv.stat.type'), L('conv.subagentSession')]] : []),
       ...(m.imported ? [[L('conv.imported'), m.importedFrom || '✓']] : []),
       [L('conv.stat.project'), m.cwd ? projName(m.cwd) : m.project],

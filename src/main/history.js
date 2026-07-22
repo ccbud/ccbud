@@ -166,6 +166,41 @@ function shapeMessages(recs) {
   return { messages, totals, model, firstTs, lastTs };
 }
 
+// A skill-forked subagent transcript opens with a sentinel user line
+// "Base directory for this skill: <path>/<skill-dir>" — the last path segment names the skill.
+// Fallback attribution only: the spawning `Skill` tool_use in the parent thread (applySkillNames)
+// is authoritative and overrides this when present.
+const SKILL_BASE_DIR_PREFIX = 'Base directory for this skill: ';
+function skillFromRecs(recs) {
+  for (const r of recs) {
+    if (!r || r.type !== 'user' || !r.message || r.isMeta) continue;
+    const raw = contentText(r.message.content).trim();
+    if (!raw.startsWith(SKILL_BASE_DIR_PREFIX)) return null; // only the opening prompt carries the sentinel
+    const line = raw.slice(SKILL_BASE_DIR_PREFIX.length).split('\n')[0].trim();
+    const segs = line.split(/[\\/]/).filter(Boolean);
+    return segs.length ? segs[segs.length - 1] : null;
+  }
+  return null;
+}
+
+// Primary skill attribution: a subagent spawned by the `Skill` tool is named by the spawning
+// tool_use's input.skill (matched by tool_use id — the subagents map key), in whichever thread
+// the call lives (main or a nested subagent). Overrides the sentinel fallback from skillFromRecs.
+function applySkillNames(mainMessages, subs) {
+  const keys = Object.keys(subs);
+  if (!keys.length) return;
+  const scan = (msgs) => (msgs || []).forEach((m) => {
+    const blocks = m && Array.isArray(m.content) ? m.content : [];
+    for (const b of blocks) {
+      if (!b || b.type !== 'tool_use' || b.name !== 'Skill' || !subs[b.id]) continue;
+      const s = b.input && typeof b.input.skill === 'string' ? b.input.skill.trim() : '';
+      if (s) subs[b.id].skill = s;
+    }
+  });
+  scan(mainMessages);
+  for (const k of keys) scan(subs[k].messages);
+}
+
 // Read a session's subagent dialogues — <sessionFile-dir>/<sessionId>/subagents/agent-<id>.{jsonl,meta.json}
 // — keyed by the spawning Task/Agent tool_use id (agent-<id>.meta.json's toolUseId), so the "对话"
 // view can nest each subagent's timeline under the call that spawned it. Mirrors the HTML export.
@@ -182,13 +217,15 @@ function readSubagents(file) {
     try { meta = JSON.parse(fs.readFileSync(path.join(dir, 'agent-' + agentId + '.meta.json'), 'utf8')); } catch (_) {}
     let raw;
     try { raw = fs.readFileSync(path.join(dir, name), 'utf8'); } catch (_) { continue; }
-    const shaped = shapeMessages(parseLines(raw));
+    const recs = parseLines(raw);
+    const shaped = shapeMessages(recs);
     const key = meta.toolUseId || ('agent:' + agentId);
     byTool[key] = {
       agentId,
       file: path.join(dir, name), // absolute path to this subagent's .jsonl (for "copy path")
       type: meta.agentType || meta.subagent_type || 'agent',
       description: meta.description || '',
+      skill: skillFromRecs(recs),
       count: shaped.messages.length,
       totals: shaped.totals,
       messages: shaped.messages,
@@ -410,6 +447,7 @@ function createHistoryWatcher(opts) {
     // Only a top-level session embeds its child subagent dialogues (a subagent file has no nested
     // subagents/ dir of its own), so the renderer can nest them under their spawning Task call.
     const subagents = subagent ? {} : readSubagents(file);
+    applySkillNames(messages, subagents);
     const cwd = metaRec.cwd || null;
     const baseId = metaRec.sessionId || path.basename(file, '.jsonl');
     const sessId = subagent && agentRec.agentId ? `${baseId}-${agentRec.agentId}` : baseId;
@@ -428,6 +466,7 @@ function createHistoryWatcher(opts) {
         gitBranch: metaRec.gitBranch || null,
         version: metaRec.version || null,
         isSubagent: subagent,
+        skill: subagent ? skillFromRecs(recs) : null, // a standalone subagent transcript self-reports via the sentinel
         imported: !!imported,
         importedFrom: imported ? imported.originalPath : null,
         importedAt: imported ? imported.importedAt : null,
@@ -598,4 +637,4 @@ function createHistoryWatcher(opts) {
   };
 }
 
-module.exports = { createHistoryWatcher, lineToMessage, firstUserText, readCcbud, decodeDirName, defaultDirs, subagentDir, readSubagentFiles, subagentTranscriptPaths };
+module.exports = { createHistoryWatcher, lineToMessage, firstUserText, readCcbud, decodeDirName, defaultDirs, subagentDir, readSubagentFiles, subagentTranscriptPaths, skillFromRecs, applySkillNames };

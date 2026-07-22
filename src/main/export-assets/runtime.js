@@ -135,7 +135,8 @@
     return '<details class="tool tool-' + cls + '"' + open + '><summary class="tool-head"><span class="tool-ico">' + ico + '</span><span class="tool-name">' + esc(label) + '</span><span class="tool-target">' + esc(target) + '</span>' + badge + '</summary>' + inner + '</details>' + (sub ? renderSubagent(sub) : '');
   }
   function renderSubagent(sub) {
-    return '<div class="subagent"><details class="subagent-d"><summary><span class="subagent-ico">🤖</span><span class="subagent-title">子代理 · ' + esc(sub.type || 'agent') + '</span><span class="subagent-desc">' + esc(sub.description || '') + '</span><span class="subagent-count">' + (sub.count || 0) + ' 条 · ' + fmtTok((sub.totals && sub.totals.out) || 0) + '↓</span></summary><div class="subagent-body"><div class="thread">' + renderThread(sub.messages || []) + '</div></div></details></div>';
+    var subName = (sub.type || 'agent') + (sub.skill ? ':' + sub.skill : ''); // skill-spawned agents carry the invoking skill
+    return '<div class="subagent"><details class="subagent-d"><summary><span class="subagent-ico">🤖</span><span class="subagent-title">子代理 · ' + esc(subName) + '</span><span class="subagent-desc">' + esc(sub.description || '') + '</span><span class="subagent-count">' + (sub.count || 0) + ' 条 · ' + fmtTok((sub.totals && sub.totals.out) || 0) + '↓</span></summary><div class="subagent-body"><div class="thread">' + renderThread(sub.messages || []) + '</div></div></details></div>';
   }
 
   function isReminder(t) { return /<(system-reminder|command-name|local-command)/.test(t); }
