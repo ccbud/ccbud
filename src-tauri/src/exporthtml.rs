@@ -268,7 +268,8 @@ fn read_subagents(file: &Path) -> Value {
             .ok()
             .and_then(|s| serde_json::from_str(&s).ok())
             .unwrap_or(json!({}));
-        let shaped = shape_session(&parse_jsonl(&ent.path()));
+        let recs = parse_jsonl(&ent.path());
+        let shaped = shape_session(&recs);
         let key = meta
             .get("toolUseId")
             .and_then(|v| v.as_str())
@@ -280,6 +281,7 @@ fn read_subagents(file: &Path) -> Value {
                 "agentId": agent_id,
                 "type": meta.get("agentType").or_else(|| meta.get("subagent_type")).and_then(|v| v.as_str()).unwrap_or("agent"),
                 "description": meta.get("description").and_then(|v| v.as_str()).unwrap_or(""),
+                "skill": crate::history::skill_from_recs(&recs),
                 "count": shaped.messages.len(),
                 "totals": { "in": shaped.totals.0, "out": shaped.totals.1, "cacheRead": shaped.totals.2, "turns": shaped.totals.3 },
                 "messages": shaped.messages,
@@ -381,7 +383,11 @@ pub fn build_data(file: &str) -> Value {
         if t.is_empty() { "(conversation)".to_string() } else { t }
     };
     let stem = path.file_stem().and_then(|x| x.to_str()).unwrap_or("");
-    let subagents = read_subagents(path);
+    let mut subagents = read_subagents(path);
+    if let Some(map) = subagents.as_object_mut() {
+        // The spawning Skill tool_use overrides the sentinel fallback (mirrors exportHtml.js).
+        crate::history::apply_skill_names(&s.messages, map);
+    }
     json!({
         "meta": {
             "title": title,

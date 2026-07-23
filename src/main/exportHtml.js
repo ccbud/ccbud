@@ -133,17 +133,20 @@ function readSubagents(file) {
   const dir = path.join(path.dirname(file), path.basename(file, '.jsonl'), 'subagents');
   let entries;
   try { entries = fs.readdirSync(dir); } catch (_) { return {}; }
+  const { skillFromRecs } = require('./history');
   const byTool = {};
   for (const name of entries) {
     if (!/^agent-.*\.jsonl$/.test(name)) continue;
     const agentId = name.replace(/^agent-/, '').replace(/\.jsonl$/, '');
     let meta = {};
     try { meta = JSON.parse(fs.readFileSync(path.join(dir, 'agent-' + agentId + '.meta.json'), 'utf8')); } catch (_) {}
-    const shaped = shapeSession(parseJsonl(path.join(dir, name)));
+    const recs = parseJsonl(path.join(dir, name));
+    const shaped = shapeSession(recs);
     const sub = {
       agentId,
       type: meta.agentType || meta.subagent_type || 'agent',
       description: meta.description || '',
+      skill: skillFromRecs(recs),
       count: shaped.messages.length,
       totals: shaped.totals,
       messages: shaped.messages,
@@ -205,6 +208,7 @@ function buildData(file) {
   const s = shapeSession(recs);
   const cwd = s.metaRec.cwd || null;
   const subagents = readSubagents(file);
+  require('./history').applySkillNames(s.messages, subagents); // spawning Skill tool_use overrides the sentinel fallback
   return {
     meta: {
       title: firstUserText(s.messages) || '(conversation)',
